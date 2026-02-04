@@ -1,0 +1,1412 @@
+"""Multi-source stock data service with fallback support."""
+
+import asyncio
+import hashlib
+import logging
+import os
+import re
+from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass
+from datetime import datetime, timedelta
+from enum import Enum
+from typing import Any, Dict, List, Optional, Callable
+
+import pandas as pd
+
+from app.services.data_aggregator import DataAggregator, DataType, get_data_aggregator
+
+logger = logging.getLogger(__name__)
+
+# Thread pool for synchronous library calls (yfinance, akshare)
+_executor: Optional[ThreadPoolExecutor] = None
+_executor_lock = asyncio.Lock()
+
+# Timeout for external API calls (in seconds)
+EXTERNAL_API_TIMEOUT = 30
+
+
+async def _get_executor() -> ThreadPoolExecutor:
+    """Get thread pool executor, initialize if needed."""
+    global _executor
+    if _executor is None:
+        async with _executor_lock:
+            if _executor is None:
+                _executor = ThreadPoolExecutor(max_workers=10)
+    return _executor
+
+
+async def shutdown_executor() -> None:
+    """Shutdown the thread pool executor."""
+    global _executor
+    if _executor is not None:
+        _executor.shutdown(wait=True)
+        _executor = None
+        logger.info("ThreadPoolExecutor shutdown complete")
+
+
+class Market(str, Enum):
+    """Stock market identifiers."""
+
+    US = "us"  # NYSE, NASDAQ
+    HK = "hk"  # Hong Kong
+    SH = "sh"  # Shanghai A-shares
+    SZ = "sz"  # Shenzhen A-shares
+
+
+class DataSource(str, Enum):
+    """Data source providers."""
+
+    YFINANCE = "yfinance"
+    AKSHARE = "akshare"
+    TUSHARE = "tushare"
+
+
+class HistoryInterval(str, Enum):
+    """Historical data intervals."""
+
+    ONE_MINUTE = "1m"
+    FIVE_MINUTES = "5m"
+    FIFTEEN_MINUTES = "15m"
+    HOURLY = "1h"
+    DAILY = "1d"
+    WEEKLY = "1wk"
+    MONTHLY = "1mo"
+
+
+class HistoryPeriod(str, Enum):
+    """Historical data periods."""
+
+    ONE_DAY = "1d"
+    FIVE_DAYS = "5d"
+    ONE_MONTH = "1mo"
+    THREE_MONTHS = "3mo"
+    SIX_MONTHS = "6mo"
+    ONE_YEAR = "1y"
+    TWO_YEARS = "2y"
+    FIVE_YEARS = "5y"
+    MAX = "max"
+
+
+@dataclass
+class StockQuote:
+    """Real-time stock quote data."""
+
+    symbol: str
+    name: Optional[str]
+    price: float
+    change: float
+    change_percent: float
+    volume: int
+    market_cap: Optional[float]
+    day_high: Optional[float]
+    day_low: Optional[float]
+    open: Optional[float]
+    previous_close: Optional[float]
+    timestamp: datetime
+    market: Market
+    source: DataSource
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "symbol": self.symbol,
+            "name": self.name,
+            "price": self.price,
+            "change": self.change,
+            "change_percent": self.change_percent,
+            "volume": self.volume,
+            "market_cap": self.market_cap,
+            "day_high": self.day_high,
+            "day_low": self.day_low,
+            "open": self.open,
+            "previous_close": self.previous_close,
+            "timestamp": self.timestamp.isoformat(),
+            "market": self.market.value,
+            "source": self.source.value,
+        }
+
+
+@dataclass
+class StockInfo:
+    """Company information."""
+
+    symbol: str
+    name: str
+    description: Optional[str]
+    sector: Optional[str]
+    industry: Optional[str]
+    website: Optional[str]
+    employees: Optional[int]
+    market_cap: Optional[float]
+    currency: str
+    exchange: str
+    market: Market
+    source: DataSource
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "symbol": self.symbol,
+            "name": self.name,
+            "description": self.description,
+            "sector": self.sector,
+            "industry": self.industry,
+            "website": self.website,
+            "employees": self.employees,
+            "market_cap": self.market_cap,
+            "currency": self.currency,
+            "exchange": self.exchange,
+            "market": self.market.value,
+            "source": self.source.value,
+        }
+
+
+@dataclass
+class StockFinancials:
+    """Financial metrics."""
+
+    symbol: str
+    pe_ratio: Optional[float]
+    forward_pe: Optional[float]
+    eps: Optional[float]
+    dividend_yield: Optional[float]
+    dividend_rate: Optional[float]
+    book_value: Optional[float]
+    price_to_book: Optional[float]
+    revenue: Optional[float]
+    revenue_growth: Optional[float]
+    net_income: Optional[float]
+    profit_margin: Optional[float]
+    gross_margin: Optional[float]
+    operating_margin: Optional[float]
+    roe: Optional[float]
+    roa: Optional[float]
+    debt_to_equity: Optional[float]
+    current_ratio: Optional[float]
+    eps_growth: Optional[float]
+    payout_ratio: Optional[float]
+    market: Market
+    source: DataSource
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "symbol": self.symbol,
+            "pe_ratio": self.pe_ratio,
+            "forward_pe": self.forward_pe,
+            "eps": self.eps,
+            "dividend_yield": self.dividend_yield,
+            "dividend_rate": self.dividend_rate,
+            "book_value": self.book_value,
+            "price_to_book": self.price_to_book,
+            "revenue": self.revenue,
+            "revenue_growth": self.revenue_growth,
+            "net_income": self.net_income,
+            "profit_margin": self.profit_margin,
+            "gross_margin": self.gross_margin,
+            "operating_margin": self.operating_margin,
+            "roe": self.roe,
+            "roa": self.roa,
+            "debt_to_equity": self.debt_to_equity,
+            "current_ratio": self.current_ratio,
+            "eps_growth": self.eps_growth,
+            "payout_ratio": self.payout_ratio,
+            "market": self.market.value,
+            "source": self.source.value,
+        }
+
+
+@dataclass
+class OHLCVBar:
+    """Single OHLCV bar."""
+
+    date: datetime
+    open: float
+    high: float
+    low: float
+    close: float
+    volume: int
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "date": self.date.isoformat(),
+            "open": self.open,
+            "high": self.high,
+            "low": self.low,
+            "close": self.close,
+            "volume": self.volume,
+        }
+
+
+@dataclass
+class StockHistory:
+    """Historical OHLCV data."""
+
+    symbol: str
+    interval: HistoryInterval
+    bars: List[OHLCVBar]
+    market: Market
+    source: DataSource
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "symbol": self.symbol,
+            "interval": self.interval.value,
+            "bars": [bar.to_dict() for bar in self.bars],
+            "market": self.market.value,
+            "source": self.source.value,
+        }
+
+
+@dataclass
+class SearchResult:
+    """Stock search result."""
+
+    symbol: str
+    name: str
+    exchange: str
+    market: Market
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "symbol": self.symbol,
+            "name": self.name,
+            "exchange": self.exchange,
+            "market": self.market.value,
+        }
+
+
+def detect_market(symbol: str) -> Market:
+    """
+    Detect market from symbol format.
+
+    Formats:
+    - US: AAPL, MSFT (no suffix)
+    - HK: 0700.HK, 9988.HK
+    - Shanghai: 600519.SS, 600036.SS
+    - Shenzhen: 000001.SZ, 000858.SZ
+    """
+    symbol = symbol.upper()
+
+    if symbol.endswith(".HK"):
+        return Market.HK
+    elif symbol.endswith(".SS"):
+        return Market.SH
+    elif symbol.endswith(".SZ"):
+        return Market.SZ
+    else:
+        return Market.US
+
+
+def normalize_symbol(symbol: str, market: Market) -> str:
+    """Normalize symbol format for different markets."""
+    symbol = symbol.upper().strip()
+
+    if market == Market.HK:
+        # Remove .HK suffix, pad to 5 digits for akshare
+        code = symbol.replace(".HK", "")
+        return code.zfill(5)
+    elif market in (Market.SH, Market.SZ):
+        # Remove suffix for akshare
+        return symbol.replace(".SS", "").replace(".SZ", "")
+    else:
+        return symbol
+
+
+async def run_in_executor(func: Callable, *args, **kwargs) -> Any:
+    """Run synchronous function in thread pool with timeout."""
+    loop = asyncio.get_running_loop()
+    executor = await _get_executor()
+    return await asyncio.wait_for(
+        loop.run_in_executor(
+            executor,
+            lambda: func(*args, **kwargs),
+        ),
+        timeout=EXTERNAL_API_TIMEOUT,
+    )
+
+
+class YFinanceProvider:
+    """YFinance data provider for US stocks and fallback."""
+
+    @staticmethod
+    async def get_quote(symbol: str, market: Market) -> Optional[StockQuote]:
+        """Get real-time quote from yfinance."""
+        try:
+            import yfinance as yf
+
+            def fetch():
+                ticker = yf.Ticker(symbol)
+                info = ticker.info
+                if not info or info.get("regularMarketPrice") is None:
+                    return None
+                return info
+
+            info = await run_in_executor(fetch)
+            if not info:
+                return None
+
+            price = info.get("regularMarketPrice", 0)
+            prev_close = info.get("previousClose", price)
+            change = price - prev_close if prev_close else 0
+            change_pct = (change / prev_close * 100) if prev_close else 0
+
+            return StockQuote(
+                symbol=symbol,
+                name=info.get("shortName") or info.get("longName"),
+                price=price,
+                change=round(change, 4),
+                change_percent=round(change_pct, 2),
+                volume=info.get("regularMarketVolume", 0),
+                market_cap=info.get("marketCap"),
+                day_high=info.get("dayHigh"),
+                day_low=info.get("dayLow"),
+                open=info.get("open"),
+                previous_close=prev_close,
+                timestamp=datetime.utcnow(),
+                market=market,
+                source=DataSource.YFINANCE,
+            )
+        except Exception as e:
+            logger.error(f"YFinance quote error for {symbol}: {e}")
+            return None
+
+    @staticmethod
+    async def get_history(
+        symbol: str,
+        market: Market,
+        period: HistoryPeriod,
+        interval: HistoryInterval,
+    ) -> Optional[StockHistory]:
+        """Get historical data from yfinance."""
+        try:
+            import yfinance as yf
+
+            def fetch():
+                ticker = yf.Ticker(symbol)
+                df = ticker.history(period=period.value, interval=interval.value)
+                return df
+
+            df = await run_in_executor(fetch)
+            if df is None or df.empty:
+                return None
+
+            # Drop rows with NaN OHLC values (common in 1m data)
+            df = df.dropna(subset=["Open", "High", "Low", "Close"])
+
+            bars = []
+            for idx, row in df.iterrows():
+                bars.append(
+                    OHLCVBar(
+                        date=idx.to_pydatetime(),
+                        open=round(row["Open"], 4),
+                        high=round(row["High"], 4),
+                        low=round(row["Low"], 4),
+                        close=round(row["Close"], 4),
+                        volume=int(row["Volume"]),
+                    )
+                )
+
+            return StockHistory(
+                symbol=symbol,
+                interval=interval,
+                bars=bars,
+                market=market,
+                source=DataSource.YFINANCE,
+            )
+        except Exception as e:
+            logger.error(f"YFinance history error for {symbol}: {e}")
+            return None
+
+    @staticmethod
+    async def get_info(symbol: str, market: Market) -> Optional[StockInfo]:
+        """Get company info from yfinance."""
+        try:
+            import yfinance as yf
+
+            def fetch():
+                ticker = yf.Ticker(symbol)
+                return ticker.info
+
+            info = await run_in_executor(fetch)
+            if not info or not info.get("shortName"):
+                return None
+
+            return StockInfo(
+                symbol=symbol,
+                name=info.get("shortName") or info.get("longName", ""),
+                description=info.get("longBusinessSummary"),
+                sector=info.get("sector"),
+                industry=info.get("industry"),
+                website=info.get("website"),
+                employees=info.get("fullTimeEmployees"),
+                market_cap=info.get("marketCap"),
+                currency=info.get("currency", "USD"),
+                exchange=info.get("exchange", ""),
+                market=market,
+                source=DataSource.YFINANCE,
+            )
+        except Exception as e:
+            logger.error(f"YFinance info error for {symbol}: {e}")
+            return None
+
+    @staticmethod
+    async def get_financials(
+        symbol: str, market: Market
+    ) -> Optional[StockFinancials]:
+        """Get financial data from yfinance."""
+        try:
+            import yfinance as yf
+
+            def fetch():
+                ticker = yf.Ticker(symbol)
+                return ticker.info
+
+            info = await run_in_executor(fetch)
+            if not info:
+                return None
+
+            # If dividendYield is None but payoutRatio is 0, the stock pays no dividends
+            dividend_yield = info.get("dividendYield")
+            if dividend_yield is None and info.get("payoutRatio") == 0:
+                dividend_yield = 0.0
+
+            dividend_rate = info.get("dividendRate")
+            if dividend_rate is None and info.get("payoutRatio") == 0:
+                dividend_rate = 0.0
+
+            return StockFinancials(
+                symbol=symbol,
+                pe_ratio=info.get("trailingPE"),
+                forward_pe=info.get("forwardPE"),
+                eps=info.get("trailingEps"),
+                dividend_yield=dividend_yield,
+                dividend_rate=dividend_rate,
+                book_value=info.get("bookValue"),
+                price_to_book=info.get("priceToBook"),
+                revenue=info.get("totalRevenue"),
+                revenue_growth=info.get("revenueGrowth"),
+                net_income=info.get("netIncomeToCommon"),
+                profit_margin=info.get("profitMargins"),
+                gross_margin=info.get("grossMargins"),
+                operating_margin=info.get("operatingMargins"),
+                roe=info.get("returnOnEquity"),
+                roa=info.get("returnOnAssets"),
+                debt_to_equity=info.get("debtToEquity"),
+                current_ratio=info.get("currentRatio"),
+                eps_growth=info.get("earningsQuarterlyGrowth"),
+                payout_ratio=info.get("payoutRatio"),
+                market=market,
+                source=DataSource.YFINANCE,
+            )
+        except Exception as e:
+            logger.error(f"YFinance financials error for {symbol}: {e}")
+            return None
+
+    @staticmethod
+    async def search(query: str) -> List[SearchResult]:
+        """Search stocks using yfinance."""
+        try:
+            import yfinance as yf
+
+            def fetch():
+                # yfinance doesn't have a proper search API
+                # Try to get ticker info directly
+                ticker = yf.Ticker(query.upper())
+                info = ticker.info
+                if info and info.get("shortName"):
+                    return [
+                        {
+                            "symbol": query.upper(),
+                            "name": info.get("shortName", ""),
+                            "exchange": info.get("exchange", ""),
+                        }
+                    ]
+                return []
+
+            results = await run_in_executor(fetch)
+            return [
+                SearchResult(
+                    symbol=r["symbol"],
+                    name=r["name"],
+                    exchange=r["exchange"],
+                    market=Market.US,
+                )
+                for r in results
+            ]
+        except Exception as e:
+            logger.error(f"YFinance search error for {query}: {e}")
+            return []
+
+
+class AKShareProvider:
+    """AKShare data provider for A-shares and HK stocks."""
+
+    @staticmethod
+    async def get_quote_cn(symbol: str, market: Market) -> Optional[StockQuote]:
+        """Get real-time quote for A-shares from akshare."""
+        try:
+            import akshare as ak
+
+            code = normalize_symbol(symbol, market)
+
+            def fetch():
+                # Get real-time quote for A-shares
+                df = ak.stock_zh_a_spot_em()
+                row = df[df["代码"] == code]
+                if row.empty:
+                    return None
+                return row.iloc[0].to_dict()
+
+            data = await run_in_executor(fetch)
+            if not data:
+                return None
+
+            price = float(data.get("最新价", 0))
+            change = float(data.get("涨跌额", 0))
+            change_pct = float(data.get("涨跌幅", 0))
+
+            return StockQuote(
+                symbol=symbol,
+                name=data.get("名称"),
+                price=price,
+                change=round(change, 4),
+                change_percent=round(change_pct, 2),
+                volume=int(data.get("成交量", 0)),
+                market_cap=float(data.get("总市值", 0)) if data.get("总市值") else None,
+                day_high=float(data.get("最高", 0)) if data.get("最高") else None,
+                day_low=float(data.get("最低", 0)) if data.get("最低") else None,
+                open=float(data.get("今开", 0)) if data.get("今开") else None,
+                previous_close=float(data.get("昨收", 0)) if data.get("昨收") else None,
+                timestamp=datetime.utcnow(),
+                market=market,
+                source=DataSource.AKSHARE,
+            )
+        except Exception as e:
+            logger.error(f"AKShare CN quote error for {symbol}: {e}")
+            return None
+
+    @staticmethod
+    async def get_quote_hk(symbol: str) -> Optional[StockQuote]:
+        """Get real-time quote for HK stocks from akshare."""
+        try:
+            import akshare as ak
+
+            code = normalize_symbol(symbol, Market.HK)
+
+            def fetch():
+                # Get HK stock real-time data
+                df = ak.stock_hk_spot_em()
+                row = df[df["代码"] == code]
+                if row.empty:
+                    return None
+                return row.iloc[0].to_dict()
+
+            data = await run_in_executor(fetch)
+            if not data:
+                return None
+
+            price = float(data.get("最新价", 0))
+            change = float(data.get("涨跌额", 0))
+            change_pct = float(data.get("涨跌幅", 0))
+
+            return StockQuote(
+                symbol=symbol,
+                name=data.get("名称"),
+                price=price,
+                change=round(change, 4),
+                change_percent=round(change_pct, 2),
+                volume=int(data.get("成交量", 0)),
+                market_cap=float(data.get("总市值", 0)) if data.get("总市值") else None,
+                day_high=float(data.get("最高", 0)) if data.get("最高") else None,
+                day_low=float(data.get("最低", 0)) if data.get("最低") else None,
+                open=float(data.get("今开", 0)) if data.get("今开") else None,
+                previous_close=float(data.get("昨收", 0)) if data.get("昨收") else None,
+                timestamp=datetime.utcnow(),
+                market=Market.HK,
+                source=DataSource.AKSHARE,
+            )
+        except Exception as e:
+            logger.error(f"AKShare HK quote error for {symbol}: {e}")
+            return None
+
+    @staticmethod
+    async def get_history_cn(
+        symbol: str,
+        market: Market,
+        period: HistoryPeriod,
+        interval: HistoryInterval,
+    ) -> Optional[StockHistory]:
+        """Get historical data for A-shares from akshare."""
+        try:
+            import akshare as ak
+
+            code = normalize_symbol(symbol, market)
+
+            # Intraday intervals: use ak.stock_zh_a_minute() (Sina Finance source)
+            intraday_period = {
+                HistoryInterval.ONE_MINUTE: "1",
+                HistoryInterval.FIVE_MINUTES: "5",
+                HistoryInterval.FIFTEEN_MINUTES: "15",
+                HistoryInterval.HOURLY: "60",
+            }.get(interval)
+
+            if intraday_period is not None:
+                # stock_zh_a_minute needs sh/sz prefix
+                sina_symbol = f"{'sh' if market == Market.SH else 'sz'}{code}"
+
+                def fetch_minute():
+                    return ak.stock_zh_a_minute(
+                        symbol=sina_symbol,
+                        period=intraday_period,
+                        adjust="qfq",
+                    )
+
+                df = await run_in_executor(fetch_minute)
+                if df is None or df.empty:
+                    return None
+
+                import pandas as pd
+
+                # Drop rows with NaN OHLC values
+                df = df.dropna(subset=["open", "high", "low", "close"])
+
+                bars = []
+                for _, row in df.iterrows():
+                    date_val = row["day"]
+                    if isinstance(date_val, str):
+                        date_val = datetime.strptime(date_val, "%Y-%m-%d %H:%M:%S")
+                    bars.append(
+                        OHLCVBar(
+                            date=date_val,
+                            open=round(float(row["open"]), 4),
+                            high=round(float(row["high"]), 4),
+                            low=round(float(row["low"]), 4),
+                            close=round(float(row["close"]), 4),
+                            volume=int(row["volume"]),
+                        )
+                    )
+
+                # Filter bars by period (the API returns recent data, trim to requested range)
+                if bars:
+                    period_days_map = {
+                        HistoryPeriod.ONE_DAY: 1,
+                        HistoryPeriod.FIVE_DAYS: 5,
+                    }
+                    max_days = period_days_map.get(period, 5)
+                    cutoff = datetime.now() - timedelta(days=max_days + 1)
+                    bars = [b for b in bars if b.date >= cutoff]
+
+                return StockHistory(
+                    symbol=symbol,
+                    interval=interval,
+                    bars=bars,
+                    market=market,
+                    source=DataSource.AKSHARE,
+                ) if bars else None
+
+            # Daily/weekly/monthly: use ak.stock_zh_a_hist() (EastMoney source)
+            ak_period = {
+                HistoryInterval.DAILY: "daily",
+                HistoryInterval.WEEKLY: "weekly",
+                HistoryInterval.MONTHLY: "monthly",
+            }.get(interval, "daily")
+
+            # Calculate date range based on period
+            end_date = datetime.now()
+            period_days = {
+                HistoryPeriod.ONE_DAY: 1,
+                HistoryPeriod.FIVE_DAYS: 5,
+                HistoryPeriod.ONE_MONTH: 30,
+                HistoryPeriod.THREE_MONTHS: 90,
+                HistoryPeriod.SIX_MONTHS: 180,
+                HistoryPeriod.ONE_YEAR: 365,
+                HistoryPeriod.TWO_YEARS: 730,
+                HistoryPeriod.FIVE_YEARS: 1825,
+                HistoryPeriod.MAX: 3650,
+            }
+            start_date = end_date - timedelta(days=period_days.get(period, 365))
+
+            def fetch():
+                df = ak.stock_zh_a_hist(
+                    symbol=code,
+                    period=ak_period,
+                    start_date=start_date.strftime("%Y%m%d"),
+                    end_date=end_date.strftime("%Y%m%d"),
+                    adjust="qfq",  # Forward adjust
+                )
+                return df
+
+            df = await run_in_executor(fetch)
+            if df is None or df.empty:
+                return None
+
+            bars = []
+            for _, row in df.iterrows():
+                date_val = row["日期"]
+                if isinstance(date_val, str):
+                    date_val = datetime.strptime(date_val, "%Y-%m-%d")
+                bars.append(
+                    OHLCVBar(
+                        date=date_val,
+                        open=round(float(row["开盘"]), 4),
+                        high=round(float(row["最高"]), 4),
+                        low=round(float(row["最低"]), 4),
+                        close=round(float(row["收盘"]), 4),
+                        volume=int(row["成交量"]),
+                    )
+                )
+
+            return StockHistory(
+                symbol=symbol,
+                interval=interval,
+                bars=bars,
+                market=market,
+                source=DataSource.AKSHARE,
+            )
+        except Exception as e:
+            logger.error(f"AKShare CN history error for {symbol}: {e}")
+            return None
+
+    @staticmethod
+    async def get_history_hk(
+        symbol: str,
+        period: HistoryPeriod,
+        interval: HistoryInterval,
+    ) -> Optional[StockHistory]:
+        """Get historical data for HK stocks from akshare."""
+        try:
+            import akshare as ak
+
+            code = normalize_symbol(symbol, Market.HK)
+
+            def fetch():
+                df = ak.stock_hk_hist(
+                    symbol=code,
+                    period="daily",  # akshare HK only supports daily
+                    adjust="qfq",
+                )
+                return df
+
+            df = await run_in_executor(fetch)
+            if df is None or df.empty:
+                return None
+
+            # Filter by period
+            period_days = {
+                HistoryPeriod.ONE_MONTH: 30,
+                HistoryPeriod.THREE_MONTHS: 90,
+                HistoryPeriod.SIX_MONTHS: 180,
+                HistoryPeriod.ONE_YEAR: 365,
+                HistoryPeriod.TWO_YEARS: 730,
+                HistoryPeriod.FIVE_YEARS: 1825,
+                HistoryPeriod.MAX: 9999,
+            }
+            cutoff = datetime.now() - timedelta(days=period_days.get(period, 365))
+
+            bars = []
+            for _, row in df.iterrows():
+                date_val = row["日期"]
+                if isinstance(date_val, str):
+                    date_val = datetime.strptime(date_val, "%Y-%m-%d")
+                if date_val < cutoff:
+                    continue
+
+                bars.append(
+                    OHLCVBar(
+                        date=date_val,
+                        open=round(float(row["开盘"]), 4),
+                        high=round(float(row["最高"]), 4),
+                        low=round(float(row["最低"]), 4),
+                        close=round(float(row["收盘"]), 4),
+                        volume=int(row["成交量"]),
+                    )
+                )
+
+            # Resample for weekly/monthly if needed
+            if interval != HistoryInterval.DAILY and bars:
+                bars = AKShareProvider._resample_bars(bars, interval)
+
+            return StockHistory(
+                symbol=symbol,
+                interval=interval,
+                bars=bars,
+                market=Market.HK,
+                source=DataSource.AKSHARE,
+            )
+        except Exception as e:
+            logger.error(f"AKShare HK history error for {symbol}: {e}")
+            return None
+
+    @staticmethod
+    def _resample_bars(
+        bars: List[OHLCVBar], interval: HistoryInterval
+    ) -> List[OHLCVBar]:
+        """Resample daily bars to weekly or monthly."""
+        if not bars:
+            return bars
+
+        # Create DataFrame for resampling
+        data = {
+            "date": [b.date for b in bars],
+            "open": [b.open for b in bars],
+            "high": [b.high for b in bars],
+            "low": [b.low for b in bars],
+            "close": [b.close for b in bars],
+            "volume": [b.volume for b in bars],
+        }
+        df = pd.DataFrame(data)
+        df.set_index("date", inplace=True)
+
+        # Resample
+        freq = "W" if interval == HistoryInterval.WEEKLY else "ME"
+        resampled = df.resample(freq).agg(
+            {
+                "open": "first",
+                "high": "max",
+                "low": "min",
+                "close": "last",
+                "volume": "sum",
+            }
+        ).dropna()
+
+        result = []
+        for idx, row in resampled.iterrows():
+            result.append(
+                OHLCVBar(
+                    date=idx.to_pydatetime(),
+                    open=round(row["open"], 4),
+                    high=round(row["high"], 4),
+                    low=round(row["low"], 4),
+                    close=round(row["close"], 4),
+                    volume=int(row["volume"]),
+                )
+            )
+        return result
+
+    @staticmethod
+    async def get_info_cn(symbol: str, market: Market) -> Optional[StockInfo]:
+        """Get company info for A-shares from akshare."""
+        try:
+            import akshare as ak
+
+            code = normalize_symbol(symbol, market)
+
+            def fetch():
+                # Get basic company info
+                df = ak.stock_individual_info_em(symbol=code)
+                if df is None or df.empty:
+                    return None
+                # Convert to dict
+                info = {}
+                for _, row in df.iterrows():
+                    info[row["item"]] = row["value"]
+                return info
+
+            info = await run_in_executor(fetch)
+            if not info:
+                return None
+
+            return StockInfo(
+                symbol=symbol,
+                name=info.get("股票简称", ""),
+                description=info.get("经营范围"),
+                sector=info.get("行业"),
+                industry=info.get("行业"),
+                website=info.get("公司网址"),
+                employees=int(info.get("员工人数", 0)) if info.get("员工人数") else None,
+                market_cap=float(info.get("总市值", 0)) if info.get("总市值") else None,
+                currency="CNY",
+                exchange="SSE" if market == Market.SH else "SZSE",
+                market=market,
+                source=DataSource.AKSHARE,
+            )
+        except Exception as e:
+            logger.error(f"AKShare CN info error for {symbol}: {e}")
+            return None
+
+    @staticmethod
+    async def get_financials_cn(
+        symbol: str, market: Market
+    ) -> Optional[StockFinancials]:
+        """Get financial data for A-shares from akshare."""
+        try:
+            import akshare as ak
+
+            code = normalize_symbol(symbol, market)
+
+            def fetch():
+                # Get financial indicators
+                df = ak.stock_a_indicator_lg(symbol=code)
+                if df is None or df.empty:
+                    return None
+                # Get latest row
+                return df.iloc[-1].to_dict()
+
+            data = await run_in_executor(fetch)
+            if not data:
+                return None
+
+            return StockFinancials(
+                symbol=symbol,
+                pe_ratio=float(data.get("pe", 0)) if data.get("pe") else None,
+                forward_pe=None,
+                eps=float(data.get("eps", 0)) if data.get("eps") else None,
+                dividend_yield=float(data.get("dv_ratio", 0)) if data.get("dv_ratio") else None,
+                dividend_rate=None,
+                book_value=float(data.get("bps", 0)) if data.get("bps") else None,
+                price_to_book=float(data.get("pb", 0)) if data.get("pb") else None,
+                revenue=float(data.get("total_revenue", 0)) if data.get("total_revenue") else None,
+                revenue_growth=None,
+                net_income=float(data.get("net_profit", 0)) if data.get("net_profit") else None,
+                profit_margin=None,
+                gross_margin=float(data.get("gross_profit_margin", 0)) if data.get("gross_profit_margin") else None,
+                operating_margin=None,
+                roe=float(data.get("roe", 0)) if data.get("roe") else None,
+                roa=None,
+                debt_to_equity=None,
+                current_ratio=None,
+                eps_growth=None,
+                payout_ratio=None,
+                market=market,
+                source=DataSource.AKSHARE,
+            )
+        except Exception as e:
+            logger.error(f"AKShare CN financials error for {symbol}: {e}")
+            return None
+
+    @staticmethod
+    async def search_cn(query: str) -> List[SearchResult]:
+        """Search A-share stocks."""
+        try:
+            import akshare as ak
+
+            def fetch():
+                # Get all A-share stock list
+                df = ak.stock_zh_a_spot_em()
+                # Filter by name or code
+                mask = df["名称"].str.contains(query, na=False) | df["代码"].str.contains(query, na=False)
+                return df[mask].head(20).to_dict("records")
+
+            results = await run_in_executor(fetch)
+
+            return [
+                SearchResult(
+                    symbol=f"{r['代码']}.{'SS' if r['代码'].startswith('6') else 'SZ'}",
+                    name=r["名称"],
+                    exchange="SSE" if r["代码"].startswith("6") else "SZSE",
+                    market=Market.SH if r["代码"].startswith("6") else Market.SZ,
+                )
+                for r in results
+            ]
+        except Exception as e:
+            logger.error(f"AKShare CN search error for {query}: {e}")
+            return []
+
+    @staticmethod
+    async def search_hk(query: str) -> List[SearchResult]:
+        """Search HK stocks."""
+        try:
+            import akshare as ak
+
+            def fetch():
+                # Get HK stock list
+                df = ak.stock_hk_spot_em()
+                # Filter by name or code
+                mask = df["名称"].str.contains(query, na=False) | df["代码"].str.contains(query, na=False)
+                return df[mask].head(20).to_dict("records")
+
+            results = await run_in_executor(fetch)
+
+            return [
+                SearchResult(
+                    symbol=f"{r['代码']}.HK",
+                    name=r["名称"],
+                    exchange="HKEX",
+                    market=Market.HK,
+                )
+                for r in results
+            ]
+        except Exception as e:
+            logger.error(f"AKShare HK search error for {query}: {e}")
+            return []
+
+
+class TushareProvider:
+    """Tushare data provider for A-shares (fallback)."""
+
+    _token: Optional[str] = None
+
+    @classmethod
+    def is_available(cls) -> bool:
+        """Check if Tushare API key is available."""
+        if cls._token is None:
+            cls._token = os.environ.get("TUSHARE_TOKEN", "")
+        return bool(cls._token)
+
+    @classmethod
+    async def get_quote(cls, symbol: str, market: Market) -> Optional[StockQuote]:
+        """Get quote from Tushare - skip if no API key."""
+        if not cls.is_available():
+            logger.debug("Tushare API key not configured, skipping")
+            return None
+
+        try:
+            import tushare as ts
+
+            ts.set_token(cls._token)
+            pro = ts.pro_api()
+
+            code = normalize_symbol(symbol, market)
+            ts_code = f"{code}.{'SH' if market == Market.SH else 'SZ'}"
+
+            def fetch():
+                df = pro.daily(ts_code=ts_code, start_date=(datetime.now() - timedelta(days=5)).strftime("%Y%m%d"))
+                if df is None or df.empty:
+                    return None
+                return df.iloc[0].to_dict()
+
+            data = await run_in_executor(fetch)
+            if not data:
+                return None
+
+            price = float(data.get("close", 0))
+            prev_close = float(data.get("pre_close", price))
+            change = price - prev_close
+            change_pct = float(data.get("pct_chg", 0))
+
+            return StockQuote(
+                symbol=symbol,
+                name=None,  # Tushare daily doesn't include name
+                price=price,
+                change=round(change, 4),
+                change_percent=round(change_pct, 2),
+                volume=int(data.get("vol", 0) * 100),  # Tushare uses lots
+                market_cap=None,
+                day_high=float(data.get("high", 0)) if data.get("high") else None,
+                day_low=float(data.get("low", 0)) if data.get("low") else None,
+                open=float(data.get("open", 0)) if data.get("open") else None,
+                previous_close=prev_close,
+                timestamp=datetime.utcnow(),
+                market=market,
+                source=DataSource.TUSHARE,
+            )
+        except Exception as e:
+            logger.error(f"Tushare quote error for {symbol}: {e}")
+            return None
+
+
+class StockService:
+    """
+    Multi-source stock data service.
+
+    Data source strategy:
+    - US stocks: yfinance (primary)
+    - HK stocks: AKShare (primary), yfinance (fallback)
+    - A-shares: AKShare (primary), Tushare (fallback, requires API key)
+    """
+
+    def __init__(self, aggregator: Optional[DataAggregator] = None):
+        self._aggregator = aggregator
+
+    async def _get_aggregator(self) -> DataAggregator:
+        """Get data aggregator, initialize if needed."""
+        if self._aggregator is None:
+            self._aggregator = await get_data_aggregator()
+        return self._aggregator
+
+    async def get_quote(
+        self,
+        symbol: str,
+        force_refresh: bool = False,
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Get real-time quote for a stock.
+
+        Args:
+            symbol: Stock symbol (AAPL, 0700.HK, 600519.SS, etc.)
+            force_refresh: Force fetch from source, skip cache
+
+        Returns:
+            Quote data as dict or None if unavailable
+        """
+        market = detect_market(symbol)
+        aggregator = await self._get_aggregator()
+
+        async def fetch_quote() -> Optional[Dict[str, Any]]:
+            quote: Optional[StockQuote] = None
+
+            if market == Market.US:
+                # US: yfinance only
+                quote = await YFinanceProvider.get_quote(symbol, market)
+
+            elif market == Market.HK:
+                # HK: AKShare primary, yfinance fallback
+                quote = await AKShareProvider.get_quote_hk(symbol)
+                if quote is None:
+                    logger.info(f"HK fallback to yfinance for {symbol}")
+                    quote = await YFinanceProvider.get_quote(symbol, market)
+
+            else:
+                # A-shares: AKShare primary, Tushare fallback, yfinance fallback
+                quote = await AKShareProvider.get_quote_cn(symbol, market)
+                if quote is None and TushareProvider.is_available():
+                    logger.info(f"CN fallback to Tushare for {symbol}")
+                    quote = await TushareProvider.get_quote(symbol, market)
+                if quote is None:
+                    logger.info(f"CN fallback to yfinance for {symbol} quote")
+                    quote = await YFinanceProvider.get_quote(symbol, market)
+
+            return quote.to_dict() if quote else None
+
+        return await aggregator.get_data(
+            symbol=symbol,
+            data_type=DataType.QUOTE,
+            fetch_func=fetch_quote,
+            force_refresh=force_refresh,
+        )
+
+    async def get_history(
+        self,
+        symbol: str,
+        period: HistoryPeriod = HistoryPeriod.ONE_YEAR,
+        interval: HistoryInterval = HistoryInterval.DAILY,
+        force_refresh: bool = False,
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Get historical OHLCV data.
+
+        Args:
+            symbol: Stock symbol
+            period: Time period (1mo, 3mo, 6mo, 1y, 2y, 5y, max)
+            interval: Data interval (1d, 1wk, 1mo)
+            force_refresh: Force fetch from source
+
+        Returns:
+            Historical data as dict or None if unavailable
+        """
+        market = detect_market(symbol)
+        aggregator = await self._get_aggregator()
+
+        # Build params hash for cache key uniqueness
+        params_hash = hashlib.md5(f"{period.value}:{interval.value}".encode()).hexdigest()[:8]
+
+        async def fetch_history() -> Optional[Dict[str, Any]]:
+            history: Optional[StockHistory] = None
+
+            if market == Market.US:
+                history = await YFinanceProvider.get_history(symbol, market, period, interval)
+
+            elif market == Market.HK:
+                history = await AKShareProvider.get_history_hk(symbol, period, interval)
+                if history is None:
+                    logger.info(f"HK fallback to yfinance for {symbol} history")
+                    history = await YFinanceProvider.get_history(symbol, market, period, interval)
+
+            else:
+                history = await AKShareProvider.get_history_cn(symbol, market, period, interval)
+                if history is None:
+                    logger.info(f"CN fallback to yfinance for {symbol} history")
+                    # yfinance for CN uses different symbol format
+                    yf_symbol = f"{normalize_symbol(symbol, market)}.{'SS' if market == Market.SH else 'SZ'}"
+                    history = await YFinanceProvider.get_history(yf_symbol, market, period, interval)
+
+            return history.to_dict() if history else None
+
+        return await aggregator.get_data(
+            symbol=symbol,
+            data_type=DataType.HISTORY,
+            fetch_func=fetch_history,
+            params_hash=params_hash,
+            force_refresh=force_refresh,
+        )
+
+    async def get_info(
+        self,
+        symbol: str,
+        force_refresh: bool = False,
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Get company information.
+
+        Args:
+            symbol: Stock symbol
+            force_refresh: Force fetch from source
+
+        Returns:
+            Company info as dict or None if unavailable
+        """
+        market = detect_market(symbol)
+        aggregator = await self._get_aggregator()
+
+        async def fetch_info() -> Optional[Dict[str, Any]]:
+            info: Optional[StockInfo] = None
+
+            if market == Market.US:
+                info = await YFinanceProvider.get_info(symbol, market)
+
+            elif market == Market.HK:
+                # HK: Try yfinance first (better English info)
+                info = await YFinanceProvider.get_info(symbol, market)
+
+            else:
+                info = await AKShareProvider.get_info_cn(symbol, market)
+                if info is None:
+                    logger.info(f"CN fallback to yfinance for {symbol} info")
+                    yf_symbol = f"{normalize_symbol(symbol, market)}.{'SS' if market == Market.SH else 'SZ'}"
+                    info = await YFinanceProvider.get_info(yf_symbol, market)
+
+            return info.to_dict() if info else None
+
+        return await aggregator.get_data(
+            symbol=symbol,
+            data_type=DataType.INFO,
+            fetch_func=fetch_info,
+            force_refresh=force_refresh,
+        )
+
+    async def get_financials(
+        self,
+        symbol: str,
+        force_refresh: bool = False,
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Get financial metrics.
+
+        Args:
+            symbol: Stock symbol
+            force_refresh: Force fetch from source
+
+        Returns:
+            Financial data as dict or None if unavailable
+        """
+        market = detect_market(symbol)
+        aggregator = await self._get_aggregator()
+
+        async def fetch_financials() -> Optional[Dict[str, Any]]:
+            financials: Optional[StockFinancials] = None
+
+            if market == Market.US:
+                financials = await YFinanceProvider.get_financials(symbol, market)
+
+            elif market == Market.HK:
+                financials = await YFinanceProvider.get_financials(symbol, market)
+
+            else:
+                financials = await AKShareProvider.get_financials_cn(symbol, market)
+                if financials is None:
+                    logger.info(f"CN fallback to yfinance for {symbol} financials")
+                    yf_symbol = f"{normalize_symbol(symbol, market)}.{'SS' if market == Market.SH else 'SZ'}"
+                    financials = await YFinanceProvider.get_financials(yf_symbol, market)
+
+            return financials.to_dict() if financials else None
+
+        return await aggregator.get_data(
+            symbol=symbol,
+            data_type=DataType.FINANCIAL,
+            fetch_func=fetch_financials,
+            force_refresh=force_refresh,
+        )
+
+    async def search(
+        self,
+        query: str,
+        markets: Optional[List[Market]] = None,
+    ) -> List[Dict[str, Any]]:
+        """
+        Search for stocks across markets.
+
+        Args:
+            query: Search query (symbol or name)
+            markets: Markets to search (default: all)
+
+        Returns:
+            List of search results
+        """
+        if not query or len(query) < 1:
+            return []
+
+        if markets is None:
+            markets = [Market.US, Market.HK, Market.SH, Market.SZ]
+
+        aggregator = await self._get_aggregator()
+
+        # Use cache for search results
+        cache_key = hashlib.md5(f"{query}:{','.join(m.value for m in markets)}".encode()).hexdigest()[:12]
+
+        async def fetch_search() -> List[Dict[str, Any]]:
+            results: List[SearchResult] = []
+            tasks = []
+
+            if Market.US in markets:
+                tasks.append(YFinanceProvider.search(query))
+
+            if Market.HK in markets:
+                tasks.append(AKShareProvider.search_hk(query))
+
+            if Market.SH in markets or Market.SZ in markets:
+                tasks.append(AKShareProvider.search_cn(query))
+
+            all_results = await asyncio.gather(*tasks, return_exceptions=True)
+
+            for result in all_results:
+                if isinstance(result, Exception):
+                    logger.error(f"Search error: {result}")
+                    continue
+                results.extend(result)
+
+            # Filter by requested markets
+            results = [r for r in results if r.market in markets]
+
+            return [r.to_dict() for r in results[:50]]  # Limit results
+
+        return await aggregator.get_data(
+            symbol=cache_key,
+            data_type=DataType.SEARCH,
+            fetch_func=fetch_search,
+        ) or []
+
+    async def get_batch_quotes(
+        self,
+        symbols: List[str],
+    ) -> Dict[str, Optional[Dict[str, Any]]]:
+        """
+        Get quotes for multiple symbols efficiently.
+
+        Args:
+            symbols: List of stock symbols
+
+        Returns:
+            Dict mapping symbol to quote data
+        """
+        aggregator = await self._get_aggregator()
+
+        async def fetch_single_quote(symbol: str) -> Optional[Dict[str, Any]]:
+            return await self.get_quote(symbol)
+
+        return await aggregator.get_batch_data(
+            symbols=symbols,
+            data_type=DataType.QUOTE,
+            fetch_func=fetch_single_quote,
+        )
+
+
+# Singleton instance
+_stock_service: Optional[StockService] = None
+_stock_service_lock = asyncio.Lock()
+
+
+async def get_stock_service() -> StockService:
+    """Get singleton stock service instance."""
+    global _stock_service
+    if _stock_service is None:
+        async with _stock_service_lock:
+            if _stock_service is None:  # double-check after acquiring lock
+                _stock_service = StockService()
+    return _stock_service
+
+
+async def cleanup_stock_service() -> None:
+    """Cleanup stock service resources."""
+    global _stock_service
+    if _stock_service is not None:
+        _stock_service = None
+    # Shutdown the thread pool executor
+    await shutdown_executor()

@@ -1,0 +1,98 @@
+# Git
+.git/
+.gitignore
+.gitattributes
+
+# Environment files (secrets)
+.env
+.env.*
+!.env.example
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+.venv/
+venv/
+ENV/
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+.tox/
+.nox/
+htmlcov/
+.coverage
+*.egg-info/
+dist/
+build/
+
+# Node.js
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+.npm
+.eslintcache
+.pnpm-store/
+
+# Build outputs (will be rebuilt in container)
+frontend/dist/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Documentation (not needed in runtime)
+docs/
+*.md
+!requirements.txt
+
+# Tests (not needed in production image)
+**/tests/
+**/test_*.py
+**/*_test.py
+pytest.ini
+setup.cfg
+conftest.py
+
+# Development files
+docker-compose.override.yml
+docker-compose.*.yml
+!docker-compose.yml
+Makefile
+Taskfile.yml
+
+# Logs
+logs/
+*.log
+
+# SSL certificates (mounted at runtime)
+nginx/ssl/
+
+# Celery schedule (generated at runtime)
+celerybeat-schedule
+celerybeat.pid
+
+# Temporary files
+tmp/
+temp/
+*.tmp
+*.bak
+scratchpad/
+
+# Project-specific
+CLAUDE.md
+review-reports/
+*.local.yml
+*.local.yaml
+
+# Alembic versions (keep migrations, ignore temp files)
+backend/alembic/versions/__pycache__/

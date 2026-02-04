@@ -1,0 +1,108 @@
+# Environment files
+.env
+.env.local
+.env.*.local
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+.venv/
+venv/
+ENV/
+
+# Node.js
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.npm
+.eslintcache
+.pnpm-store/
+
+# Build outputs
+frontend/dist/
+backend/dist/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Docker
+docker-compose.override.yml
+
+# Logs
+logs/
+*.log
+
+# Database
+*.db
+*.sqlite
+
+# SSL certificates
+nginx/ssl/
+
+# Coverage reports
+htmlcov/
+.coverage
+.coverage.*
+coverage.xml
+*.cover
+
+# Test cache
+.pytest_cache/
+.tox/
+.nox/
+
+# Celery
+celerybeat-schedule
+celerybeat.pid
+
+# Temporary files
+tmp/
+temp/
+*.tmp
+*.bak
+
+# Type checking / Linting cache
+.mypy_cache/
+.ruff_cache/
+.pytype/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Claude Code scratchpad
+scratchpad/
+
+# Project-specific ignores
+CLAUDE.md
+docker-compose.allinone.yml
+Dockerfile.allinone
+review-reports/
+*.local.yml
+*.local.yaml

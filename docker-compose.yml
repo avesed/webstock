@@ -1,0 +1,161 @@
+
+# =============================================================================
+# WebStock Docker Compose - 2 Services: PostgreSQL + App
+# =============================================================================
+
+services:
+  # ===========================================================================
+  # PostgreSQL Database (pgvector)
+  # ===========================================================================
+  postgres:
+    image: pgvector/pgvector:pg16
+    container_name: webstock-postgres
+    environment:
+      - POSTGRES_USER=webstock
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-webstock}
+      - POSTGRES_DB=webstock
+      - PGDATA=/var/lib/postgresql/data/pgdata
+    command:
+      - "postgres"
+      - "-c"
+      - "shared_buffers=512MB"
+      - "-c"
+      - "effective_cache_size=1536MB"
+      - "-c"
+      - "maintenance_work_mem=256MB"
+      - "-c"
+      - "checkpoint_completion_target=0.9"
+      - "-c"
+      - "wal_buffers=16MB"
+      - "-c"
+      - "default_statistics_target=100"
+      - "-c"
+      - "random_page_cost=1.1"
+      - "-c"
+      - "effective_io_concurrency=200"
+      - "-c"
+      - "work_mem=8MB"
+      - "-c"
+      - "min_wal_size=1GB"
+      - "-c"
+      - "max_wal_size=4GB"
+      - "-c"
+      - "max_worker_processes=4"
+      - "-c"
+      - "max_parallel_workers_per_gather=2"
+      - "-c"
+      - "max_parallel_workers=4"
+      - "-c"
+      - "max_connections=150"
+      - "-c"
+      - "jit=off"
+      - "-c"
+      - "log_statement=none"
+      - "-c"
+      - "log_min_duration_statement=1000"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./init-db.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U webstock -d webstock"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    restart: unless-stopped
+    networks:
+      - webstock-network
+    deploy:
+      resources:
+        limits:
+          cpus: "2"
+          memory: 2G
+        reservations:
+          cpus: "0.5"
+          memory: 1G
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "50m"
+        max-file: "5"
+
+  # ===========================================================================
+  # App (Redis + Backend + Frontend + Worker + Beat + Nginx)
+  # ===========================================================================
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: webstock-app
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      - DATABASE_URL=postgresql+asyncpg://webstock:${POSTGRES_PASSWORD:-webstock}@postgres:5432/webstock?ssl=disable
+      - REDIS_URL=redis://127.0.0.1:6379/0
+      - CELERY_BROKER_URL=redis://127.0.0.1:6379/1
+      - CELERY_RESULT_BACKEND=redis://127.0.0.1:6379/2
+      - JWT_SECRET_KEY=${JWT_SECRET_KEY:-change-me-in-production}
+      - JWT_SECRET_KEY_PREVIOUS=${JWT_SECRET_KEY_PREVIOUS:-}
+      - DEBUG=${DEBUG:-false}
+      - ENVIRONMENT=${ENVIRONMENT:-production}
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      - OPENAI_API_BASE=${OPENAI_API_BASE:-}
+      - OPENAI_MODEL=${OPENAI_MODEL:-gpt-4o-mini}
+      - FINNHUB_API_KEY=${FINNHUB_API_KEY:-}
+      - TUSHARE_TOKEN=${TUSHARE_TOKEN:-}
+      - VAPID_PUBLIC_KEY=${VAPID_PUBLIC_KEY:-}
+      - VAPID_PRIVATE_KEY=${VAPID_PRIVATE_KEY:-}
+      - VAPID_CLAIMS_EMAIL=${VAPID_CLAIMS_EMAIL:-admin@webstock.local}
+      - SMTP_HOST=${SMTP_HOST:-}
+      - SMTP_PORT=${SMTP_PORT:-587}
+      - SMTP_USER=${SMTP_USER:-}
+      - SMTP_PASSWORD=${SMTP_PASSWORD:-}
+      - SMTP_FROM_EMAIL=${SMTP_FROM_EMAIL:-}
+    volumes:
+      - app_data:/app/data
+      - app_logs:/app/logs
+      - ./nginx/ssl:/etc/nginx/ssl:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+    networks:
+      - webstock-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://127.0.0.1/api/v1/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    deploy:
+      resources:
+        limits:
+          cpus: "4"
+          memory: 4G
+        reservations:
+          cpus: "1"
+          memory: 1G
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "50m"
+        max-file: "5"
+
+# =============================================================================
+# Networks
+# =============================================================================
+networks:
+  webstock-network:
+    driver: bridge
+
+# =============================================================================
+# Volumes
+# =============================================================================
+volumes:
+  postgres_data:
+    driver: local
+  app_data:
+    driver: local
+  app_logs:
+    driver: local
