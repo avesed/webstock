@@ -93,6 +93,7 @@ CLAUDE.md
 review-reports/
 *.local.yml
 *.local.yaml
+.claude/
 
 # Alembic versions (keep migrations, ignore temp files)
 backend/alembic/versions/__pycache__/
