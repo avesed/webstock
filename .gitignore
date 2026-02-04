@@ -106,3 +106,4 @@ Dockerfile.allinone
 review-reports/
 *.local.yml
 *.local.yaml
+.claude/
