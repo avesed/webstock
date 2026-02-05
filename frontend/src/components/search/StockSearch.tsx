@@ -20,13 +20,18 @@ interface StockSearchProps {
 
 const DEBOUNCE_MS = 300
 
-// Market flag/label mapping
-const marketLabels: Record<Market, { label: string; color: string }> = {
+// Market flag/label mapping (SH/SZ are Shanghai/Shenzhen A-shares)
+const marketLabels: Record<string, { label: string; color: string }> = {
   US: { label: 'US', color: 'bg-blue-500/10 text-blue-600 dark:text-blue-400' },
   HK: { label: 'HK', color: 'bg-red-500/10 text-red-600 dark:text-red-400' },
   CN: { label: 'CN', color: 'bg-amber-500/10 text-amber-600 dark:text-amber-400' },
+  SH: { label: 'SH', color: 'bg-amber-500/10 text-amber-600 dark:text-amber-400' },
+  SZ: { label: 'SZ', color: 'bg-amber-500/10 text-amber-600 dark:text-amber-400' },
   METAL: { label: 'METAL', color: 'bg-amber-100 text-amber-800 dark:bg-amber-900/30 dark:text-amber-200' },
 }
+
+// Default market label for unknown markets
+const defaultMarketLabel = { label: '??', color: 'bg-gray-500/10 text-gray-600 dark:text-gray-400' }
 
 export default function StockSearch({
   placeholder,
@@ -70,7 +75,13 @@ export default function StockSearch({
 
       try {
         const searchResults = await stockApi.search(trimmedQuery)
-        setResults(searchResults)
+        // Ensure each result has a valid market field
+        const normalizedResults = searchResults.map(r => ({
+          ...r,
+          market: (r.market || 'US') as Market,
+        }))
+        console.log('Search results:', normalizedResults)
+        setResults(normalizedResults)
         setHighlightedIndex(-1)
       } catch {
         setError('Failed to search stocks')
@@ -98,7 +109,7 @@ export default function StockSearch({
   // Handle keyboard navigation
   const handleKeyDown = useCallback(
     (event: React.KeyboardEvent) => {
-      const items = query.trim().length > 0 ? results : recentSearches.map((s) => ({ symbol: s, name: '', market: 'US' as Market, type: '' }))
+      const items = query.trim().length > 0 ? results : recentSearches.map((s) => ({ symbol: s, name: '', market: 'US' as Market, exchange: '' }))
       const itemCount = items.length
 
       switch (event.key) {
@@ -119,7 +130,7 @@ export default function StockSearch({
                 symbol: item.symbol,
                 name: 'name' in item ? item.name : '',
                 market: 'market' in item ? item.market : 'US',
-                type: 'type' in item ? item.type : '',
+                exchange: 'exchange' in item ? item.exchange : '',
               })
             }
           } else if (query.trim().length > 0) {
@@ -128,7 +139,7 @@ export default function StockSearch({
               symbol: query.trim().toUpperCase(),
               name: '',
               market: 'US',
-              type: '',
+              exchange: '',
             })
           }
           break
@@ -167,7 +178,7 @@ export default function StockSearch({
         symbol,
         name: '',
         market: 'US',
-        type: '',
+        exchange: '',
       })
     },
     [handleSelect]
@@ -255,14 +266,14 @@ export default function StockSearch({
                             <span
                               className={cn(
                                 'rounded px-1.5 py-0.5 text-[10px] font-medium',
-                                marketLabels[result.market].color
+                                (marketLabels[result.market] ?? defaultMarketLabel).color
                               )}
                             >
-                              {marketLabels[result.market].label}
+                              {(marketLabels[result.market] ?? defaultMarketLabel).label}
                             </span>
                           </div>
                           <p className="truncate text-sm text-muted-foreground">
-                            {result.name || result.type}
+                            {result.name || result.exchange}
                           </p>
                         </div>
                       </button>

@@ -89,14 +89,19 @@ export const authApi = {
 }
 
 // Stock API
+// Use query parameter routes for all symbols to handle special characters (e.g., GC=F for gold futures)
 export const stockApi = {
   getQuote: async (symbol: string): Promise<StockQuote> => {
-    const response = await apiClient.get<StockQuote>(`/stocks/${symbol}/quote`)
+    const response = await apiClient.get<StockQuote>('/stocks/quote', {
+      params: { symbol },
+    })
     return response.data
   },
 
   getInfo: async (symbol: string): Promise<StockInfo> => {
-    const response = await apiClient.get<StockInfo>(`/stocks/${symbol}/info`)
+    const response = await apiClient.get<StockInfo>('/stocks/info', {
+      params: { symbol },
+    })
     return response.data
   },
 
@@ -126,7 +131,9 @@ export const stockApi = {
       source: string
     }
 
-    const response = await apiClient.get<FinancialsResponse>(`/stocks/${symbol}/financials`)
+    const response = await apiClient.get<FinancialsResponse>('/stocks/financials', {
+      params: { symbol },
+    })
     const data = response.data
 
     // Map backend fields to frontend StockFinancials interface
@@ -187,8 +194,8 @@ export const stockApi = {
       source: string
     }
 
-    const response = await apiClient.get<HistoryResponse>(`/stocks/${symbol}/history`, {
-      params: { period, interval },
+    const response = await apiClient.get<HistoryResponse>('/stocks/history', {
+      params: { symbol, period, interval },
     })
 
     // Transform backend response to frontend CandlestickData format
@@ -210,10 +217,10 @@ export const stockApi = {
   },
 
   search: async (query: string): Promise<SearchResult[]> => {
-    const response = await apiClient.get<SearchResult[]>('/stocks/search', {
+    const response = await apiClient.get<{ results: SearchResult[]; count: number }>('/stocks/search', {
       params: { q: query },
     })
-    return response.data
+    return response.data.results
   },
 }
 

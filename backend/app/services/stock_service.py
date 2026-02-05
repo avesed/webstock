@@ -309,10 +309,10 @@ PRECIOUS_METALS = {
 
 # Metal search keywords mapping
 METAL_KEYWORDS = {
-    "GC=F": ["gold", "黄金", "gc", "xau"],
-    "SI=F": ["silver", "白银", "si", "xag"],
-    "PL=F": ["platinum", "铂金", "pl"],
-    "PA=F": ["palladium", "钯金", "pa"],
+    "GC=F": ["gold", "黄金", "gc", "xau", "gc=f"],
+    "SI=F": ["silver", "白银", "si=f", "xag"],  # "si" alone matches stock
+    "PL=F": ["platinum", "铂金", "pl", "pl=f"],
+    "PA=F": ["palladium", "钯金", "pa", "pa=f"],
 }
 
 
@@ -327,7 +327,7 @@ def search_metals(query: str) -> List[SearchResult]:
 
     Supports keywords in English and Chinese:
     - gold/黄金/gc/xau -> GC=F (Gold Futures)
-    - silver/白银/si/xag -> SI=F (Silver Futures)
+    - silver/白银/si=f/xag -> SI=F (Silver Futures)
     - platinum/铂金/pl -> PL=F (Platinum Futures)
     - palladium/钯金/pa -> PA=F (Palladium Futures)
 
@@ -337,19 +337,38 @@ def search_metals(query: str) -> List[SearchResult]:
     Returns:
         List of matching precious metal SearchResult objects
     """
-    query_lower = query.lower()
+    query_lower = query.lower().strip()
     results = []
 
     for symbol, keywords in METAL_KEYWORDS.items():
-        if any(kw in query_lower for kw in keywords):
-            meta = PRECIOUS_METALS[symbol]
-            results.append(SearchResult(
-                symbol=symbol,
-                name=meta["name"],
-                exchange=meta["exchange"],
-                market=Market.METAL,
-            ))
-            logger.debug(f"Metal search matched: {symbol} for query '{query}'")
+        for kw in keywords:
+            # For Chinese keywords, use exact match or contains
+            if any('\u4e00' <= c <= '\u9fff' for c in kw):
+                # Chinese character - check if keyword is in query
+                if kw in query_lower:
+                    meta = PRECIOUS_METALS[symbol]
+                    results.append(SearchResult(
+                        symbol=symbol,
+                        name=meta["name"],
+                        exchange=meta["exchange"],
+                        market=Market.METAL,
+                    ))
+                    logger.debug(f"Metal search matched (Chinese): {symbol} for query '{query}'")
+                    break
+            else:
+                # English/symbol - use word boundary or exact match
+                # Match: "gold", "gc", "gc=f" but not "golden" or "goldmine"
+                pattern = rf'\b{re.escape(kw)}\b' if len(kw) > 2 else rf'^{re.escape(kw)}$'
+                if re.search(pattern, query_lower):
+                    meta = PRECIOUS_METALS[symbol]
+                    results.append(SearchResult(
+                        symbol=symbol,
+                        name=meta["name"],
+                        exchange=meta["exchange"],
+                        market=Market.METAL,
+                    ))
+                    logger.debug(f"Metal search matched (English): {symbol} for query '{query}'")
+                    break
 
     if results:
         logger.info(f"Metal search found {len(results)} results for query '{query}'")
@@ -1229,8 +1248,8 @@ class StockService:
         async def fetch_quote() -> Optional[Dict[str, Any]]:
             quote: Optional[StockQuote] = None
 
-            if market == Market.US:
-                # US: yfinance only
+            if market == Market.US or market == Market.METAL:
+                # US stocks and precious metals: yfinance only
                 quote = await YFinanceProvider.get_quote(symbol, market)
 
             elif market == Market.HK:
@@ -1287,7 +1306,8 @@ class StockService:
         async def fetch_history() -> Optional[Dict[str, Any]]:
             history: Optional[StockHistory] = None
 
-            if market == Market.US:
+            if market == Market.US or market == Market.METAL:
+                # US stocks and precious metals both use yfinance
                 history = await YFinanceProvider.get_history(symbol, market, period, interval)
 
             elif market == Market.HK:
@@ -1297,6 +1317,7 @@ class StockService:
                     history = await YFinanceProvider.get_history(symbol, market, period, interval)
 
             else:
+                # CN/A-shares: SH and SZ markets
                 history = await AKShareProvider.get_history_cn(symbol, market, period, interval)
                 if history is None:
                     logger.info(f"CN fallback to yfinance for {symbol} history")
@@ -1461,6 +1482,12 @@ class StockService:
             results: List[SearchResult] = []
             tasks = []
 
+            # Search precious metals FIRST if METAL market is included
+            # This ensures metals have priority in deduplication
+            if Market.METAL in markets:
+                metal_results = search_metals(query)
+                results.extend(metal_results)
+
             if Market.US in markets:
                 tasks.append(YFinanceProvider.search(query))
 
@@ -1478,15 +1505,10 @@ class StockService:
                     continue
                 results.extend(result)
 
-            # Search precious metals if METAL market is included
-            if Market.METAL in markets:
-                metal_results = search_metals(query)
-                results.extend(metal_results)
-
             # Filter by requested markets
             results = [r for r in results if r.market in markets]
 
-            # Deduplicate by symbol (metals might appear in US results too)
+            # Deduplicate by symbol - metals already added first get priority
             seen_symbols = set()
             unique_results = []
             for r in results:

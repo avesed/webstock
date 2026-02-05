@@ -24,8 +24,8 @@ export interface RegisterCredentials {
   confirmPassword: string
 }
 
-// Stock types
-export type Market = 'US' | 'HK' | 'CN' | 'METAL'
+// Stock types (SH = Shanghai, SZ = Shenzhen A-shares)
+export type Market = 'US' | 'HK' | 'CN' | 'SH' | 'SZ' | 'METAL'
 
 // Precious metals types
 export type WeightUnit = 'troy_oz' | 'gram' | 'kilogram'
@@ -289,7 +289,7 @@ export interface SearchResult {
   symbol: string
   name: string
   market: Market
-  type: string
+  exchange: string
 }
 
 // Theme types
