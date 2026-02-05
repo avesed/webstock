@@ -1,5 +1,6 @@
 import { useState, useCallback } from 'react'
 import { useNavigate } from 'react-router-dom'
+import { useTranslation } from 'react-i18next'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import {
   Plus,
@@ -63,6 +64,7 @@ interface PortfolioWithQuotes extends Portfolio {
 }
 
 export default function PortfolioPanel({ className }: PortfolioPanelProps) {
+  const { t } = useTranslation('dashboard')
   const navigate = useNavigate()
   const queryClient = useQueryClient()
   const { toast } = useToast()
@@ -161,8 +163,8 @@ export default function PortfolioPanel({ className }: PortfolioPanelProps) {
       setNewPortfolioName('')
       setNewPortfolioDescription('')
       toast({
-        title: 'Portfolio created',
-        description: `"${newPortfolio.name}" has been created successfully.`,
+        title: t('portfolio.title'),
+        description: `"${newPortfolio.name}"`,
       })
     },
     onError: () => {
@@ -185,8 +187,8 @@ export default function PortfolioPanel({ className }: PortfolioPanelProps) {
       setIsDeleteDialogOpen(false)
       setPortfolioToDelete(null)
       toast({
-        title: 'Portfolio deleted',
-        description: 'The portfolio has been deleted successfully.',
+        title: t('common:actions.delete', 'Deleted'),
+        description: t('common:status.success', 'Success'),
       })
     },
     onError: () => {
@@ -209,8 +211,8 @@ export default function PortfolioPanel({ className }: PortfolioPanelProps) {
       setIsTransactionDialogOpen(false)
       resetTransactionForm()
       toast({
-        title: 'Transaction recorded',
-        description: 'The transaction has been added successfully.',
+        title: t('portfolio.transactions'),
+        description: t('common:status.success', 'Success'),
       })
     },
     onError: () => {
@@ -264,8 +266,8 @@ export default function PortfolioPanel({ className }: PortfolioPanelProps) {
 
     if (!transactionForm.symbol || isNaN(quantity) || isNaN(price)) {
       toast({
-        title: 'Validation error',
-        description: 'Please fill in all required fields.',
+        title: t('common:status.error', 'Error'),
+        description: t('common:validation.required', 'Please fill in all required fields.'),
         variant: 'destructive',
       })
       return
@@ -320,13 +322,13 @@ export default function PortfolioPanel({ className }: PortfolioPanelProps) {
     return (
       <div className={cn('flex flex-col items-center justify-center gap-2 p-8', className)}>
         <AlertCircle className="h-8 w-8 text-destructive" />
-        <p className="text-sm text-muted-foreground">Failed to load portfolios</p>
+        <p className="text-sm text-muted-foreground">{t('common:status.error', 'Failed to load')}</p>
         <Button
           variant="outline"
           size="sm"
           onClick={() => queryClient.invalidateQueries({ queryKey: ['portfolios'] })}
         >
-          Try again
+          {t('common:actions.retry', 'Try again')}
         </Button>
       </div>
     )
@@ -343,7 +345,7 @@ export default function PortfolioPanel({ className }: PortfolioPanelProps) {
                 <div className="flex items-center gap-2">
                   <Briefcase className="h-4 w-4" />
                   <span className="truncate">
-                    {selectedPortfolio?.name ?? 'Select portfolio'}
+                    {selectedPortfolio?.name ?? t('common:actions.select', 'Select portfolio')}
                   </span>
                 </div>
                 <ChevronRight className="h-4 w-4 rotate-90 opacity-50" />
@@ -361,14 +363,14 @@ export default function PortfolioPanel({ className }: PortfolioPanelProps) {
                 >
                   <span className="truncate">{portfolio.name}</span>
                   <span className="text-xs text-muted-foreground">
-                    {portfolio.holdings?.length ?? 0} holdings
+                    {portfolio.holdings?.length ?? 0} {t('portfolio.holdings')}
                   </span>
                 </DropdownMenuItem>
               ))}
               {portfolios && portfolios.length > 0 && <DropdownMenuSeparator />}
               <DropdownMenuItem onClick={() => setIsCreateDialogOpen(true)}>
                 <Plus className="mr-2 h-4 w-4" />
-                Create new portfolio
+                {t('common:actions.create', 'Create new')}
               </DropdownMenuItem>
             </DropdownMenuContent>
           </DropdownMenu>
@@ -383,7 +385,7 @@ export default function PortfolioPanel({ className }: PortfolioPanelProps) {
               <DropdownMenuContent align="end">
                 <DropdownMenuItem onClick={() => setIsCreateDialogOpen(true)}>
                   <Edit2 className="mr-2 h-4 w-4" />
-                  Rename
+                  {t('common:actions.edit', 'Rename')}
                 </DropdownMenuItem>
                 <DropdownMenuSeparator />
                 <DropdownMenuItem
@@ -391,7 +393,7 @@ export default function PortfolioPanel({ className }: PortfolioPanelProps) {
                   className="text-destructive"
                 >
                   <Trash2 className="mr-2 h-4 w-4" />
-                  Delete
+                  {t('common:actions.delete', 'Delete')}
                 </DropdownMenuItem>
               </DropdownMenuContent>
             </DropdownMenu>
@@ -400,7 +402,7 @@ export default function PortfolioPanel({ className }: PortfolioPanelProps) {
 
         <Button onClick={() => setIsTransactionDialogOpen(true)} disabled={!selectedPortfolioId}>
           <Plus className="mr-2 h-4 w-4" />
-          Add Transaction
+          {t('portfolio.transactions')}
         </Button>
       </div>
 
@@ -408,33 +410,33 @@ export default function PortfolioPanel({ className }: PortfolioPanelProps) {
       <div className="grid gap-4 md:grid-cols-3">
         <Card>
           <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-            <CardTitle className="text-sm font-medium">Total Value</CardTitle>
+            <CardTitle className="text-sm font-medium">{t('portfolio.totalValue')}</CardTitle>
             <DollarSign className="h-4 w-4 text-muted-foreground" />
           </CardHeader>
           <CardContent>
             <div className="text-2xl font-bold">{formatCurrency(totalValue)}</div>
             <p className="text-xs text-muted-foreground">
-              Current portfolio value
+              {t('portfolio.marketValue')}
             </p>
           </CardContent>
         </Card>
 
         <Card>
           <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-            <CardTitle className="text-sm font-medium">Total Cost</CardTitle>
+            <CardTitle className="text-sm font-medium">{t('portfolio.averageCost')}</CardTitle>
             <Briefcase className="h-4 w-4 text-muted-foreground" />
           </CardHeader>
           <CardContent>
             <div className="text-2xl font-bold">{formatCurrency(totalCost)}</div>
             <p className="text-xs text-muted-foreground">
-              Total invested
+              {t('portfolio.total')}
             </p>
           </CardContent>
         </Card>
 
         <Card>
           <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-            <CardTitle className="text-sm font-medium">Total Gain/Loss</CardTitle>
+            <CardTitle className="text-sm font-medium">{t('portfolio.totalGain')}</CardTitle>
             {totalGain >= 0 ? (
               <TrendingUp className="h-4 w-4 text-stock-up" />
             ) : (
@@ -455,16 +457,16 @@ export default function PortfolioPanel({ className }: PortfolioPanelProps) {
       {/* Holdings and transactions tabs */}
       <Tabs defaultValue="holdings" className="space-y-4">
         <TabsList>
-          <TabsTrigger value="holdings">Holdings</TabsTrigger>
-          <TabsTrigger value="transactions">Transactions</TabsTrigger>
+          <TabsTrigger value="holdings">{t('portfolio.holdings')}</TabsTrigger>
+          <TabsTrigger value="transactions">{t('portfolio.transactions')}</TabsTrigger>
         </TabsList>
 
         <TabsContent value="holdings">
           <Card>
             <CardHeader>
-              <CardTitle>Your Holdings</CardTitle>
+              <CardTitle>{t('portfolio.holdings')}</CardTitle>
               <CardDescription>
-                Current stock positions in your portfolio
+                {t('portfolio.title')}
               </CardDescription>
             </CardHeader>
             <CardContent>
@@ -478,12 +480,12 @@ export default function PortfolioPanel({ className }: PortfolioPanelProps) {
                   <div className="space-y-1">
                     {/* Header */}
                     <div className="grid grid-cols-6 gap-4 px-4 py-2 text-xs font-medium text-muted-foreground border-b">
-                      <div>Symbol</div>
-                      <div className="text-right">Qty</div>
-                      <div className="text-right">Avg Cost</div>
-                      <div className="text-right">Price</div>
-                      <div className="text-right">Value</div>
-                      <div className="text-right">P/L</div>
+                      <div>{t('watchlist.symbol')}</div>
+                      <div className="text-right">{t('portfolio.quantity')}</div>
+                      <div className="text-right">{t('portfolio.averageCost')}</div>
+                      <div className="text-right">{t('portfolio.price')}</div>
+                      <div className="text-right">{t('portfolio.marketValue')}</div>
+                      <div className="text-right">{t('portfolio.gainLoss')}</div>
                     </div>
                     {/* Holdings */}
                     {portfolioWithQuotes.holdingsWithQuotes.map((holding) => (
@@ -521,13 +523,13 @@ export default function PortfolioPanel({ className }: PortfolioPanelProps) {
                 <div className="flex h-[300px] items-center justify-center text-muted-foreground">
                   <div className="text-center">
                     <Briefcase className="mx-auto mb-4 h-12 w-12 text-muted-foreground/50" />
-                    <p className="mb-4">No holdings yet</p>
+                    <p className="mb-4">{t('portfolio.noHoldings')}</p>
                     <Button
                       variant="outline"
                       onClick={() => setIsTransactionDialogOpen(true)}
                     >
                       <Plus className="mr-2 h-4 w-4" />
-                      Add your first transaction
+                      {t('portfolio.addHolding')}
                     </Button>
                   </div>
                 </div>
@@ -539,9 +541,9 @@ export default function PortfolioPanel({ className }: PortfolioPanelProps) {
         <TabsContent value="transactions">
           <Card>
             <CardHeader>
-              <CardTitle>Transaction History</CardTitle>
+              <CardTitle>{t('portfolio.transactions')}</CardTitle>
               <CardDescription>
-                Record of all your buy and sell transactions
+                {t('portfolio.recentTransactions')}
               </CardDescription>
             </CardHeader>
             <CardContent>
@@ -554,12 +556,12 @@ export default function PortfolioPanel({ className }: PortfolioPanelProps) {
                   <div className="space-y-1">
                     {/* Header */}
                     <div className="grid grid-cols-6 gap-4 px-4 py-2 text-xs font-medium text-muted-foreground border-b">
-                      <div>Date</div>
-                      <div>Type</div>
-                      <div>Symbol</div>
-                      <div className="text-right">Qty</div>
-                      <div className="text-right">Price</div>
-                      <div className="text-right">Total</div>
+                      <div>{t('portfolio.date')}</div>
+                      <div>{t('alerts.condition')}</div>
+                      <div>{t('watchlist.symbol')}</div>
+                      <div className="text-right">{t('portfolio.quantity')}</div>
+                      <div className="text-right">{t('portfolio.price')}</div>
+                      <div className="text-right">{t('portfolio.total')}</div>
                     </div>
                     {/* Transactions */}
                     {transactionsData.items.map((transaction) => (
@@ -594,13 +596,13 @@ export default function PortfolioPanel({ className }: PortfolioPanelProps) {
                 <div className="flex h-[300px] items-center justify-center text-muted-foreground">
                   <div className="text-center">
                     <DollarSign className="mx-auto mb-4 h-12 w-12 text-muted-foreground/50" />
-                    <p className="mb-4">No transactions yet</p>
+                    <p className="mb-4">{t('portfolio.noTransactions')}</p>
                     <Button
                       variant="outline"
                       onClick={() => setIsTransactionDialogOpen(true)}
                     >
                       <Plus className="mr-2 h-4 w-4" />
-                      Record your first transaction
+                      {t('portfolio.addHolding')}
                     </Button>
                   </div>
                 </div>
@@ -614,9 +616,9 @@ export default function PortfolioPanel({ className }: PortfolioPanelProps) {
       <Dialog open={isCreateDialogOpen} onOpenChange={setIsCreateDialogOpen}>
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>Create Portfolio</DialogTitle>
+            <DialogTitle>{t('common:actions.create', 'Create')} {t('portfolio.title')}</DialogTitle>
             <DialogDescription>
-              Create a new portfolio to track your investments.
+              {t('portfolio.title')}
             </DialogDescription>
           </DialogHeader>
           <div className="grid gap-4 py-4">
@@ -648,7 +650,7 @@ export default function PortfolioPanel({ className }: PortfolioPanelProps) {
                 setNewPortfolioDescription('')
               }}
             >
-              Cancel
+              {t('common:actions.cancel', 'Cancel')}
             </Button>
             <Button
               onClick={handleCreatePortfolio}
@@ -657,7 +659,7 @@ export default function PortfolioPanel({ className }: PortfolioPanelProps) {
               {createMutation.isPending && (
                 <Loader2 className="mr-2 h-4 w-4 animate-spin" />
               )}
-              Create
+              {t('common:actions.create', 'Create')}
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -667,10 +669,9 @@ export default function PortfolioPanel({ className }: PortfolioPanelProps) {
       <Dialog open={isDeleteDialogOpen} onOpenChange={setIsDeleteDialogOpen}>
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>Delete Portfolio</DialogTitle>
+            <DialogTitle>{t('common:confirmation.deleteTitle', 'Delete')}</DialogTitle>
             <DialogDescription>
-              Are you sure you want to delete "{portfolioToDelete?.name}"? This action
-              cannot be undone and all transactions will be lost.
+              {t('common:confirmation.deleteMessage', 'Are you sure?')} "{portfolioToDelete?.name}"
             </DialogDescription>
           </DialogHeader>
           <DialogFooter>
@@ -681,7 +682,7 @@ export default function PortfolioPanel({ className }: PortfolioPanelProps) {
                 setPortfolioToDelete(null)
               }}
             >
-              Cancel
+              {t('common:actions.cancel', 'Cancel')}
             </Button>
             <Button
               variant="destructive"
@@ -691,7 +692,7 @@ export default function PortfolioPanel({ className }: PortfolioPanelProps) {
               {deleteMutation.isPending && (
                 <Loader2 className="mr-2 h-4 w-4 animate-spin" />
               )}
-              Delete
+              {t('common:actions.delete', 'Delete')}
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -701,9 +702,9 @@ export default function PortfolioPanel({ className }: PortfolioPanelProps) {
       <Dialog open={isTransactionDialogOpen} onOpenChange={setIsTransactionDialogOpen}>
         <DialogContent className="sm:max-w-[425px]">
           <DialogHeader>
-            <DialogTitle>Add Transaction</DialogTitle>
+            <DialogTitle>{t('portfolio.transactions')}</DialogTitle>
             <DialogDescription>
-              Record a buy or sell transaction.
+              {t('portfolio.buy')} / {t('portfolio.sell')}
             </DialogDescription>
           </DialogHeader>
           <div className="grid gap-4 py-4">
@@ -734,8 +735,8 @@ export default function PortfolioPanel({ className }: PortfolioPanelProps) {
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
-                    <SelectItem value="BUY">Buy</SelectItem>
-                    <SelectItem value="SELL">Sell</SelectItem>
+                    <SelectItem value="BUY">{t('portfolio.buy')}</SelectItem>
+                    <SelectItem value="SELL">{t('portfolio.sell')}</SelectItem>
                   </SelectContent>
                 </Select>
               </div>
@@ -817,7 +818,7 @@ export default function PortfolioPanel({ className }: PortfolioPanelProps) {
                 resetTransactionForm()
               }}
             >
-              Cancel
+              {t('common:actions.cancel', 'Cancel')}
             </Button>
             <Button
               onClick={handleSubmitTransaction}
@@ -826,7 +827,7 @@ export default function PortfolioPanel({ className }: PortfolioPanelProps) {
               {addTransactionMutation.isPending && (
                 <Loader2 className="mr-2 h-4 w-4 animate-spin" />
               )}
-              Add Transaction
+              {t('common:actions.add', 'Add')}
             </Button>
           </DialogFooter>
         </DialogContent>

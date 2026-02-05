@@ -1,15 +1,27 @@
 import { useState } from 'react'
 import { Link } from 'react-router-dom'
-import { LineChart, Eye, EyeOff, Check, X } from 'lucide-react'
+import { LineChart, Eye, EyeOff, Check, X, Globe } from 'lucide-react'
+import { useTranslation } from 'react-i18next'
 
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from '@/components/ui/card'
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu'
 import { useAuthStore } from '@/stores/authStore'
+import { useLocale } from '@/hooks'
 import { isValidEmail, validatePassword, cn } from '@/lib/utils'
+import type { Locale } from '@/hooks'
 
 export default function RegisterPage() {
+  const { t } = useTranslation('auth')
+  const { t: tCommon } = useTranslation('common')
+  const { locale, setLocale } = useLocale()
   const { register, isLoading, error, clearError } = useAuthStore()
 
   const [email, setEmail] = useState('')
@@ -22,10 +34,10 @@ export default function RegisterPage() {
   const passwordsMatch = password === confirmPassword && password.length > 0
 
   const passwordRequirements = [
-    { label: 'At least 8 characters', met: password.length >= 8 },
-    { label: 'One uppercase letter', met: /[A-Z]/.test(password) },
-    { label: 'One lowercase letter', met: /[a-z]/.test(password) },
-    { label: 'One number', met: /[0-9]/.test(password) },
+    { labelKey: 'password.minLength' as const, met: password.length >= 8 },
+    { labelKey: 'password.uppercase' as const, met: /[A-Z]/.test(password) },
+    { labelKey: 'password.lowercase' as const, met: /[a-z]/.test(password) },
+    { labelKey: 'password.number' as const, met: /[0-9]/.test(password) },
   ]
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -34,30 +46,57 @@ export default function RegisterPage() {
     clearError()
 
     if (!email || !password || !confirmPassword) {
-      setValidationError('Please fill in all fields')
+      setValidationError(t('validation.fillAllFields'))
       return
     }
 
     if (!isValidEmail(email)) {
-      setValidationError('Please enter a valid email address')
+      setValidationError(t('validation.invalidEmail'))
       return
     }
 
     if (!passwordValidation.isValid) {
-      setValidationError(passwordValidation.errors[0] ?? 'Invalid password')
+      setValidationError(t('validation.invalidPassword'))
       return
     }
 
     if (password !== confirmPassword) {
-      setValidationError('Passwords do not match')
+      setValidationError(t('password.mismatch'))
       return
     }
 
     await register(email, password)
   }
 
+  const languageOptions: { value: Locale; label: string }[] = [
+    { value: 'en', label: tCommon('language.en') },
+    { value: 'zh', label: tCommon('language.zh') },
+  ]
+
   return (
     <div className="flex min-h-screen items-center justify-center bg-background p-4">
+      {/* Language Switcher */}
+      <div className="absolute top-4 right-4">
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild>
+            <Button variant="ghost" size="icon">
+              <Globe className="h-5 w-5" />
+            </Button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="end">
+            {languageOptions.map((option) => (
+              <DropdownMenuItem
+                key={option.value}
+                onClick={() => setLocale(option.value)}
+                className={cn(locale === option.value && 'bg-accent')}
+              >
+                {option.label}
+              </DropdownMenuItem>
+            ))}
+          </DropdownMenuContent>
+        </DropdownMenu>
+      </div>
+
       <Card className="w-full max-w-md">
         <CardHeader className="space-y-1 text-center">
           <div className="flex justify-center mb-4">
@@ -66,9 +105,9 @@ export default function RegisterPage() {
               <span className="text-2xl font-bold">WebStock</span>
             </div>
           </div>
-          <CardTitle className="text-2xl">Create an account</CardTitle>
+          <CardTitle className="text-2xl">{t('register.title')}</CardTitle>
           <CardDescription>
-            Enter your details to get started
+            {t('register.subtitle')}
           </CardDescription>
         </CardHeader>
         <form onSubmit={handleSubmit}>
@@ -80,11 +119,11 @@ export default function RegisterPage() {
             )}
 
             <div className="space-y-2">
-              <Label htmlFor="email">Email</Label>
+              <Label htmlFor="email">{t('register.email')}</Label>
               <Input
                 id="email"
                 type="email"
-                placeholder="you@example.com"
+                placeholder={t('register.emailPlaceholder')}
                 value={email}
                 onChange={(e) => setEmail(e.target.value)}
                 disabled={isLoading}
@@ -93,12 +132,12 @@ export default function RegisterPage() {
             </div>
 
             <div className="space-y-2">
-              <Label htmlFor="password">Password</Label>
+              <Label htmlFor="password">{t('register.password')}</Label>
               <div className="relative">
                 <Input
                   id="password"
                   type={showPassword ? 'text' : 'password'}
-                  placeholder="Create a password"
+                  placeholder={t('register.passwordPlaceholder')}
                   value={password}
                   onChange={(e) => setPassword(e.target.value)}
                   disabled={isLoading}
@@ -124,14 +163,14 @@ export default function RegisterPage() {
                 <div className="mt-2 space-y-1">
                   {passwordRequirements.map((req) => (
                     <div
-                      key={req.label}
+                      key={req.labelKey}
                       className={cn(
                         'flex items-center gap-2 text-xs',
                         req.met ? 'text-stock-up' : 'text-muted-foreground'
                       )}
                     >
                       {req.met ? <Check className="h-3 w-3" /> : <X className="h-3 w-3" />}
-                      {req.label}
+                      {t(req.labelKey)}
                     </div>
                   ))}
                 </div>
@@ -139,11 +178,11 @@ export default function RegisterPage() {
             </div>
 
             <div className="space-y-2">
-              <Label htmlFor="confirmPassword">Confirm Password</Label>
+              <Label htmlFor="confirmPassword">{t('register.confirmPassword')}</Label>
               <Input
                 id="confirmPassword"
                 type={showPassword ? 'text' : 'password'}
-                placeholder="Confirm your password"
+                placeholder={t('register.confirmPasswordPlaceholder')}
                 value={confirmPassword}
                 onChange={(e) => setConfirmPassword(e.target.value)}
                 disabled={isLoading}
@@ -157,7 +196,7 @@ export default function RegisterPage() {
                   )}
                 >
                   {passwordsMatch ? <Check className="h-3 w-3" /> : <X className="h-3 w-3" />}
-                  {passwordsMatch ? 'Passwords match' : 'Passwords do not match'}
+                  {passwordsMatch ? t('password.match') : t('password.mismatch')}
                 </div>
               )}
             </div>
@@ -171,13 +210,13 @@ export default function RegisterPage() {
               {isLoading ? (
                 <div className="h-5 w-5 animate-spin rounded-full border-2 border-current border-t-transparent" />
               ) : (
-                'Create account'
+                t('register.submit')
               )}
             </Button>
             <p className="text-center text-sm text-muted-foreground">
-              Already have an account?{' '}
+              {t('register.hasAccount')}{' '}
               <Link to="/login" className="text-primary hover:underline">
-                Sign in
+                {t('register.signIn')}
               </Link>
             </p>
           </CardFooter>

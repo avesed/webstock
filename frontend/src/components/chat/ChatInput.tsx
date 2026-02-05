@@ -1,4 +1,5 @@
 import { useState, useRef, useCallback, useEffect } from 'react'
+import { useTranslation } from 'react-i18next'
 import { Send, Square } from 'lucide-react'
 
 import { cn } from '@/lib/utils'
@@ -15,6 +16,7 @@ const MAX_ROWS = 4
 const LINE_HEIGHT = 24 // px approximation for text-sm line height
 
 export function ChatInput({ onSend, isStreaming, onCancel }: ChatInputProps) {
+  const { t } = useTranslation('chat')
   const [value, setValue] = useState('')
   const textareaRef = useRef<HTMLTextAreaElement>(null)
 
@@ -71,7 +73,7 @@ export function ChatInput({ onSend, isStreaming, onCancel }: ChatInputProps) {
           value={value}
           onChange={handleChange}
           onKeyDown={handleKeyDown}
-          placeholder="Ask about stocks, markets, analysis..."
+          placeholder={t('input.placeholder')}
           rows={1}
           className={cn(
             'flex-1 resize-none rounded-lg border bg-background px-3 py-2 text-sm',

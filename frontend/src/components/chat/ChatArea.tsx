@@ -1,4 +1,5 @@
 import { useEffect, useRef } from 'react'
+import { useTranslation } from 'react-i18next'
 import { Bot, AlertCircle } from 'lucide-react'
 
 import { useChatStore } from '@/stores/chatStore'
@@ -9,6 +10,7 @@ import { ToolCallIndicator } from './ToolCallIndicator'
 import type { ChatMessage } from '@/types'
 
 export function ChatArea() {
+  const { t } = useTranslation('chat')
   const currentConversationId = useChatStore((s) => s.currentConversationId)
   const messages = useChatStore((s) => s.messages)
   const isStreaming = useChatStore((s) => s.isStreaming)
@@ -41,9 +43,9 @@ export function ChatArea() {
         <div className="flex h-16 w-16 items-center justify-center rounded-2xl bg-muted mb-4">
           <Bot className="h-8 w-8 text-muted-foreground" />
         </div>
-        <h3 className="text-lg font-semibold mb-1">WebStock AI Chat</h3>
+        <h3 className="text-lg font-semibold mb-1">{t('title')}</h3>
         <p className="text-sm text-muted-foreground max-w-sm">
-          Select a conversation or start a new one to ask about stocks, markets, and financial analysis.
+          {t('empty.description')}
         </p>
       </div>
     )
@@ -77,7 +79,7 @@ export function ChatArea() {
             className="text-xs font-medium underline hover:no-underline"
             onClick={clearError}
           >
-            Dismiss
+            {t('common:actions.close', 'Dismiss')}
           </button>
         </div>
       )}
@@ -95,7 +97,7 @@ export function ChatArea() {
             <div className="flex flex-col items-center justify-center py-16 text-center">
               <Bot className="h-10 w-10 text-muted-foreground/40 mb-3" />
               <p className="text-sm text-muted-foreground">
-                Send a message to start the conversation
+                {t('empty.title')}
               </p>
             </div>
           )}

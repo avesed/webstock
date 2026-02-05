@@ -1,4 +1,5 @@
 import { useQuery } from '@tanstack/react-query'
+import { useTranslation } from 'react-i18next'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { TrendingUp, TrendingDown, Activity, BarChart3, Loader2, ArrowUpRight, ArrowDownRight } from 'lucide-react'
 import { stockApi, watchlistApi, alertsApi, portfolioApi, newsApi } from '@/api'
@@ -20,6 +21,7 @@ const MARKET_INDICES: MarketIndex[] = [
 ]
 
 export default function DashboardPage() {
+  const { t } = useTranslation('dashboard')
   const navigate = useNavigate()
   const { isAuthenticated, isLoading: isAuthLoading } = useAuthStore()
 
@@ -92,9 +94,9 @@ export default function DashboardPage() {
   return (
     <div className="space-y-6">
       <div>
-        <h1 className="text-3xl font-bold tracking-tight">Dashboard</h1>
+        <h1 className="text-3xl font-bold tracking-tight">{t('title')}</h1>
         <p className="text-muted-foreground">
-          Welcome to WebStock - Your AI-powered stock analysis platform
+          {t('welcome', { name: 'WebStock' })}
         </p>
       </div>
 
@@ -102,7 +104,7 @@ export default function DashboardPage() {
       <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
         <Card className="cursor-pointer hover:bg-accent/50 transition-colors" onClick={() => navigate('/portfolio')}>
           <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-            <CardTitle className="text-sm font-medium">Portfolio Value</CardTitle>
+            <CardTitle className="text-sm font-medium">{t('portfolio.totalValue')}</CardTitle>
             <TrendingUp className="h-4 w-4 text-muted-foreground" />
           </CardHeader>
           <CardContent>
@@ -118,7 +120,7 @@ export default function DashboardPage() {
 
         <Card className="cursor-pointer hover:bg-accent/50 transition-colors" onClick={() => navigate('/portfolio')}>
           <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-            <CardTitle className="text-sm font-medium">Today's Change</CardTitle>
+            <CardTitle className="text-sm font-medium">{t('portfolio.dayChange')}</CardTitle>
             <Activity className="h-4 w-4 text-muted-foreground" />
           </CardHeader>
           <CardContent>
@@ -129,33 +131,33 @@ export default function DashboardPage() {
               {totalPortfolioChange >= 0 ? '+' : ''}{formatCurrency(totalPortfolioChange)}
             </div>
             <p className="text-xs text-muted-foreground">
-              {portfolios?.length || 0} portfolios
+              {portfolios?.length || 0} {t('portfolio.title').toLowerCase()}
             </p>
           </CardContent>
         </Card>
 
         <Card className="cursor-pointer hover:bg-accent/50 transition-colors" onClick={() => navigate('/watchlist')}>
           <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-            <CardTitle className="text-sm font-medium">Watchlist</CardTitle>
+            <CardTitle className="text-sm font-medium">{t('watchlist.title')}</CardTitle>
             <BarChart3 className="h-4 w-4 text-muted-foreground" />
           </CardHeader>
           <CardContent>
             <div className="text-2xl font-bold">{totalWatchlistStocks}</div>
             <p className="text-xs text-muted-foreground">
-              {watchlists?.length || 0} watchlists
+              {watchlists?.length || 0} {t('watchlist.myWatchlists').toLowerCase()}
             </p>
           </CardContent>
         </Card>
 
         <Card className="cursor-pointer hover:bg-accent/50 transition-colors" onClick={() => navigate('/alerts')}>
           <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-            <CardTitle className="text-sm font-medium">Active Alerts</CardTitle>
+            <CardTitle className="text-sm font-medium">{t('alerts.active')}</CardTitle>
             <TrendingDown className="h-4 w-4 text-muted-foreground" />
           </CardHeader>
           <CardContent>
             <div className="text-2xl font-bold">{activeAlertsCount}</div>
             <p className="text-xs text-muted-foreground">
-              {alerts?.length || 0} total alerts
+              {alerts?.length || 0} {t('alerts.title').toLowerCase()}
             </p>
           </CardContent>
         </Card>
@@ -166,9 +168,9 @@ export default function DashboardPage() {
         {/* Market Overview */}
         <Card>
           <CardHeader>
-            <CardTitle>Market Overview</CardTitle>
+            <CardTitle>{t('overview')}</CardTitle>
             <CardDescription>
-              Major indices performance
+              {t('market.us')}
             </CardDescription>
           </CardHeader>
           <CardContent>
@@ -211,7 +213,7 @@ export default function DashboardPage() {
                           </p>
                         </>
                       ) : (
-                        <p className="text-sm text-muted-foreground">No data</p>
+                        <p className="text-sm text-muted-foreground">{t('common:status.noData', 'No data')}</p>
                       )}
                     </div>
                   </div>
@@ -219,7 +221,7 @@ export default function DashboardPage() {
               </div>
             ) : (
               <div className="flex h-[200px] items-center justify-center text-muted-foreground">
-                Market data unavailable
+                {t('common:status.noData', 'Market data unavailable')}
               </div>
             )}
           </CardContent>
@@ -228,9 +230,9 @@ export default function DashboardPage() {
         {/* Recent News */}
         <Card>
           <CardHeader>
-            <CardTitle>Recent News</CardTitle>
+            <CardTitle>{t('news.latest')}</CardTitle>
             <CardDescription>
-              Latest market news
+              {t('news.title')}
             </CardDescription>
           </CardHeader>
           <CardContent>
@@ -278,67 +280,13 @@ export default function DashboardPage() {
               </div>
             ) : (
               <div className="flex h-[200px] items-center justify-center text-muted-foreground">
-                No recent news
+                {t('news.noNews')}
               </div>
             )}
           </CardContent>
         </Card>
       </div>
 
-      {/* Quick Start Guide */}
-      <Card>
-        <CardHeader>
-          <CardTitle>Quick Start</CardTitle>
-          <CardDescription>
-            Get started with WebStock by following these steps
-          </CardDescription>
-        </CardHeader>
-        <CardContent>
-          <div className="grid gap-4 md:grid-cols-3">
-            <div className="rounded-lg border p-4">
-              <div className="flex items-center gap-3">
-                <div className="flex h-10 w-10 items-center justify-center rounded-full bg-primary/10 text-primary">
-                  1
-                </div>
-                <div>
-                  <h3 className="font-medium">Add Stocks</h3>
-                  <p className="text-sm text-muted-foreground">
-                    Search and add stocks to your watchlist
-                  </p>
-                </div>
-              </div>
-            </div>
-
-            <div className="rounded-lg border p-4">
-              <div className="flex items-center gap-3">
-                <div className="flex h-10 w-10 items-center justify-center rounded-full bg-primary/10 text-primary">
-                  2
-                </div>
-                <div>
-                  <h3 className="font-medium">Get AI Analysis</h3>
-                  <p className="text-sm text-muted-foreground">
-                    View AI-powered insights for any stock
-                  </p>
-                </div>
-              </div>
-            </div>
-
-            <div className="rounded-lg border p-4">
-              <div className="flex items-center gap-3">
-                <div className="flex h-10 w-10 items-center justify-center rounded-full bg-primary/10 text-primary">
-                  3
-                </div>
-                <div>
-                  <h3 className="font-medium">Set Alerts</h3>
-                  <p className="text-sm text-muted-foreground">
-                    Create price alerts and get notified
-                  </p>
-                </div>
-              </div>
-            </div>
-          </div>
-        </CardContent>
-      </Card>
     </div>
   )
 }

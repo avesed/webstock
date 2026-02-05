@@ -1,5 +1,6 @@
 import { useState, useCallback } from 'react'
 import { useNavigate } from 'react-router-dom'
+import { useTranslation } from 'react-i18next'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import {
   Plus,
@@ -45,11 +46,12 @@ interface AlertListProps {
   filterSymbol?: string
 }
 
-const CONDITION_LABELS: Record<AlertCondition, string> = {
-  ABOVE: 'Price above',
-  BELOW: 'Price below',
-  PERCENT_CHANGE_UP: 'Up by %',
-  PERCENT_CHANGE_DOWN: 'Down by %',
+// Labels will be translated in component
+const CONDITION_KEYS: Record<AlertCondition, string> = {
+  ABOVE: 'alerts.above',
+  BELOW: 'alerts.below',
+  PERCENT_CHANGE_UP: 'alerts.percentUp',
+  PERCENT_CHANGE_DOWN: 'alerts.percentDown',
 }
 
 const CONDITION_ICONS: Record<AlertCondition, typeof ArrowUp> = {
@@ -60,6 +62,7 @@ const CONDITION_ICONS: Record<AlertCondition, typeof ArrowUp> = {
 }
 
 export default function AlertList({ className, filterSymbol }: AlertListProps) {
+  const { t } = useTranslation('dashboard')
   const navigate = useNavigate()
   const queryClient = useQueryClient()
   const { toast } = useToast()
@@ -103,14 +106,14 @@ export default function AlertList({ className, filterSymbol }: AlertListProps) {
         threshold: 0,
       })
       toast({
-        title: 'Alert created',
-        description: 'Your price alert has been created successfully.',
+        title: t('alerts.createAlert'),
+        description: t('common:status.success', 'Success'),
       })
     },
     onError: () => {
       toast({
-        title: 'Error',
-        description: 'Failed to create alert. Please try again.',
+        title: t('common:status.error', 'Error'),
+        description: t('common:errors.unknown', 'Failed to create.'),
         variant: 'destructive',
       })
     },
@@ -124,14 +127,14 @@ export default function AlertList({ className, filterSymbol }: AlertListProps) {
       setIsDeleteDialogOpen(false)
       setAlertToDelete(null)
       toast({
-        title: 'Alert deleted',
-        description: 'The alert has been deleted successfully.',
+        title: t('alerts.deleteAlert'),
+        description: t('common:status.success', 'Success'),
       })
     },
     onError: () => {
       toast({
-        title: 'Error',
-        description: 'Failed to delete alert. Please try again.',
+        title: t('common:status.error', 'Error'),
+        description: t('common:errors.unknown', 'Failed to delete.'),
         variant: 'destructive',
       })
     },
@@ -143,14 +146,14 @@ export default function AlertList({ className, filterSymbol }: AlertListProps) {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['alerts'] })
       toast({
-        title: 'Alert updated',
-        description: 'The alert status has been updated.',
+        title: t('alerts.editAlert'),
+        description: t('common:status.success', 'Success'),
       })
     },
     onError: () => {
       toast({
-        title: 'Error',
-        description: 'Failed to update alert. Please try again.',
+        title: t('common:status.error', 'Error'),
+        description: t('common:errors.unknown', 'Failed to update.'),
         variant: 'destructive',
       })
     },
@@ -162,14 +165,14 @@ export default function AlertList({ className, filterSymbol }: AlertListProps) {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['alerts'] })
       toast({
-        title: 'Alert reset',
-        description: 'The alert has been reactivated.',
+        title: t('common:actions.reset', 'Reset'),
+        description: t('common:status.success', 'Success'),
       })
     },
     onError: () => {
       toast({
-        title: 'Error',
-        description: 'Failed to reset alert. Please try again.',
+        title: t('common:status.error', 'Error'),
+        description: t('common:errors.unknown', 'Failed to reset.'),
         variant: 'destructive',
       })
     },
@@ -178,8 +181,8 @@ export default function AlertList({ className, filterSymbol }: AlertListProps) {
   const handleCreateAlert = useCallback(() => {
     if (!alertForm.symbol.trim() || alertForm.threshold <= 0) {
       toast({
-        title: 'Validation error',
-        description: 'Please fill in all required fields.',
+        title: t('common:status.error', 'Error'),
+        description: t('common:validation.required', 'Please fill in all required fields.'),
         variant: 'destructive',
       })
       return
@@ -220,21 +223,21 @@ export default function AlertList({ className, filterSymbol }: AlertListProps) {
         return (
           <span className="inline-flex items-center rounded-full bg-stock-up/10 px-2 py-0.5 text-xs font-medium text-stock-up">
             <Bell className="mr-1 h-3 w-3" />
-            Active
+            {t('alerts.active')}
           </span>
         )
       case 'TRIGGERED':
         return (
           <span className="inline-flex items-center rounded-full bg-primary/10 px-2 py-0.5 text-xs font-medium text-primary">
             <Bell className="mr-1 h-3 w-3" />
-            Triggered
+            {t('alerts.triggered')}
           </span>
         )
       case 'DISABLED':
         return (
           <span className="inline-flex items-center rounded-full bg-muted px-2 py-0.5 text-xs font-medium text-muted-foreground">
             <BellOff className="mr-1 h-3 w-3" />
-            Disabled
+            {t('alerts.disabled')}
           </span>
         )
     }
@@ -264,13 +267,13 @@ export default function AlertList({ className, filterSymbol }: AlertListProps) {
     return (
       <div className={cn('flex flex-col items-center justify-center gap-2 p-8', className)}>
         <AlertCircle className="h-8 w-8 text-destructive" />
-        <p className="text-sm text-muted-foreground">Failed to load alerts</p>
+        <p className="text-sm text-muted-foreground">{t('common:status.error', 'Failed to load')}</p>
         <Button
           variant="outline"
           size="sm"
           onClick={() => queryClient.invalidateQueries({ queryKey: ['alerts'] })}
         >
-          Try again
+          {t('common:actions.retry', 'Try again')}
         </Button>
       </div>
     )
@@ -281,16 +284,16 @@ export default function AlertList({ className, filterSymbol }: AlertListProps) {
       {/* Header with create button */}
       <div className="flex items-center justify-between">
         <div>
-          <h2 className="text-lg font-semibold">Price Alerts</h2>
+          <h2 className="text-lg font-semibold">{t('alerts.title')}</h2>
           <p className="text-sm text-muted-foreground">
             {filterSymbol
-              ? `Alerts for ${filterSymbol}`
-              : 'Get notified when stocks reach your target'}
+              ? `${t('alerts.symbol')}: ${filterSymbol}`
+              : t('alerts.createFirst')}
           </p>
         </div>
         <Button onClick={() => setIsCreateDialogOpen(true)}>
           <Plus className="mr-2 h-4 w-4" />
-          Create Alert
+          {t('alerts.createAlert')}
         </Button>
       </div>
 
@@ -299,34 +302,34 @@ export default function AlertList({ className, filterSymbol }: AlertListProps) {
         <div className="grid gap-4 md:grid-cols-3">
           <Card>
             <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-              <CardTitle className="text-sm font-medium">Active Alerts</CardTitle>
+              <CardTitle className="text-sm font-medium">{t('alerts.active')}</CardTitle>
               <Bell className="h-4 w-4 text-stock-up" />
             </CardHeader>
             <CardContent>
               <div className="text-2xl font-bold">{activeCount}</div>
-              <p className="text-xs text-muted-foreground">Currently monitoring</p>
+              <p className="text-xs text-muted-foreground">{t('common:status.active', 'Active')}</p>
             </CardContent>
           </Card>
 
           <Card>
             <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-              <CardTitle className="text-sm font-medium">Triggered</CardTitle>
+              <CardTitle className="text-sm font-medium">{t('alerts.triggered')}</CardTitle>
               <Bell className="h-4 w-4 text-primary" />
             </CardHeader>
             <CardContent>
               <div className="text-2xl font-bold">{triggeredCount}</div>
-              <p className="text-xs text-muted-foreground">Alerts triggered</p>
+              <p className="text-xs text-muted-foreground">{t('alerts.triggeredAt')}</p>
             </CardContent>
           </Card>
 
           <Card>
             <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-              <CardTitle className="text-sm font-medium">Disabled</CardTitle>
+              <CardTitle className="text-sm font-medium">{t('alerts.disabled')}</CardTitle>
               <BellOff className="h-4 w-4 text-muted-foreground" />
             </CardHeader>
             <CardContent>
               <div className="text-2xl font-bold">{disabledCount}</div>
-              <p className="text-xs text-muted-foreground">Paused alerts</p>
+              <p className="text-xs text-muted-foreground">{t('common:status.disabled', 'Disabled')}</p>
             </CardContent>
           </Card>
         </div>
@@ -335,8 +338,8 @@ export default function AlertList({ className, filterSymbol }: AlertListProps) {
       {/* Alerts list */}
       <Card>
         <CardHeader>
-          <CardTitle>All Alerts</CardTitle>
-          <CardDescription>Manage your price alerts</CardDescription>
+          <CardTitle>{t('alerts.title')}</CardTitle>
+          <CardDescription>{t('alerts.editAlert')}</CardDescription>
         </CardHeader>
         <CardContent>
           {filteredAlerts && filteredAlerts.length > 0 ? (
@@ -361,12 +364,12 @@ export default function AlertList({ className, filterSymbol }: AlertListProps) {
                           <div className="flex items-center gap-2 text-sm text-muted-foreground mt-1">
                             <ConditionIcon className="h-4 w-4" />
                             <span>
-                              {CONDITION_LABELS[alert.conditionType]} {formatThreshold(alert)}
+                              {t(CONDITION_KEYS[alert.conditionType] as 'alerts.above' | 'alerts.below' | 'alerts.percentUp' | 'alerts.percentDown')} {formatThreshold(alert)}
                             </span>
                           </div>
                           {alert.triggeredAt && (
                             <p className="text-xs text-muted-foreground mt-1">
-                              Triggered {formatRelativeTime(alert.triggeredAt)}
+                              {t('alerts.triggeredAt')} {formatRelativeTime(alert.triggeredAt)}
                             </p>
                           )}
                         </div>
@@ -381,7 +384,7 @@ export default function AlertList({ className, filterSymbol }: AlertListProps) {
                             disabled={resetMutation.isPending}
                           >
                             <RefreshCw className="mr-2 h-4 w-4" />
-                            Reset
+                            {t('common:actions.reset', 'Reset')}
                           </Button>
                         )}
                         <Button
@@ -414,10 +417,10 @@ export default function AlertList({ className, filterSymbol }: AlertListProps) {
             <div className="flex h-[300px] items-center justify-center text-muted-foreground">
               <div className="text-center">
                 <Bell className="mx-auto mb-4 h-12 w-12 text-muted-foreground/50" />
-                <p className="mb-4">No alerts configured</p>
+                <p className="mb-4">{t('alerts.noAlerts')}</p>
                 <Button variant="outline" onClick={() => setIsCreateDialogOpen(true)}>
                   <Plus className="mr-2 h-4 w-4" />
-                  Create your first alert
+                  {t('alerts.createFirst')}
                 </Button>
               </div>
             </div>
@@ -429,14 +432,14 @@ export default function AlertList({ className, filterSymbol }: AlertListProps) {
       <Dialog open={isCreateDialogOpen} onOpenChange={setIsCreateDialogOpen}>
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>Create Price Alert</DialogTitle>
+            <DialogTitle>{t('alerts.createAlert')}</DialogTitle>
             <DialogDescription>
-              Set up a new price alert to get notified when conditions are met.
+              {t('alerts.title')}
             </DialogDescription>
           </DialogHeader>
           <div className="grid gap-4 py-4">
             <div className="grid gap-2">
-              <Label htmlFor="alert-symbol">Stock Symbol</Label>
+              <Label htmlFor="alert-symbol">{t('alerts.symbol')}</Label>
               <Input
                 id="alert-symbol"
                 value={alertForm.symbol}
@@ -451,7 +454,7 @@ export default function AlertList({ className, filterSymbol }: AlertListProps) {
               />
             </div>
             <div className="grid gap-2">
-              <Label htmlFor="condition">Condition</Label>
+              <Label htmlFor="condition">{t('alerts.condition')}</Label>
               <Select
                 value={alertForm.conditionType}
                 onValueChange={(value: AlertCondition) =>
@@ -465,25 +468,25 @@ export default function AlertList({ className, filterSymbol }: AlertListProps) {
                   <SelectItem value="ABOVE">
                     <div className="flex items-center gap-2">
                       <ArrowUp className="h-4 w-4" />
-                      Price goes above
+                      {t('alerts.above')}
                     </div>
                   </SelectItem>
                   <SelectItem value="BELOW">
                     <div className="flex items-center gap-2">
                       <ArrowDown className="h-4 w-4" />
-                      Price goes below
+                      {t('alerts.below')}
                     </div>
                   </SelectItem>
                   <SelectItem value="PERCENT_CHANGE_UP">
                     <div className="flex items-center gap-2">
                       <TrendingUp className="h-4 w-4" />
-                      Price increases by %
+                      {t('alerts.percentUp')}
                     </div>
                   </SelectItem>
                   <SelectItem value="PERCENT_CHANGE_DOWN">
                     <div className="flex items-center gap-2">
                       <TrendingDown className="h-4 w-4" />
-                      Price decreases by %
+                      {t('alerts.percentDown')}
                     </div>
                   </SelectItem>
                 </SelectContent>
@@ -491,10 +494,7 @@ export default function AlertList({ className, filterSymbol }: AlertListProps) {
             </div>
             <div className="grid gap-2">
               <Label htmlFor="threshold">
-                {alertForm.conditionType === 'PERCENT_CHANGE_UP' ||
-                alertForm.conditionType === 'PERCENT_CHANGE_DOWN'
-                  ? 'Percentage'
-                  : 'Price'}
+                {t('alerts.threshold')}
               </Label>
               <div className="relative">
                 {alertForm.conditionType !== 'PERCENT_CHANGE_UP' &&
@@ -553,7 +553,7 @@ export default function AlertList({ className, filterSymbol }: AlertListProps) {
                 })
               }}
             >
-              Cancel
+              {t('common:actions.cancel', 'Cancel')}
             </Button>
             <Button
               onClick={handleCreateAlert}
@@ -562,7 +562,7 @@ export default function AlertList({ className, filterSymbol }: AlertListProps) {
               {createMutation.isPending && (
                 <Loader2 className="mr-2 h-4 w-4 animate-spin" />
               )}
-              Create Alert
+              {t('alerts.createAlert')}
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -572,10 +572,9 @@ export default function AlertList({ className, filterSymbol }: AlertListProps) {
       <Dialog open={isDeleteDialogOpen} onOpenChange={setIsDeleteDialogOpen}>
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>Delete Alert</DialogTitle>
+            <DialogTitle>{t('alerts.deleteAlert')}</DialogTitle>
             <DialogDescription>
-              Are you sure you want to delete this alert for {alertToDelete?.symbol}? This
-              action cannot be undone.
+              {t('common:confirmation.deleteMessage', 'Are you sure?')} {alertToDelete?.symbol}
             </DialogDescription>
           </DialogHeader>
           <DialogFooter>
@@ -586,7 +585,7 @@ export default function AlertList({ className, filterSymbol }: AlertListProps) {
                 setAlertToDelete(null)
               }}
             >
-              Cancel
+              {t('common:actions.cancel', 'Cancel')}
             </Button>
             <Button
               variant="destructive"
@@ -596,7 +595,7 @@ export default function AlertList({ className, filterSymbol }: AlertListProps) {
               {deleteMutation.isPending && (
                 <Loader2 className="mr-2 h-4 w-4 animate-spin" />
               )}
-              Delete
+              {t('common:actions.delete', 'Delete')}
             </Button>
           </DialogFooter>
         </DialogContent>

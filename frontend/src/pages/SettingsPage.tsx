@@ -1,15 +1,18 @@
 import { useState, useEffect, useRef } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
+import { useTranslation } from 'react-i18next'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
-import { useToast } from '@/hooks'
+import { useToast, useLocale } from '@/hooks'
 import { useAuthStore } from '@/stores/authStore'
 import apiClient from '@/api/client'
-import { User, Bell, Key, Moon, Sun, Eye, EyeOff, Loader2 } from 'lucide-react'
+import { User, Bell, Key, Moon, Sun, Eye, EyeOff, Loader2, Globe } from 'lucide-react'
 import { useThemeStore } from '@/stores/themeStore'
+import { cn } from '@/lib/utils'
+import type { Locale } from '@/hooks'
 
 interface ToggleButtonProps {
   checked: boolean
@@ -17,6 +20,7 @@ interface ToggleButtonProps {
 }
 
 function ToggleButton({ checked, onCheckedChange }: ToggleButtonProps) {
+  const { t } = useTranslation('common')
   return (
     <Button
       variant={checked ? "default" : "outline"}
@@ -25,7 +29,7 @@ function ToggleButton({ checked, onCheckedChange }: ToggleButtonProps) {
       className="w-12 h-6 relative"
     >
       <span className={`absolute transition-all ${checked ? 'right-1' : 'left-1'}`}>
-        {checked ? 'ON' : 'OFF'}
+        {checked ? t('status.enabled').slice(0, 2).toUpperCase() : t('status.disabled').slice(0, 3).toUpperCase()}
       </span>
     </Button>
   )
@@ -86,10 +90,13 @@ const settingsApi = {
 }
 
 export default function SettingsPage() {
+  const { t } = useTranslation('settings')
+  const { t: tCommon } = useTranslation('common')
   const queryClient = useQueryClient()
   const { toast } = useToast()
   const { user } = useAuthStore()
   const { theme, setTheme } = useThemeStore()
+  const { locale, setLocale } = useLocale()
 
   // Fetch settings from backend
   const { data: settings, isLoading: isLoadingSettings } = useQuery({
@@ -106,14 +113,14 @@ export default function SettingsPage() {
       queryClient.invalidateQueries({ queryKey: ['news'] })
       queryClient.invalidateQueries({ queryKey: ['news-trending'] })
       toast({
-        title: 'Settings saved',
-        description: 'Your preferences have been saved to the server.',
+        title: t('actions.saved'),
+        description: t('actions.saved'),
       })
     },
     onError: () => {
       toast({
-        title: 'Error',
-        description: 'Failed to save settings. Please try again.',
+        title: tCommon('status.error'),
+        description: tCommon('errors.serverError'),
         variant: 'destructive',
       })
     },
@@ -135,7 +142,7 @@ export default function SettingsPage() {
   // Use settings from backend or defaults
   const currentSettings = settings || DEFAULT_SETTINGS
 
-  // Local state for API key inputs — saves on blur instead of every keystroke
+  // Local state for API key inputs - saves on blur instead of every keystroke
   const [apiKeyDraft, setApiKeyDraft] = useState(currentSettings.api_keys)
   const apiKeySnapshotRef = useRef(currentSettings.api_keys)
 
@@ -196,18 +203,23 @@ export default function SettingsPage() {
   const handleProfileUpdate = async () => {
     if (profileForm.newPassword && profileForm.newPassword !== profileForm.confirmPassword) {
       toast({
-        title: 'Error',
-        description: 'New passwords do not match.',
+        title: tCommon('status.error'),
+        description: tCommon('validation.passwordMismatch'),
         variant: 'destructive',
       })
       return
     }
 
     toast({
-      title: 'Profile updated',
-      description: 'Your profile has been updated successfully.',
+      title: t('profile.saved'),
+      description: t('profile.saved'),
     })
   }
+
+  const languageOptions: { value: Locale; label: string }[] = [
+    { value: 'en', label: tCommon('language.en') },
+    { value: 'zh', label: tCommon('language.zh') },
+  ]
 
   if (isLoadingSettings) {
     return (
@@ -220,9 +232,9 @@ export default function SettingsPage() {
   return (
     <div className="space-y-6">
       <div>
-        <h1 className="text-3xl font-bold tracking-tight">Settings</h1>
+        <h1 className="text-3xl font-bold tracking-tight">{t('title')}</h1>
         <p className="text-muted-foreground">
-          Manage your account preferences and configuration
+          {t('subtitle')}
         </p>
       </div>
 
@@ -230,19 +242,23 @@ export default function SettingsPage() {
         <TabsList>
           <TabsTrigger value="profile" className="flex items-center gap-2">
             <User className="h-4 w-4" />
-            Profile
+            {t('sections.profile')}
           </TabsTrigger>
           <TabsTrigger value="notifications" className="flex items-center gap-2">
             <Bell className="h-4 w-4" />
-            Notifications
+            {t('sections.notifications')}
           </TabsTrigger>
           <TabsTrigger value="appearance" className="flex items-center gap-2">
             {theme === 'dark' ? <Moon className="h-4 w-4" /> : <Sun className="h-4 w-4" />}
-            Appearance
+            {t('sections.appearance')}
+          </TabsTrigger>
+          <TabsTrigger value="language" className="flex items-center gap-2">
+            <Globe className="h-4 w-4" />
+            {t('sections.language')}
           </TabsTrigger>
           <TabsTrigger value="api" className="flex items-center gap-2">
             <Key className="h-4 w-4" />
-            API Keys
+            {t('sections.ai')}
           </TabsTrigger>
         </TabsList>
 
@@ -250,61 +266,61 @@ export default function SettingsPage() {
         <TabsContent value="profile" className="space-y-4">
           <Card>
             <CardHeader>
-              <CardTitle>Profile Information</CardTitle>
+              <CardTitle>{t('profile.title')}</CardTitle>
               <CardDescription>
-                Update your account details and password
+                {t('account.changePassword')}
               </CardDescription>
             </CardHeader>
             <CardContent className="space-y-4">
               <div className="space-y-2">
-                <Label htmlFor="email">Email Address</Label>
+                <Label htmlFor="email">{t('profile.email')}</Label>
                 <Input
                   id="email"
                   type="email"
                   value={profileForm.email}
                   onChange={(e) => setProfileForm({ ...profileForm, email: e.target.value })}
-                  placeholder="your@email.com"
+                  placeholder={t('profile.displayNamePlaceholder')}
                 />
               </div>
 
               <div className="border-t pt-4 mt-4">
-                <h4 className="font-medium mb-4">Change Password</h4>
+                <h4 className="font-medium mb-4">{t('account.changePassword')}</h4>
                 <div className="space-y-4">
                   <div className="space-y-2">
-                    <Label htmlFor="currentPassword">Current Password</Label>
+                    <Label htmlFor="currentPassword">{t('account.currentPassword')}</Label>
                     <Input
                       id="currentPassword"
                       type="password"
                       value={profileForm.currentPassword}
                       onChange={(e) => setProfileForm({ ...profileForm, currentPassword: e.target.value })}
-                      placeholder="Enter current password"
+                      placeholder={t('account.currentPassword')}
                     />
                   </div>
                   <div className="space-y-2">
-                    <Label htmlFor="newPassword">New Password</Label>
+                    <Label htmlFor="newPassword">{t('account.newPassword')}</Label>
                     <Input
                       id="newPassword"
                       type="password"
                       value={profileForm.newPassword}
                       onChange={(e) => setProfileForm({ ...profileForm, newPassword: e.target.value })}
-                      placeholder="Enter new password"
+                      placeholder={t('account.newPassword')}
                     />
                   </div>
                   <div className="space-y-2">
-                    <Label htmlFor="confirmPassword">Confirm New Password</Label>
+                    <Label htmlFor="confirmPassword">{t('account.confirmPassword')}</Label>
                     <Input
                       id="confirmPassword"
                       type="password"
                       value={profileForm.confirmPassword}
                       onChange={(e) => setProfileForm({ ...profileForm, confirmPassword: e.target.value })}
-                      placeholder="Confirm new password"
+                      placeholder={t('account.confirmPassword')}
                     />
                   </div>
                 </div>
               </div>
 
               <Button onClick={handleProfileUpdate} className="w-full">
-                Update Profile
+                {t('profile.saveChanges')}
               </Button>
             </CardContent>
           </Card>
@@ -314,17 +330,17 @@ export default function SettingsPage() {
         <TabsContent value="notifications" className="space-y-4">
           <Card>
             <CardHeader>
-              <CardTitle>Notification Preferences</CardTitle>
+              <CardTitle>{t('notifications.title')}</CardTitle>
               <CardDescription>
-                Choose what notifications you want to receive
+                {t('subtitle')}
               </CardDescription>
             </CardHeader>
             <CardContent className="space-y-4">
               <div className="flex items-center justify-between">
                 <div className="space-y-0.5">
-                  <Label>Price Alerts</Label>
+                  <Label>{t('notifications.priceAlerts')}</Label>
                   <p className="text-sm text-muted-foreground">
-                    Get notified when your price alerts trigger
+                    {t('notifications.priceAlertsDescription')}
                   </p>
                 </div>
                 <ToggleButton
@@ -335,9 +351,9 @@ export default function SettingsPage() {
 
               <div className="flex items-center justify-between">
                 <div className="space-y-0.5">
-                  <Label>News Alerts</Label>
+                  <Label>{t('notifications.marketNews')}</Label>
                   <p className="text-sm text-muted-foreground">
-                    Get notified about news matching your keywords
+                    {t('notifications.marketNewsDescription')}
                   </p>
                 </div>
                 <ToggleButton
@@ -348,9 +364,9 @@ export default function SettingsPage() {
 
               <div className="flex items-center justify-between">
                 <div className="space-y-0.5">
-                  <Label>Report Notifications</Label>
+                  <Label>{t('notifications.reportReady')}</Label>
                   <p className="text-sm text-muted-foreground">
-                    Get notified when reports are generated
+                    {t('notifications.reportReadyDescription')}
                   </p>
                 </div>
                 <ToggleButton
@@ -361,9 +377,9 @@ export default function SettingsPage() {
 
               <div className="flex items-center justify-between">
                 <div className="space-y-0.5">
-                  <Label>Email Notifications</Label>
+                  <Label>{t('notifications.email')}</Label>
                   <p className="text-sm text-muted-foreground">
-                    Receive notifications via email
+                    {t('notifications.push')}
                   </p>
                 </div>
                 <ToggleButton
@@ -379,17 +395,17 @@ export default function SettingsPage() {
         <TabsContent value="appearance" className="space-y-4">
           <Card>
             <CardHeader>
-              <CardTitle>Appearance</CardTitle>
+              <CardTitle>{t('appearance.title')}</CardTitle>
               <CardDescription>
-                Customize how WebStock looks for you
+                {t('appearance.theme')}
               </CardDescription>
             </CardHeader>
             <CardContent className="space-y-4">
               <div className="flex items-center justify-between">
                 <div className="space-y-0.5">
-                  <Label>Dark Mode</Label>
+                  <Label>{t('appearance.theme')}</Label>
                   <p className="text-sm text-muted-foreground">
-                    Toggle between dark and light theme
+                    {t('appearance.colorScheme')}
                   </p>
                 </div>
                 <div className="flex items-center gap-2">
@@ -405,21 +421,53 @@ export default function SettingsPage() {
           </Card>
         </TabsContent>
 
+        {/* Language Tab */}
+        <TabsContent value="language" className="space-y-4">
+          <Card>
+            <CardHeader>
+              <CardTitle>{t('language.title')}</CardTitle>
+              <CardDescription>
+                {t('language.interfaceDescription')}
+              </CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              <div className="space-y-2">
+                <Label>{t('language.interface')}</Label>
+                <p className="text-sm text-muted-foreground mb-3">
+                  {t('language.interfaceDescription')}
+                </p>
+                <div className="flex gap-2">
+                  {languageOptions.map((option) => (
+                    <Button
+                      key={option.value}
+                      variant={locale === option.value ? 'default' : 'outline'}
+                      onClick={() => setLocale(option.value)}
+                      className={cn('flex-1')}
+                    >
+                      {option.label}
+                    </Button>
+                  ))}
+                </div>
+              </div>
+            </CardContent>
+          </Card>
+        </TabsContent>
+
         {/* API Keys Tab */}
         <TabsContent value="api" className="space-y-4">
           <Card>
             <CardHeader>
-              <CardTitle>API Configuration</CardTitle>
+              <CardTitle>{t('ai.title')}</CardTitle>
               <CardDescription>
-                Configure your API keys for external data sources. These are securely stored on the server.
+                {t('ai.modelDescription')}
               </CardDescription>
             </CardHeader>
             <CardContent className="space-y-6">
               {/* News Source Selection */}
               <div className="space-y-2">
-                <Label htmlFor="newsSource">News Source</Label>
+                <Label htmlFor="newsSource">{tCommon('navigation.news')}</Label>
                 <p className="text-sm text-muted-foreground">
-                  Choose your preferred news provider for trending news and stock news
+                  {t('ai.languageDescription')}
                 </p>
                 <select
                   id="newsSource"
@@ -427,14 +475,11 @@ export default function SettingsPage() {
                   onChange={(e) => updateNewsSource(e.target.value)}
                   className="w-full h-10 px-3 rounded-md border border-input bg-background text-sm ring-offset-background focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2"
                 >
-                  <option value="auto">Auto (Recommended) - US→YFinance, A-shares→AKShare</option>
+                  <option value="auto">Auto (Recommended) - US: YFinance, A-shares: AKShare</option>
                   <option value="yfinance">YFinance - US stocks only</option>
                   <option value="finnhub">Finnhub - US stocks only</option>
                   <option value="akshare">AKShare - Chinese A-shares only</option>
                 </select>
-                <p className="text-xs text-muted-foreground">
-                  Auto mode uses the best source for each market. YFinance/Finnhub for US, AKShare (Eastmoney) for A-shares.
-                </p>
               </div>
 
               <div className="border-t pt-6">
@@ -523,9 +568,9 @@ export default function SettingsPage() {
 
                 {/* OpenAI Model */}
                 <div className="space-y-2 mt-4">
-                  <Label htmlFor="openaiModel">OpenAI Model</Label>
+                  <Label htmlFor="openaiModel">{t('ai.model')}</Label>
                   <p className="text-sm text-muted-foreground">
-                    Model to use for AI analysis (e.g. gpt-4o-mini, gpt-4o, deepseek-chat)
+                    {t('ai.modelDescription')}
                   </p>
                   <Input
                     id="openaiModel"
@@ -606,8 +651,7 @@ export default function SettingsPage() {
 
               <div className="bg-green-500/10 border border-green-500/20 rounded-lg p-4 mt-4">
                 <p className="text-sm text-green-600">
-                  <strong>Secure Storage:</strong> Your API keys are securely stored on the server 
-                  and associated with your account. They will persist across devices and sessions.
+                  <strong>{t('privacy.title')}:</strong> {t('privacy.dataSharingDescription')}
                 </p>
               </div>
             </CardContent>

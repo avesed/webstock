@@ -18,6 +18,7 @@ import {
   Home,
 } from 'lucide-react'
 import { useState, useEffect } from 'react'
+import { useTranslation } from 'react-i18next'
 
 import { cn } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
@@ -44,54 +45,52 @@ import type { Theme } from '@/types'
 
 const SIDEBAR_COLLAPSED_KEY = 'webstock-sidebar-collapsed'
 
-interface NavItem {
-  href: string
-  icon: React.ElementType
-  label: string
-  match?: RegExp
-}
+const navItems = [
+  { href: '/', icon: LayoutDashboard, labelKey: 'navigation.dashboard' as const },
+  { href: '/watchlist', icon: LineChart, labelKey: 'navigation.watchlist' as const },
+  { href: '/portfolio', icon: Briefcase, labelKey: 'navigation.portfolio' as const },
+  { href: '/alerts', icon: Bell, labelKey: 'navigation.alerts' as const },
+  { href: '/reports', icon: FileText, labelKey: 'navigation.reports' as const },
+  { href: '/news', icon: Newspaper, labelKey: 'navigation.news' as const },
+  { href: '/chat', icon: MessageSquare, labelKey: 'navigation.chat' as const },
+] as const
 
-const navItems: NavItem[] = [
-  { href: '/', icon: LayoutDashboard, label: 'Dashboard' },
-  { href: '/watchlist', icon: LineChart, label: 'Watchlist' },
-  { href: '/portfolio', icon: Briefcase, label: 'Portfolio' },
-  { href: '/alerts', icon: Bell, label: 'Alerts' },
-  { href: '/reports', icon: FileText, label: 'Reports' },
-  { href: '/news', icon: Newspaper, label: 'News' },
-  { href: '/chat', icon: MessageSquare, label: 'AI Chat' },
-]
-
-const themeOptions: { value: Theme; label: string; icon: React.ElementType }[] = [
-  { value: 'light', label: 'Light', icon: Sun },
-  { value: 'dark', label: 'Dark', icon: Moon },
-  { value: 'system', label: 'System', icon: Monitor },
-]
+const themeOptions = [
+  { value: 'light' as Theme, labelKey: 'appearance.light' as const, icon: Sun },
+  { value: 'dark' as Theme, labelKey: 'appearance.dark' as const, icon: Moon },
+  { value: 'system' as Theme, labelKey: 'appearance.system' as const, icon: Monitor },
+] as const
 
 // Breadcrumb configuration
+type CommonNavigationKey = 'navigation.dashboard' | 'navigation.watchlist' | 'navigation.portfolio' | 'navigation.alerts' | 'navigation.reports' | 'navigation.news' | 'navigation.chat' | 'navigation.analysis'
+
 interface BreadcrumbConfig {
   path: string
-  label: string
+  labelKey: CommonNavigationKey
   match?: RegExp
   dynamic?: boolean
 }
 
 const breadcrumbConfig: BreadcrumbConfig[] = [
-  { path: '/', label: 'Dashboard' },
-  { path: '/watchlist', label: 'Watchlist' },
-  { path: '/portfolio', label: 'Portfolio' },
-  { path: '/alerts', label: 'Alerts' },
-  { path: '/reports', label: 'Reports' },
-  { path: '/news', label: 'News' },
-  { path: '/chat', label: 'AI Chat' },
-  { path: '/stock', label: 'Stock', match: /^\/stock\//, dynamic: true },
+  { path: '/', labelKey: 'navigation.dashboard' },
+  { path: '/watchlist', labelKey: 'navigation.watchlist' },
+  { path: '/portfolio', labelKey: 'navigation.portfolio' },
+  { path: '/alerts', labelKey: 'navigation.alerts' },
+  { path: '/reports', labelKey: 'navigation.reports' },
+  { path: '/news', labelKey: 'navigation.news' },
+  { path: '/chat', labelKey: 'navigation.chat' },
+  { path: '/stock', labelKey: 'navigation.analysis', match: /^\/stock\//, dynamic: true },
 ]
 
-function getBreadcrumbs(pathname: string): { label: string; href: string }[] {
+function getBreadcrumbs(
+  pathname: string,
+  t: ReturnType<typeof useTranslation<'common'>>['t']
+): { label: string; href: string }[] {
   const breadcrumbs: { label: string; href: string }[] = []
 
   // Always add home
   if (pathname !== '/') {
-    breadcrumbs.push({ label: 'Home', href: '/' })
+    breadcrumbs.push({ label: t('navigation.home'), href: '/' })
   }
 
   // Find matching config
@@ -105,7 +104,7 @@ function getBreadcrumbs(pathname: string): { label: string; href: string }[] {
           breadcrumbs.push({ label: symbol.toUpperCase(), href: pathname })
         }
       } else if (pathname !== '/') {
-        breadcrumbs.push({ label: config.label, href: config.path })
+        breadcrumbs.push({ label: t(config.labelKey), href: config.path })
       }
       break
     }
@@ -126,6 +125,8 @@ function storeSidebarState(collapsed: boolean): void {
 }
 
 export default function MainLayout() {
+  const { t } = useTranslation('common')
+  const { t: tSettings } = useTranslation('settings')
   const location = useLocation()
   const navigate = useNavigate()
   const { user, logout } = useAuthStore()
@@ -155,7 +156,7 @@ export default function MainLayout() {
 
   const currentThemeOption = themeOptions.find((opt) => opt.value === theme)
   const ThemeIcon = currentThemeOption?.icon ?? Monitor
-  const breadcrumbs = getBreadcrumbs(location.pathname)
+  const breadcrumbs = getBreadcrumbs(location.pathname, t)
 
   return (
     <TooltipProvider delayDuration={0}>
@@ -198,6 +199,8 @@ export default function MainLayout() {
                     ? location.pathname === '/'
                     : location.pathname.startsWith(item.href)
 
+                const label = t(item.labelKey)
+
                 const linkContent = (
                   <Link
                     to={item.href}
@@ -211,7 +214,7 @@ export default function MainLayout() {
                     )}
                   >
                     <item.icon className="h-5 w-5 shrink-0" />
-                    {!sidebarCollapsed && item.label}
+                    {!sidebarCollapsed && label}
                   </Link>
                 )
 
@@ -220,7 +223,7 @@ export default function MainLayout() {
                     <Tooltip key={item.href}>
                       <TooltipTrigger asChild>{linkContent}</TooltipTrigger>
                       <TooltipContent side="right" sideOffset={8}>
-                        {item.label}
+                        {label}
                       </TooltipContent>
                     </Tooltip>
                   )
@@ -244,7 +247,7 @@ export default function MainLayout() {
               ) : (
                 <>
                   <ChevronLeft className="mr-2 h-4 w-4" />
-                  Collapse
+                  {t('layout.collapse')}
                 </>
               )}
             </Button>
@@ -260,10 +263,7 @@ export default function MainLayout() {
                   </div>
                 </TooltipTrigger>
                 <TooltipContent side="right" sideOffset={8}>
-                  <div>
-                    <p className="font-medium">{user?.email}</p>
-                    <p className="text-xs text-muted-foreground">Free plan</p>
-                  </div>
+                  <p className="font-medium">{user?.email}</p>
                 </TooltipContent>
               </Tooltip>
             ) : (
@@ -273,7 +273,6 @@ export default function MainLayout() {
                 </div>
                 <div className="flex-1 overflow-hidden">
                   <p className="truncate text-sm font-medium">{user?.email}</p>
-                  <p className="text-xs text-muted-foreground">Free plan</p>
                 </div>
               </div>
             )}
@@ -297,7 +296,7 @@ export default function MainLayout() {
             {/* Search */}
             <div className="flex-1 max-w-md">
               <StockSearch
-                placeholder="Search stocks (e.g., AAPL, TSLA)..."
+                placeholder={t('layout.searchPlaceholder')}
                 className="w-full"
               />
             </div>
@@ -312,7 +311,7 @@ export default function MainLayout() {
                   </Button>
                 </DropdownMenuTrigger>
                 <DropdownMenuContent align="end">
-                  <DropdownMenuLabel>Theme</DropdownMenuLabel>
+                  <DropdownMenuLabel>{t('layout.theme')}</DropdownMenuLabel>
                   <DropdownMenuSeparator />
                   {themeOptions.map((option) => (
                     <DropdownMenuItem
@@ -321,7 +320,7 @@ export default function MainLayout() {
                       className={cn(theme === option.value && 'bg-accent')}
                     >
                       <option.icon className="mr-2 h-4 w-4" />
-                      {option.label}
+                      {tSettings(option.labelKey)}
                     </DropdownMenuItem>
                   ))}
                 </DropdownMenuContent>
@@ -340,20 +339,17 @@ export default function MainLayout() {
                 </DropdownMenuTrigger>
                 <DropdownMenuContent align="end" className="w-56">
                   <DropdownMenuLabel>
-                    <div>
-                      <p className="font-medium">{user?.email}</p>
-                      <p className="text-xs text-muted-foreground">Free plan</p>
-                    </div>
+                    <p className="font-medium">{user?.email}</p>
                   </DropdownMenuLabel>
                   <DropdownMenuSeparator />
                   <DropdownMenuItem onClick={() => navigate('/settings')}>
                     <Settings className="mr-2 h-4 w-4" />
-                    Settings
+                    {t('navigation.settings')}
                   </DropdownMenuItem>
                   <DropdownMenuSeparator />
                   <DropdownMenuItem onClick={handleLogout} className="text-destructive">
                     <LogOut className="mr-2 h-4 w-4" />
-                    Log out
+                    {t('navigation.logout')}
                   </DropdownMenuItem>
                 </DropdownMenuContent>
               </DropdownMenu>

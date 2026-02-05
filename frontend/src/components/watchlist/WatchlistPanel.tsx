@@ -1,5 +1,6 @@
 import { useState, useCallback } from 'react'
 import { useNavigate } from 'react-router-dom'
+import { useTranslation } from 'react-i18next'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import {
   Plus,
@@ -53,6 +54,7 @@ export default function WatchlistPanel({
   compact = false,
   onStockSelect,
 }: WatchlistPanelProps) {
+  const { t } = useTranslation('dashboard')
   const navigate = useNavigate()
   const queryClient = useQueryClient()
   const { toast } = useToast()
@@ -119,14 +121,14 @@ export default function WatchlistPanel({
       setIsCreateDialogOpen(false)
       setNewWatchlistName('')
       toast({
-        title: 'Watchlist created',
-        description: `"${newWatchlist.name}" has been created successfully.`,
+        title: t('watchlist.createWatchlist'),
+        description: `"${newWatchlist.name}"`,
       })
     },
     onError: () => {
       toast({
-        title: 'Error',
-        description: 'Failed to create watchlist. Please try again.',
+        title: t('common:status.error', 'Error'),
+        description: t('common:errors.unknown', 'Failed to create.'),
         variant: 'destructive',
       })
     },
@@ -143,14 +145,14 @@ export default function WatchlistPanel({
       setIsDeleteDialogOpen(false)
       setWatchlistToDelete(null)
       toast({
-        title: 'Watchlist deleted',
-        description: 'The watchlist has been deleted successfully.',
+        title: t('watchlist.deleteWatchlist'),
+        description: t('common:status.success', 'Success'),
       })
     },
     onError: () => {
       toast({
-        title: 'Error',
-        description: 'Failed to delete watchlist. Please try again.',
+        title: t('common:status.error', 'Error'),
+        description: t('common:errors.unknown', 'Failed to delete.'),
         variant: 'destructive',
       })
     },
@@ -166,14 +168,14 @@ export default function WatchlistPanel({
       setWatchlistToRename(null)
       setNewWatchlistName('')
       toast({
-        title: 'Watchlist renamed',
-        description: 'The watchlist has been renamed successfully.',
+        title: t('watchlist.editWatchlist'),
+        description: t('common:status.success', 'Success'),
       })
     },
     onError: () => {
       toast({
-        title: 'Error',
-        description: 'Failed to rename watchlist. Please try again.',
+        title: t('common:status.error', 'Error'),
+        description: t('common:errors.unknown', 'Failed to rename.'),
         variant: 'destructive',
       })
     },
@@ -187,14 +189,14 @@ export default function WatchlistPanel({
       queryClient.invalidateQueries({ queryKey: ['watchlists'] })
       queryClient.invalidateQueries({ queryKey: ['watchlist-quotes', selectedWatchlistId] })
       toast({
-        title: 'Stock removed',
-        description: 'The stock has been removed from the watchlist.',
+        title: t('watchlist.removeSymbol'),
+        description: t('common:status.success', 'Success'),
       })
     },
     onError: () => {
       toast({
-        title: 'Error',
-        description: 'Failed to remove stock. Please try again.',
+        title: t('common:status.error', 'Error'),
+        description: t('common:errors.unknown', 'Failed to remove.'),
         variant: 'destructive',
       })
     },
@@ -279,13 +281,13 @@ export default function WatchlistPanel({
     return (
       <div className={cn('flex flex-col items-center justify-center gap-2 p-8', className)}>
         <AlertCircle className="h-8 w-8 text-destructive" />
-        <p className="text-sm text-muted-foreground">Failed to load watchlists</p>
+        <p className="text-sm text-muted-foreground">{t('common:status.error', 'Failed to load')}</p>
         <Button
           variant="outline"
           size="sm"
           onClick={() => queryClient.invalidateQueries({ queryKey: ['watchlists'] })}
         >
-          Try again
+          {t('common:actions.retry', 'Try again')}
         </Button>
       </div>
     )
@@ -303,7 +305,7 @@ export default function WatchlistPanel({
               <div className="flex items-center gap-2">
                 <Star className="h-4 w-4" />
                 <span className="truncate">
-                  {selectedWatchlist?.name ?? 'Select watchlist'}
+                  {selectedWatchlist?.name ?? t('common:actions.select', 'Select')}
                 </span>
               </div>
               <ChevronRight className="h-4 w-4 rotate-90 opacity-50" />
@@ -328,7 +330,7 @@ export default function WatchlistPanel({
             {watchlists && watchlists.length > 0 && <DropdownMenuSeparator />}
             <DropdownMenuItem onClick={() => setIsCreateDialogOpen(true)}>
               <Plus className="mr-2 h-4 w-4" />
-              Create new watchlist
+              {t('watchlist.createWatchlist')}
             </DropdownMenuItem>
           </DropdownMenuContent>
         </DropdownMenu>
@@ -343,7 +345,7 @@ export default function WatchlistPanel({
             <DropdownMenuContent align="end">
               <DropdownMenuItem onClick={() => handleRenameWatchlist(selectedWatchlist)}>
                 <Edit2 className="mr-2 h-4 w-4" />
-                Rename
+                {t('common:actions.edit', 'Rename')}
               </DropdownMenuItem>
               <DropdownMenuSeparator />
               <DropdownMenuItem
@@ -351,7 +353,7 @@ export default function WatchlistPanel({
                 className="text-destructive"
               >
                 <Trash2 className="mr-2 h-4 w-4" />
-                Delete
+                {t('common:actions.delete', 'Delete')}
               </DropdownMenuItem>
             </DropdownMenuContent>
           </DropdownMenu>
@@ -436,17 +438,17 @@ export default function WatchlistPanel({
           <div className="flex flex-col items-center justify-center gap-2 p-8 text-center">
             <Star className="h-8 w-8 text-muted-foreground/50" />
             <p className="text-sm text-muted-foreground">
-              No stocks in this watchlist
+              {t('watchlist.noSymbols')}
             </p>
             <p className="text-xs text-muted-foreground">
-              Search for stocks and add them to track their performance
+              {t('watchlist.addFirst')}
             </p>
           </div>
         ) : (
           <div className="flex flex-col items-center justify-center gap-2 p-8 text-center">
             <Star className="h-8 w-8 text-muted-foreground/50" />
             <p className="text-sm text-muted-foreground">
-              Create a watchlist to get started
+              {t('watchlist.noWatchlists')}
             </p>
             <Button
               variant="outline"
@@ -454,7 +456,7 @@ export default function WatchlistPanel({
               onClick={() => setIsCreateDialogOpen(true)}
             >
               <Plus className="mr-2 h-4 w-4" />
-              Create watchlist
+              {t('watchlist.createFirst')}
             </Button>
           </div>
         )}
@@ -464,9 +466,9 @@ export default function WatchlistPanel({
       <Dialog open={isCreateDialogOpen} onOpenChange={setIsCreateDialogOpen}>
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>Create Watchlist</DialogTitle>
+            <DialogTitle>{t('watchlist.createWatchlist')}</DialogTitle>
             <DialogDescription>
-              Create a new watchlist to track your favorite stocks.
+              {t('watchlist.title')}
             </DialogDescription>
           </DialogHeader>
           <div className="grid gap-4 py-4">
@@ -493,7 +495,7 @@ export default function WatchlistPanel({
                 setNewWatchlistName('')
               }}
             >
-              Cancel
+              {t('common:actions.cancel', 'Cancel')}
             </Button>
             <Button
               onClick={handleCreateWatchlist}
@@ -502,7 +504,7 @@ export default function WatchlistPanel({
               {createMutation.isPending && (
                 <Loader2 className="mr-2 h-4 w-4 animate-spin" />
               )}
-              Create
+              {t('common:actions.create', 'Create')}
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -512,10 +514,9 @@ export default function WatchlistPanel({
       <Dialog open={isDeleteDialogOpen} onOpenChange={setIsDeleteDialogOpen}>
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>Delete Watchlist</DialogTitle>
+            <DialogTitle>{t('watchlist.deleteWatchlist')}</DialogTitle>
             <DialogDescription>
-              Are you sure you want to delete "{watchlistToDelete?.name}"? This action
-              cannot be undone.
+              {t('common:confirmation.deleteMessage', 'Are you sure?')} "{watchlistToDelete?.name}"
             </DialogDescription>
           </DialogHeader>
           <DialogFooter>
@@ -526,7 +527,7 @@ export default function WatchlistPanel({
                 setWatchlistToDelete(null)
               }}
             >
-              Cancel
+              {t('common:actions.cancel', 'Cancel')}
             </Button>
             <Button
               variant="destructive"
@@ -536,7 +537,7 @@ export default function WatchlistPanel({
               {deleteMutation.isPending && (
                 <Loader2 className="mr-2 h-4 w-4 animate-spin" />
               )}
-              Delete
+              {t('common:actions.delete', 'Delete')}
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -546,9 +547,9 @@ export default function WatchlistPanel({
       <Dialog open={isRenameDialogOpen} onOpenChange={setIsRenameDialogOpen}>
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>Rename Watchlist</DialogTitle>
+            <DialogTitle>{t('watchlist.editWatchlist')}</DialogTitle>
             <DialogDescription>
-              Enter a new name for this watchlist.
+              {t('watchlist.watchlistName')}
             </DialogDescription>
           </DialogHeader>
           <div className="grid gap-4 py-4">
@@ -576,7 +577,7 @@ export default function WatchlistPanel({
                 setNewWatchlistName('')
               }}
             >
-              Cancel
+              {t('common:actions.cancel', 'Cancel')}
             </Button>
             <Button
               onClick={handleConfirmRename}
@@ -585,7 +586,7 @@ export default function WatchlistPanel({
               {renameMutation.isPending && (
                 <Loader2 className="mr-2 h-4 w-4 animate-spin" />
               )}
-              Rename
+              {t('common:actions.save', 'Save')}
             </Button>
           </DialogFooter>
         </DialogContent>

@@ -1,4 +1,5 @@
 import { useParams } from 'react-router-dom'
+import { useTranslation } from 'react-i18next'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { useState, useEffect, useCallback, useRef } from 'react'
 import Markdown from 'react-markdown'
@@ -42,6 +43,7 @@ import { StockChatWidget } from '@/components/chat'
 import type { StockQuote, StockInfo, StockFinancials, NewsArticle } from '@/types'
 
 export default function StockDetailPage() {
+  const { t } = useTranslation('dashboard')
   const { symbol } = useParams<{ symbol: string }>()
   const queryClient = useQueryClient()
   const { toast } = useToast()
@@ -144,8 +146,8 @@ export default function StockDetailPage() {
     onSuccess: (_, { symbol }) => {
       queryClient.invalidateQueries({ queryKey: ['watchlists'] })
       toast({
-        title: 'Added to watchlist',
-        description: `${symbol} has been added to your watchlist.`,
+        title: t('watchlist.addSymbol'),
+        description: `${symbol}`,
       })
     },
     onError: (error: unknown, { symbol }) => {
@@ -154,16 +156,16 @@ export default function StockDetailPage() {
         const axiosError = error as { response?: { status?: number; data?: { detail?: string } } }
         if (axiosError.response?.status === 409) {
           toast({
-            title: 'Already added',
-            description: `${symbol} is already in this watchlist.`,
+            title: t('common:status.error', 'Already added'),
+            description: `${symbol}`,
             variant: 'default',
           })
           return
         }
       }
       toast({
-        title: 'Error',
-        description: 'Failed to add stock to watchlist.',
+        title: t('common:status.error', 'Error'),
+        description: t('common:errors.unknown', 'Failed to add.'),
         variant: 'destructive',
       })
     },
@@ -205,8 +207,8 @@ export default function StockDetailPage() {
           setIsAnalyzing(false)
           abortRef.current = null
           toast({
-            title: 'Analysis Error',
-            description: (data.error as string) || 'Failed to generate analysis. Please try again.',
+            title: t('common:status.error', 'Analysis Error'),
+            description: (data.error as string) || t('common:errors.unknown', 'Failed to generate analysis.'),
             variant: 'destructive',
           })
         }
@@ -240,13 +242,13 @@ export default function StockDetailPage() {
     return (
       <div className="flex flex-col items-center justify-center gap-4 py-16">
         <AlertCircle className="h-12 w-12 text-destructive" />
-        <h2 className="text-xl font-semibold">Failed to load stock data</h2>
+        <h2 className="text-xl font-semibold">{t('common:status.error', 'Failed to load')}</h2>
         <p className="text-muted-foreground">
-          Could not find data for symbol "{upperSymbol}"
+          {t('search.noResults')} "{upperSymbol}"
         </p>
         <Button onClick={() => refetchQuote()}>
           <RefreshCw className="mr-2 h-4 w-4" />
-          Try again
+          {t('common:actions.retry', 'Try again')}
         </Button>
       </div>
     )
@@ -277,7 +279,7 @@ export default function StockDetailPage() {
         {isLoadingQuote ? (
           <div className="flex items-center gap-2">
             <Loader2 className="h-5 w-5 animate-spin" />
-            <span className="text-muted-foreground">Loading price...</span>
+            <span className="text-muted-foreground">{t('common:status.loading', 'Loading...')}</span>
           </div>
         ) : quote ? (
           <div className="text-right">
@@ -310,7 +312,7 @@ export default function StockDetailPage() {
           <DropdownMenuTrigger asChild>
             <Button variant="outline">
               <Plus className="mr-2 h-4 w-4" />
-              Add to Watchlist
+              {t('stock.addToWatchlist')}
             </Button>
           </DropdownMenuTrigger>
           <DropdownMenuContent align="start" className="w-48">
@@ -331,7 +333,7 @@ export default function StockDetailPage() {
               ))
             ) : (
               <DropdownMenuItem disabled>
-                No watchlists available
+                {t('watchlist.noWatchlists')}
               </DropdownMenuItem>
             )}
           </DropdownMenuContent>
@@ -339,7 +341,7 @@ export default function StockDetailPage() {
 
         <Button variant="outline" onClick={() => refetchQuote()}>
           <RefreshCw className="mr-2 h-4 w-4" />
-          Refresh
+          {t('common:actions.refresh', 'Refresh')}
         </Button>
       </div>
 
@@ -350,8 +352,8 @@ export default function StockDetailPage() {
           <Card>
             <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
               <div>
-                <CardTitle>Price Chart</CardTitle>
-                <CardDescription>Interactive candlestick chart with volume</CardDescription>
+                <CardTitle>{t('stock.chart')}</CardTitle>
+                <CardDescription>{t('stock.price')}</CardDescription>
               </div>
               <ChartControls
                 timeframe={chartControls.timeframe}
@@ -373,9 +375,9 @@ export default function StockDetailPage() {
           {/* Tabs for Analysis, Financials, News */}
           <Tabs defaultValue="analysis" className="space-y-4">
             <TabsList className="grid w-full grid-cols-3">
-              <TabsTrigger value="analysis">AI Analysis</TabsTrigger>
-              <TabsTrigger value="financials">Financials</TabsTrigger>
-              <TabsTrigger value="news">News</TabsTrigger>
+              <TabsTrigger value="analysis">{t('stock.analysis')}</TabsTrigger>
+              <TabsTrigger value="financials">{t('stock.fundamentals')}</TabsTrigger>
+              <TabsTrigger value="news">{t('stock.news')}</TabsTrigger>
             </TabsList>
 
             <TabsContent value="analysis">
@@ -383,19 +385,19 @@ export default function StockDetailPage() {
                 <CardHeader>
                   <div className="flex items-center justify-between">
                     <div>
-                      <CardTitle>AI Analysis</CardTitle>
+                      <CardTitle>{t('stock.analysis')}</CardTitle>
                       <CardDescription>
-                        Comprehensive AI-powered analysis including fundamental, technical, and sentiment insights
+                        {t('stock.analyze')}
                       </CardDescription>
                     </div>
                     <Button onClick={handleAnalyze} disabled={isAnalyzing}>
                       {isAnalyzing ? (
                         <>
                           <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                          Analyzing...
+                          {t('common:status.processing', 'Analyzing...')}
                         </>
                       ) : (
-                        'Generate Analysis'
+                        t('stock.analyze')
                       )}
                     </Button>
                   </div>
@@ -410,7 +412,7 @@ export default function StockDetailPage() {
                     </div>
                   ) : (
                     <div className="flex h-[200px] items-center justify-center text-muted-foreground">
-                      Click "Generate Analysis" to get AI-powered insights for {upperSymbol}
+                      {t('stock.analyze')} {upperSymbol}
                     </div>
                   )}
                 </CardContent>
@@ -420,8 +422,8 @@ export default function StockDetailPage() {
             <TabsContent value="financials">
               <Card>
                 <CardHeader>
-                  <CardTitle>Financial Data</CardTitle>
-                  <CardDescription>Key financial metrics and ratios</CardDescription>
+                  <CardTitle>{t('stock.fundamentals')}</CardTitle>
+                  <CardDescription>{t('stock.financials.revenue')}</CardDescription>
                 </CardHeader>
                 <CardContent>
                   {isLoadingFinancials ? (
@@ -432,7 +434,7 @@ export default function StockDetailPage() {
                     <FinancialsGrid financials={financials} />
                   ) : (
                     <div className="flex h-[200px] items-center justify-center text-muted-foreground">
-                      No financial data available
+                      {t('common:status.noData', 'No data available')}
                     </div>
                   )}
                 </CardContent>
@@ -442,8 +444,8 @@ export default function StockDetailPage() {
             <TabsContent value="news">
               <Card>
                 <CardHeader>
-                  <CardTitle>Related News</CardTitle>
-                  <CardDescription>Latest news articles for {upperSymbol}</CardDescription>
+                  <CardTitle>{t('stock.news')}</CardTitle>
+                  <CardDescription>{t('news.bySymbol', { symbol: upperSymbol })}</CardDescription>
                 </CardHeader>
                 <CardContent>
                   {isLoadingNews ? (
@@ -454,7 +456,7 @@ export default function StockDetailPage() {
                     <NewsList articles={newsData.items} />
                   ) : (
                     <div className="flex h-[200px] items-center justify-center text-muted-foreground">
-                      No news articles available
+                      {t('news.noNews')}
                     </div>
                   )}
                 </CardContent>
@@ -468,7 +470,7 @@ export default function StockDetailPage() {
           {/* Key stats */}
           <Card>
             <CardHeader>
-              <CardTitle>Key Statistics</CardTitle>
+              <CardTitle>{t('stock.overview')}</CardTitle>
             </CardHeader>
             <CardContent>
               {isLoadingQuote ? (
@@ -484,7 +486,7 @@ export default function StockDetailPage() {
           {/* Company info */}
           <Card>
             <CardHeader>
-              <CardTitle>Company Info</CardTitle>
+              <CardTitle>{t('stock.description')}</CardTitle>
             </CardHeader>
             <CardContent>
               {isLoadingInfo ? (
@@ -495,7 +497,7 @@ export default function StockDetailPage() {
                 <CompanyInfo info={info} />
               ) : (
                 <div className="flex h-[100px] items-center justify-center text-muted-foreground">
-                  No company info available
+                  {t('common:status.noData', 'No data available')}
                 </div>
               )}
             </CardContent>

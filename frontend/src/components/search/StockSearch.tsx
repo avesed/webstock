@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { useNavigate } from 'react-router-dom'
+import { useTranslation } from 'react-i18next'
 import { Search, X, Clock, TrendingUp, Loader2 } from 'lucide-react'
 import { Input } from '@/components/ui/input'
 import { Button } from '@/components/ui/button'
@@ -27,14 +28,16 @@ const marketLabels: Record<Market, { label: string; color: string }> = {
 }
 
 export default function StockSearch({
-  placeholder = 'Search stocks...',
+  placeholder,
   className,
   onSelect,
   autoFocus = false,
   showRecentSearches = true,
 }: StockSearchProps) {
+  const { t } = useTranslation('dashboard')
   const navigate = useNavigate()
   const inputRef = useRef<HTMLInputElement>(null)
+  const defaultPlaceholder = placeholder ?? t('search.placeholder')
   const containerRef = useRef<HTMLDivElement>(null)
   const [query, setQuery] = useState('')
   const [results, setResults] = useState<SearchResult[]>([])
@@ -194,7 +197,7 @@ export default function StockSearch({
           onChange={(e) => setQuery(e.target.value)}
           onFocus={() => setIsOpen(true)}
           onKeyDown={handleKeyDown}
-          placeholder={placeholder}
+          placeholder={defaultPlaceholder}
           autoFocus={autoFocus}
           className="h-10 pl-9 pr-9"
         />
@@ -266,7 +269,7 @@ export default function StockSearch({
                   </div>
                 ) : !isLoading ? (
                   <div className="p-4 text-center text-sm text-muted-foreground">
-                    No results found for "{query}"
+                    {t('search.noResults')} "{query}"
                   </div>
                 ) : null}
               </>
@@ -277,7 +280,7 @@ export default function StockSearch({
               <div className="p-1">
                 <div className="flex items-center justify-between px-3 py-2">
                   <span className="text-xs font-medium text-muted-foreground">
-                    Recent Searches
+                    {t('search.recentSearches')}
                   </span>
                   <Button
                     variant="ghost"
@@ -288,7 +291,7 @@ export default function StockSearch({
                       clearRecentSearches()
                     }}
                   >
-                    Clear all
+                    {t('search.clearRecent')}
                   </Button>
                 </div>
                 {recentSearches.map((symbol, index) => (

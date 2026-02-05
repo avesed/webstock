@@ -1,4 +1,5 @@
 import { useEffect } from 'react'
+import { useTranslation } from 'react-i18next'
 import { Plus, Trash2, MessageSquare, Loader2 } from 'lucide-react'
 
 import { cn } from '@/lib/utils'
@@ -8,6 +9,7 @@ import { ScrollArea } from '@/components/ui/scroll-area'
 import { useChatStore } from '@/stores/chatStore'
 
 export function ConversationList() {
+  const { t } = useTranslation('chat')
   const conversations = useChatStore((s) => s.conversations)
   const currentConversationId = useChatStore((s) => s.currentConversationId)
   const isLoadingConversations = useChatStore((s) => s.isLoadingConversations)
@@ -33,7 +35,7 @@ export function ConversationList() {
     <div className="flex h-full flex-col">
       {/* Header */}
       <div className="flex items-center justify-between border-b px-4 py-3">
-        <h2 className="text-sm font-semibold">Conversations</h2>
+        <h2 className="text-sm font-semibold">{t('conversations')}</h2>
         <Button variant="ghost" size="icon" className="h-8 w-8" onClick={handleNewChat}>
           <Plus className="h-4 w-4" />
         </Button>
@@ -51,9 +53,9 @@ export function ConversationList() {
           {!isLoadingConversations && conversations.length === 0 && (
             <div className="flex flex-col items-center justify-center py-12 px-4 text-center">
               <MessageSquare className="h-8 w-8 text-muted-foreground/50 mb-2" />
-              <p className="text-sm font-medium text-muted-foreground">No conversations yet</p>
+              <p className="text-sm font-medium text-muted-foreground">{t('noConversations')}</p>
               <p className="text-xs text-muted-foreground/70 mt-1">
-                Start a new chat to ask about stocks and markets
+                {t('startFirst')}
               </p>
             </div>
           )}
@@ -82,7 +84,7 @@ export function ConversationList() {
               >
                 <div className="flex items-start justify-between gap-2">
                   <span className="font-medium leading-snug line-clamp-1">
-                    {conversation.title ?? 'New conversation'}
+                    {conversation.title ?? t('newConversation')}
                   </span>
                   <Button
                     variant="ghost"

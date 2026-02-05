@@ -1,15 +1,27 @@
 import { useState } from 'react'
 import { Link } from 'react-router-dom'
-import { LineChart, Eye, EyeOff } from 'lucide-react'
+import { LineChart, Eye, EyeOff, Globe } from 'lucide-react'
+import { useTranslation } from 'react-i18next'
 
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from '@/components/ui/card'
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu'
 import { useAuthStore } from '@/stores/authStore'
-import { isValidEmail } from '@/lib/utils'
+import { useLocale } from '@/hooks'
+import { isValidEmail, cn } from '@/lib/utils'
+import type { Locale } from '@/hooks'
 
 export default function LoginPage() {
+  const { t } = useTranslation('auth')
+  const { t: tCommon } = useTranslation('common')
+  const { locale, setLocale } = useLocale()
   const { login, isLoading, error, clearError } = useAuthStore()
 
   const [email, setEmail] = useState('')
@@ -23,20 +35,47 @@ export default function LoginPage() {
     clearError()
 
     if (!email || !password) {
-      setValidationError('Please fill in all fields')
+      setValidationError(t('validation.fillAllFields'))
       return
     }
 
     if (!isValidEmail(email)) {
-      setValidationError('Please enter a valid email address')
+      setValidationError(t('validation.invalidEmail'))
       return
     }
 
     await login(email, password)
   }
 
+  const languageOptions: { value: Locale; label: string }[] = [
+    { value: 'en', label: tCommon('language.en') },
+    { value: 'zh', label: tCommon('language.zh') },
+  ]
+
   return (
     <div className="flex min-h-screen items-center justify-center bg-background p-4">
+      {/* Language Switcher */}
+      <div className="absolute top-4 right-4">
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild>
+            <Button variant="ghost" size="icon">
+              <Globe className="h-5 w-5" />
+            </Button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="end">
+            {languageOptions.map((option) => (
+              <DropdownMenuItem
+                key={option.value}
+                onClick={() => setLocale(option.value)}
+                className={cn(locale === option.value && 'bg-accent')}
+              >
+                {option.label}
+              </DropdownMenuItem>
+            ))}
+          </DropdownMenuContent>
+        </DropdownMenu>
+      </div>
+
       <Card className="w-full max-w-md">
         <CardHeader className="space-y-1 text-center">
           <div className="flex justify-center mb-4">
@@ -45,9 +84,9 @@ export default function LoginPage() {
               <span className="text-2xl font-bold">WebStock</span>
             </div>
           </div>
-          <CardTitle className="text-2xl">Welcome back</CardTitle>
+          <CardTitle className="text-2xl">{t('login.title')}</CardTitle>
           <CardDescription>
-            Enter your credentials to access your account
+            {t('login.subtitle')}
           </CardDescription>
         </CardHeader>
         <form onSubmit={handleSubmit}>
@@ -59,11 +98,11 @@ export default function LoginPage() {
             )}
 
             <div className="space-y-2">
-              <Label htmlFor="email">Email</Label>
+              <Label htmlFor="email">{t('login.email')}</Label>
               <Input
                 id="email"
                 type="email"
-                placeholder="you@example.com"
+                placeholder={t('login.emailPlaceholder')}
                 value={email}
                 onChange={(e) => setEmail(e.target.value)}
                 disabled={isLoading}
@@ -72,12 +111,12 @@ export default function LoginPage() {
             </div>
 
             <div className="space-y-2">
-              <Label htmlFor="password">Password</Label>
+              <Label htmlFor="password">{t('login.password')}</Label>
               <div className="relative">
                 <Input
                   id="password"
                   type={showPassword ? 'text' : 'password'}
-                  placeholder="Enter your password"
+                  placeholder={t('login.passwordPlaceholder')}
                   value={password}
                   onChange={(e) => setPassword(e.target.value)}
                   disabled={isLoading}
@@ -104,13 +143,13 @@ export default function LoginPage() {
               {isLoading ? (
                 <div className="h-5 w-5 animate-spin rounded-full border-2 border-current border-t-transparent" />
               ) : (
-                'Sign in'
+                t('login.submit')
               )}
             </Button>
             <p className="text-center text-sm text-muted-foreground">
-              Don&apos;t have an account?{' '}
+              {t('login.noAccount')}{' '}
               <Link to="/register" className="text-primary hover:underline">
-                Sign up
+                {t('login.signUp')}
               </Link>
             </p>
           </CardFooter>

@@ -1,0 +1,84 @@
+{
+  "title": "AI 对话",
+  "subtitle": "询问股票相关问题，获取 AI 智能分析",
+  "newConversation": "新对话",
+  "conversations": "对话列表",
+  "noConversations": "暂无对话",
+  "startFirst": "开始您的第一个对话",
+  "deleteConversation": "删除对话",
+  "archiveConversation": "归档对话",
+  "renameConversation": "重命名对话",
+  "conversationTitle": "对话标题",
+  "untitled": "未命名对话",
+  "input": {
+    "placeholder": "询问股票、市场趋势或请求分析...",
+    "placeholderWithSymbol": "询问关于 {{symbol}} 的问题...",
+    "send": "发送",
+    "sending": "发送中...",
+    "stop": "停止"
+  },
+  "messages": {
+    "thinking": "思考中...",
+    "analyzing": "分析中...",
+    "searching": "搜索相关信息...",
+    "generating": "生成回复中...",
+    "error": "生成回复失败",
+    "retry": "重试",
+    "copy": "复制",
+    "copied": "已复制！",
+    "regenerate": "重新生成",
+    "sources": "参考来源",
+    "noSources": "暂无参考来源"
+  },
+  "suggestions": {
+    "title": "您可以尝试询问",
+    "analyze": "分析 {{symbol}} 股票",
+    "compare": "对比 {{symbol1}} 和 {{symbol2}}",
+    "news": "{{symbol}} 最新的新闻是什么？",
+    "outlook": "{{symbol}} 的前景如何？",
+    "fundamentals": "解释一下 {{symbol}} 的基本面",
+    "technical": "{{symbol}} 的技术分析"
+  },
+  "widget": {
+    "title": "股票助手",
+    "greeting": "您好！我可以帮您分析 {{symbol}}。您想了解什么？",
+    "defaultGreeting": "您好！今天我能帮您分析什么股票？",
+    "minimize": "最小化",
+    "expand": "展开",
+    "close": "关闭"
+  },
+  "tools": {
+    "searching": "搜索中...",
+    "analyzing": "分析中...",
+    "fetching": "获取数据中...",
+    "completed": "已完成",
+    "failed": "失败"
+  },
+  "errors": {
+    "connectionLost": "连接已断开，正在重连...",
+    "rateLimited": "请求过于频繁，请稍后再试。",
+    "serverError": "服务器错误，请重试。",
+    "networkError": "网络错误，请检查网络连接。"
+  },
+  "empty": {
+    "title": "开始对话",
+    "description": "您可以向我询问任何关于股票、市场分析或金融数据的问题。",
+    "examples": {
+      "title": "示例问题：",
+      "1": "AAPL 的关键指标有哪些？",
+      "2": "分析 TSLA 最近的表现",
+      "3": "对比 MSFT 和 GOOGL 的基本面",
+      "4": "NVDA 的市场情绪如何？"
+    }
+  },
+  "history": {
+    "title": "聊天记录",
+    "today": "今天",
+    "yesterday": "昨天",
+    "thisWeek": "本周",
+    "thisMonth": "本月",
+    "older": "更早",
+    "loadMore": "加载更多",
+    "noMore": "没有更多对话"
+  }
+}

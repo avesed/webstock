@@ -1,0 +1,84 @@
+{
+  "title": "AI Chat",
+  "subtitle": "Ask questions about stocks and get AI-powered insights",
+  "newConversation": "New Conversation",
+  "conversations": "Conversations",
+  "noConversations": "No conversations yet",
+  "startFirst": "Start your first conversation",
+  "deleteConversation": "Delete Conversation",
+  "archiveConversation": "Archive Conversation",
+  "renameConversation": "Rename Conversation",
+  "conversationTitle": "Conversation Title",
+  "untitled": "Untitled Conversation",
+  "input": {
+    "placeholder": "Ask about stocks, market trends, or request analysis...",
+    "placeholderWithSymbol": "Ask about {{symbol}}...",
+    "send": "Send",
+    "sending": "Sending...",
+    "stop": "Stop"
+  },
+  "messages": {
+    "thinking": "Thinking...",
+    "analyzing": "Analyzing...",
+    "searching": "Searching relevant information...",
+    "generating": "Generating response...",
+    "error": "Failed to generate response",
+    "retry": "Retry",
+    "copy": "Copy",
+    "copied": "Copied!",
+    "regenerate": "Regenerate",
+    "sources": "Sources",
+    "noSources": "No sources available"
+  },
+  "suggestions": {
+    "title": "Try asking about",
+    "analyze": "Analyze {{symbol}} stock",
+    "compare": "Compare {{symbol1}} and {{symbol2}}",
+    "news": "What's the latest news on {{symbol}}?",
+    "outlook": "What's the outlook for {{symbol}}?",
+    "fundamentals": "Explain {{symbol}}'s fundamentals",
+    "technical": "Technical analysis of {{symbol}}"
+  },
+  "widget": {
+    "title": "Stock Assistant",
+    "greeting": "Hello! I can help you analyze {{symbol}}. What would you like to know?",
+    "defaultGreeting": "Hello! How can I help you with stock analysis today?",
+    "minimize": "Minimize",
+    "expand": "Expand",
+    "close": "Close"
+  },
+  "tools": {
+    "searching": "Searching...",
+    "analyzing": "Analyzing...",
+    "fetching": "Fetching data...",
+    "completed": "Completed",
+    "failed": "Failed"
+  },
+  "errors": {
+    "connectionLost": "Connection lost. Reconnecting...",
+    "rateLimited": "Too many requests. Please wait a moment.",
+    "serverError": "Server error. Please try again.",
+    "networkError": "Network error. Check your connection."
+  },
+  "empty": {
+    "title": "Start a Conversation",
+    "description": "Ask me anything about stocks, market analysis, or financial data.",
+    "examples": {
+      "title": "Example questions:",
+      "1": "What are the key metrics for AAPL?",
+      "2": "Analyze the recent performance of TSLA",
+      "3": "Compare MSFT and GOOGL fundamentals",
+      "4": "What's the market sentiment for NVDA?"
+    }
+  },
+  "history": {
+    "title": "Chat History",
+    "today": "Today",
+    "yesterday": "Yesterday",
+    "thisWeek": "This Week",
+    "thisMonth": "This Month",
+    "older": "Older",
+    "loadMore": "Load More",
+    "noMore": "No more conversations"
+  }
+}

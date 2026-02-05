@@ -49,7 +49,7 @@ class ChatMessageResponse(CamelModel):
     content: str
     token_count: Optional[int] = None
     model: Optional[str] = None
-    tool_calls: Optional[Dict[str, Any]] = None
+    tool_calls: Optional[List[Dict[str, Any]]] = None
     rag_context: Optional[List[Dict[str, Any]]] = None
     created_at: datetime
 

@@ -22,13 +22,16 @@ export function ChatPageContent() {
     setShowChat(false)
   }
 
+  // Calculate height: viewport - header(64px) - breadcrumb(~36px) - main padding(16px top + 16px bottom on mobile, 24px on lg)
+  // Mobile: 100vh - 64px - 36px - 32px = 100vh - 132px
+  // Desktop: 100vh - 64px - 36px - 48px = 100vh - 148px
   return (
-    <div className="flex h-[calc(100%+2rem)] lg:h-[calc(100%+3rem)] -m-4 lg:-m-6">
+    <div className="flex h-[calc(100vh-132px)] lg:h-[calc(100vh-148px)] -m-4 lg:-m-6">
       {/* Conversation sidebar */}
       <div
         className={cn(
-          'w-full lg:w-80 border-r shrink-0 bg-card',
-          showChat ? 'hidden lg:block' : 'block'
+          'w-full lg:w-80 border-r shrink-0 bg-card flex flex-col overflow-hidden',
+          showChat ? 'hidden lg:flex' : 'flex'
         )}
       >
         <ConversationList />
@@ -37,19 +40,19 @@ export function ChatPageContent() {
       {/* Chat area */}
       <div
         className={cn(
-          'flex-1 min-w-0 flex flex-col',
+          'flex-1 min-w-0 flex flex-col overflow-hidden',
           showChat ? 'flex' : 'hidden lg:flex'
         )}
       >
         {/* Mobile back button */}
-        <div className="flex items-center border-b px-2 py-1.5 lg:hidden">
+        <div className="flex items-center border-b px-2 py-1.5 lg:hidden shrink-0">
           <Button variant="ghost" size="sm" className="gap-1" onClick={handleBack}>
             <ChevronLeft className="h-4 w-4" />
             Back
           </Button>
         </div>
 
-        <div className="flex-1 min-h-0">
+        <div className="flex-1 min-h-0 overflow-hidden">
           <ChatArea />
         </div>
       </div>
