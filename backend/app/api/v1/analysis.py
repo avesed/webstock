@@ -3,7 +3,6 @@
 import asyncio
 import json
 import logging
-import re
 import time
 from typing import Optional
 
@@ -28,6 +27,7 @@ from app.schemas.analysis import (
     SingleAnalysisResponse,
 )
 from app.services.stock_service import detect_market
+from app.utils.symbol_validation import validate_symbol
 
 logger = logging.getLogger(__name__)
 
@@ -70,64 +70,6 @@ async def apply_user_ai_config(
             )
     except Exception as e:
         logger.warning(f"Failed to load user AI config: {e}")
-
-
-# Symbol validation patterns (same as stocks.py)
-SYMBOL_PATTERNS = {
-    "US": re.compile(r"^[A-Z]{1,5}$"),
-    "HK": re.compile(r"^[0-9]{4,5}\.HK$"),
-    "A_SHARE": re.compile(r"^[0-9]{6}\.(SS|SZ)$"),
-    "A_SHARE_BARE": re.compile(r"^[0-9]{6}$"),
-    "HK_BARE": re.compile(r"^[0-9]{4,5}$"),
-}
-
-_SHANGHAI_PREFIXES = ("600", "601", "603", "605", "688")
-_SHENZHEN_PREFIXES = ("000", "001", "002", "003", "300", "301")
-
-
-def validate_symbol(symbol: str) -> str:
-    """Validate and normalize stock symbol."""
-    symbol = symbol.strip().upper()
-    if not symbol or len(symbol) > 20:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Invalid symbol format: symbol is empty or too long",
-        )
-
-    # Auto-append exchange suffix for bare 6-digit A-share codes
-    if SYMBOL_PATTERNS["A_SHARE_BARE"].match(symbol):
-        if symbol.startswith(_SHANGHAI_PREFIXES):
-            symbol = f"{symbol}.SS"
-        elif symbol.startswith(_SHENZHEN_PREFIXES):
-            symbol = f"{symbol}.SZ"
-
-    # Auto-append .HK for bare 4-5 digit codes that look like HK stocks
-    if SYMBOL_PATTERNS["HK_BARE"].match(symbol):
-        symbol = f"{symbol}.HK"
-
-    is_valid = (
-        SYMBOL_PATTERNS["US"].match(symbol)
-        or SYMBOL_PATTERNS["HK"].match(symbol)
-        or SYMBOL_PATTERNS["A_SHARE"].match(symbol)
-    )
-
-    if not is_valid:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=(
-                "Invalid symbol format. Valid formats: "
-                "US (e.g., AAPL), HK (e.g., 0700.HK), "
-                "Shanghai (e.g., 600519.SS), Shenzhen (e.g., 000001.SZ)"
-            ),
-        )
-
-    # Normalize HK symbols: 01810.HK → 1810.HK (yfinance uses 4-digit codes)
-    if symbol.endswith(".HK"):
-        code = symbol[:-3]
-        code = str(int(code)).zfill(4)
-        symbol = f"{code}.HK"
-
-    return symbol
 
 
 @router.get(

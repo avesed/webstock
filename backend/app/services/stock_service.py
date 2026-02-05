@@ -51,6 +51,7 @@ class Market(str, Enum):
     HK = "hk"  # Hong Kong
     SH = "sh"  # Shanghai A-shares
     SZ = "sz"  # Shenzhen A-shares
+    METAL = "metal"  # Precious metals futures (COMEX/NYMEX)
 
 
 class DataSource(str, Enum):
@@ -273,17 +274,106 @@ class SearchResult:
         }
 
 
+# Precious metals metadata
+# Futures contracts traded on COMEX (CME Group) and NYMEX
+PRECIOUS_METALS = {
+    "GC=F": {
+        "name": "Gold Futures",
+        "name_zh": "黄金期货",
+        "unit": "troy oz",
+        "exchange": "COMEX",
+        "currency": "USD",
+    },
+    "SI=F": {
+        "name": "Silver Futures",
+        "name_zh": "白银期货",
+        "unit": "troy oz",
+        "exchange": "COMEX",
+        "currency": "USD",
+    },
+    "PL=F": {
+        "name": "Platinum Futures",
+        "name_zh": "铂金期货",
+        "unit": "troy oz",
+        "exchange": "NYMEX",
+        "currency": "USD",
+    },
+    "PA=F": {
+        "name": "Palladium Futures",
+        "name_zh": "钯金期货",
+        "unit": "troy oz",
+        "exchange": "NYMEX",
+        "currency": "USD",
+    },
+}
+
+# Metal search keywords mapping
+METAL_KEYWORDS = {
+    "GC=F": ["gold", "黄金", "gc", "xau"],
+    "SI=F": ["silver", "白银", "si", "xag"],
+    "PL=F": ["platinum", "铂金", "pl"],
+    "PA=F": ["palladium", "钯金", "pa"],
+}
+
+
+def is_precious_metal(symbol: str) -> bool:
+    """Check if symbol is a precious metal future."""
+    return symbol.upper() in PRECIOUS_METALS
+
+
+def search_metals(query: str) -> List[SearchResult]:
+    """
+    Search precious metals by keyword.
+
+    Supports keywords in English and Chinese:
+    - gold/黄金/gc/xau -> GC=F (Gold Futures)
+    - silver/白银/si/xag -> SI=F (Silver Futures)
+    - platinum/铂金/pl -> PL=F (Platinum Futures)
+    - palladium/钯金/pa -> PA=F (Palladium Futures)
+
+    Args:
+        query: Search query string
+
+    Returns:
+        List of matching precious metal SearchResult objects
+    """
+    query_lower = query.lower()
+    results = []
+
+    for symbol, keywords in METAL_KEYWORDS.items():
+        if any(kw in query_lower for kw in keywords):
+            meta = PRECIOUS_METALS[symbol]
+            results.append(SearchResult(
+                symbol=symbol,
+                name=meta["name"],
+                exchange=meta["exchange"],
+                market=Market.METAL,
+            ))
+            logger.debug(f"Metal search matched: {symbol} for query '{query}'")
+
+    if results:
+        logger.info(f"Metal search found {len(results)} results for query '{query}'")
+
+    return results
+
+
 def detect_market(symbol: str) -> Market:
     """
     Detect market from symbol format.
 
     Formats:
+    - Precious metals: GC=F, SI=F, PL=F, PA=F (checked FIRST to avoid conflicts)
     - US: AAPL, MSFT (no suffix)
     - HK: 0700.HK, 9988.HK
     - Shanghai: 600519.SS, 600036.SS
     - Shenzhen: 000001.SZ, 000858.SZ
     """
     symbol = symbol.upper()
+
+    # Check precious metals FIRST (SI=F would otherwise match US pattern)
+    if symbol in PRECIOUS_METALS:
+        logger.debug(f"Detected market METAL for symbol: {symbol}")
+        return Market.METAL
 
     if symbol.endswith(".HK"):
         return Market.HK
@@ -314,13 +404,19 @@ async def run_in_executor(func: Callable, *args, **kwargs) -> Any:
     """Run synchronous function in thread pool with timeout."""
     loop = asyncio.get_running_loop()
     executor = await _get_executor()
-    return await asyncio.wait_for(
-        loop.run_in_executor(
-            executor,
-            lambda: func(*args, **kwargs),
-        ),
-        timeout=EXTERNAL_API_TIMEOUT,
-    )
+    try:
+        return await asyncio.wait_for(
+            loop.run_in_executor(
+                executor,
+                lambda: func(*args, **kwargs),
+            ),
+            timeout=EXTERNAL_API_TIMEOUT,
+        )
+    except asyncio.TimeoutError:
+        logger.warning(
+            f"Executor timeout after {EXTERNAL_API_TIMEOUT}s for function: {func.__name__}"
+        )
+        raise
 
 
 class YFinanceProvider:
@@ -1224,20 +1320,43 @@ class StockService:
         force_refresh: bool = False,
     ) -> Optional[Dict[str, Any]]:
         """
-        Get company information.
+        Get company/commodity information.
 
         Args:
-            symbol: Stock symbol
+            symbol: Stock or commodity symbol
             force_refresh: Force fetch from source
 
         Returns:
-            Company info as dict or None if unavailable
+            Info as dict or None if unavailable
         """
         market = detect_market(symbol)
         aggregator = await self._get_aggregator()
 
         async def fetch_info() -> Optional[Dict[str, Any]]:
             info: Optional[StockInfo] = None
+
+            # Handle precious metals with static metadata
+            if market == Market.METAL:
+                metal_info = PRECIOUS_METALS.get(symbol.upper())
+                if metal_info:
+                    logger.info(f"Returning static info for precious metal: {symbol}")
+                    return {
+                        "symbol": symbol.upper(),
+                        "name": metal_info["name"],
+                        "name_zh": metal_info["name_zh"],
+                        "description": f"{metal_info['name']} ({metal_info['name_zh']}) futures contract traded on {metal_info['exchange']}. Unit: {metal_info['unit']}.",
+                        "sector": "Commodities",
+                        "industry": "Precious Metals",
+                        "website": None,
+                        "employees": None,
+                        "market_cap": None,
+                        "currency": metal_info["currency"],
+                        "exchange": metal_info["exchange"],
+                        "market": market.value,
+                        "source": "static",
+                        "unit": metal_info["unit"],
+                    }
+                return None
 
             if market == Market.US:
                 info = await YFinanceProvider.get_info(symbol, market)
@@ -1275,9 +1394,16 @@ class StockService:
             force_refresh: Force fetch from source
 
         Returns:
-            Financial data as dict or None if unavailable
+            Financial data as dict or None if unavailable.
+            Returns None for precious metals (no fundamental data).
         """
         market = detect_market(symbol)
+
+        # Precious metals don't have traditional financial metrics
+        if market == Market.METAL:
+            logger.debug(f"Skipping financials for precious metal: {symbol}")
+            return None
+
         aggregator = await self._get_aggregator()
 
         async def fetch_financials() -> Optional[Dict[str, Any]]:
@@ -1311,11 +1437,11 @@ class StockService:
         markets: Optional[List[Market]] = None,
     ) -> List[Dict[str, Any]]:
         """
-        Search for stocks across markets.
+        Search for stocks and precious metals across markets.
 
         Args:
             query: Search query (symbol or name)
-            markets: Markets to search (default: all)
+            markets: Markets to search (default: all including METAL)
 
         Returns:
             List of search results
@@ -1324,7 +1450,7 @@ class StockService:
             return []
 
         if markets is None:
-            markets = [Market.US, Market.HK, Market.SH, Market.SZ]
+            markets = [Market.US, Market.HK, Market.SH, Market.SZ, Market.METAL]
 
         aggregator = await self._get_aggregator()
 
@@ -1352,10 +1478,23 @@ class StockService:
                     continue
                 results.extend(result)
 
+            # Search precious metals if METAL market is included
+            if Market.METAL in markets:
+                metal_results = search_metals(query)
+                results.extend(metal_results)
+
             # Filter by requested markets
             results = [r for r in results if r.market in markets]
 
-            return [r.to_dict() for r in results[:50]]  # Limit results
+            # Deduplicate by symbol (metals might appear in US results too)
+            seen_symbols = set()
+            unique_results = []
+            for r in results:
+                if r.symbol not in seen_symbols:
+                    seen_symbols.add(r.symbol)
+                    unique_results.append(r)
+
+            return [r.to_dict() for r in unique_results[:50]]  # Limit results
 
         return await aggregator.get_data(
             symbol=cache_key,

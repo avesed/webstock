@@ -25,7 +25,11 @@ export interface RegisterCredentials {
 }
 
 // Stock types
-export type Market = 'US' | 'HK' | 'CN'
+export type Market = 'US' | 'HK' | 'CN' | 'METAL'
+
+// Precious metals types
+export type WeightUnit = 'troy_oz' | 'gram' | 'kilogram'
+export type Currency = 'USD' | 'EUR' | 'CNY' | 'GBP' | 'JPY' | 'HKD'
 
 export interface StockQuote {
   symbol: string

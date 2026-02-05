@@ -35,7 +35,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select'
-import { cn } from '@/lib/utils'
+import { cn, isMetal } from '@/lib/utils'
 import { formatCurrency, formatPercent, formatRelativeTime } from '@/lib/utils'
 import { alertsApi } from '@/api'
 import { useToast } from '@/hooks'
@@ -247,7 +247,8 @@ export default function AlertList({ className, filterSymbol }: AlertListProps) {
     if (alert.conditionType === 'PERCENT_CHANGE_UP' || alert.conditionType === 'PERCENT_CHANGE_DOWN') {
       return formatPercent(alert.threshold)
     }
-    return formatCurrency(alert.threshold)
+    // All price thresholds are displayed in USD (including precious metals)
+    return formatCurrency(alert.threshold, 'USD')
   }
 
   // Calculate stats
@@ -347,6 +348,7 @@ export default function AlertList({ className, filterSymbol }: AlertListProps) {
               <div className="space-y-2">
                 {filteredAlerts.map((alert) => {
                   const ConditionIcon = CONDITION_ICONS[alert.conditionType]
+                  const isMetalAlert = isMetal(alert.symbol)
                   return (
                     <div
                       key={alert.id}
@@ -359,6 +361,14 @@ export default function AlertList({ className, filterSymbol }: AlertListProps) {
                         >
                           <div className="flex items-center gap-2">
                             <span className="font-medium text-lg">{alert.symbol}</span>
+                            {isMetalAlert && (
+                              <span
+                                className="inline-flex items-center rounded-full bg-amber-100 text-amber-800 dark:bg-amber-900/30 dark:text-amber-200 px-1.5 py-0.5 text-xs font-medium"
+                                aria-label="Precious metal asset"
+                              >
+                                {t('market.metal', 'METAL')}
+                              </span>
+                            )}
                             {getStatusBadge(alert.status)}
                           </div>
                           <div className="flex items-center gap-2 text-sm text-muted-foreground mt-1">

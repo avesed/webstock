@@ -33,7 +33,7 @@ import {
   DialogTitle,
 } from '@/components/ui/dialog'
 import { Label } from '@/components/ui/label'
-import { cn } from '@/lib/utils'
+import { cn, isMetal } from '@/lib/utils'
 import { formatCurrency, formatPercent, getPriceChangeColor } from '@/lib/utils'
 import { watchlistApi, stockApi } from '@/api'
 import { useToast } from '@/hooks'
@@ -370,6 +370,7 @@ export default function WatchlistPanel({
           <div className="divide-y">
             {watchlistWithQuotes.symbols.map((symbol) => {
               const quote = watchlistWithQuotes.quotes.get(symbol)
+              const isMetalSymbol = isMetal(symbol)
               return (
                 <div
                   key={symbol}
@@ -379,6 +380,14 @@ export default function WatchlistPanel({
                   <div className="flex-1 min-w-0">
                     <div className="flex items-center gap-2">
                       <span className="font-medium">{symbol}</span>
+                      {isMetalSymbol && (
+                        <span
+                          className="inline-flex items-center rounded-full bg-amber-100 text-amber-800 dark:bg-amber-900/30 dark:text-amber-200 px-1.5 py-0.5 text-xs font-medium"
+                          aria-label="Precious metal asset"
+                        >
+                          {t('market.metal', 'METAL')}
+                        </span>
+                      )}
                       {quote && (
                         <span
                           className={cn(

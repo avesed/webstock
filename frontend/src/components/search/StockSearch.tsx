@@ -25,6 +25,7 @@ const marketLabels: Record<Market, { label: string; color: string }> = {
   US: { label: 'US', color: 'bg-blue-500/10 text-blue-600 dark:text-blue-400' },
   HK: { label: 'HK', color: 'bg-red-500/10 text-red-600 dark:text-red-400' },
   CN: { label: 'CN', color: 'bg-amber-500/10 text-amber-600 dark:text-amber-400' },
+  METAL: { label: 'METAL', color: 'bg-amber-100 text-amber-800 dark:bg-amber-900/30 dark:text-amber-200' },
 }
 
 export default function StockSearch({

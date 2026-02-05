@@ -45,7 +45,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select'
-import { cn } from '@/lib/utils'
+import { cn, isMetal } from '@/lib/utils'
 import { formatCurrency, formatPercent, formatDate, getPriceChangeColor } from '@/lib/utils'
 import { portfolioApi, stockApi } from '@/api'
 import { useToast } from '@/hooks'
@@ -488,35 +488,55 @@ export default function PortfolioPanel({ className }: PortfolioPanelProps) {
                       <div className="text-right">{t('portfolio.gainLoss')}</div>
                     </div>
                     {/* Holdings */}
-                    {portfolioWithQuotes.holdingsWithQuotes.map((holding) => (
-                      <div
-                        key={holding.id}
-                        className="grid grid-cols-6 gap-4 px-4 py-3 hover:bg-accent/50 transition-colors cursor-pointer rounded-md"
-                        onClick={() => handleStockClick(holding.symbol)}
-                      >
-                        <div className="font-medium">{holding.symbol}</div>
-                        <div className="text-right">{holding.quantity}</div>
-                        <div className="text-right">{formatCurrency(holding.averageCost)}</div>
-                        <div className="text-right">
-                          {holding.currentPrice ? formatCurrency(holding.currentPrice) : '--'}
+                    {portfolioWithQuotes.holdingsWithQuotes.map((holding) => {
+                      const isMetalHolding = isMetal(holding.symbol)
+                      return (
+                        <div
+                          key={holding.id}
+                          className="grid grid-cols-6 gap-4 px-4 py-3 hover:bg-accent/50 transition-colors cursor-pointer rounded-md"
+                          onClick={() => handleStockClick(holding.symbol)}
+                        >
+                          <div className="flex items-center gap-2">
+                            <span className="font-medium">{holding.symbol}</span>
+                            {isMetalHolding && (
+                              <span
+                                className="inline-flex items-center rounded-full bg-amber-100 text-amber-800 dark:bg-amber-900/30 dark:text-amber-200 px-1.5 py-0.5 text-xs font-medium"
+                                aria-label="Precious metal asset"
+                              >
+                                {t('market.metal', 'METAL')}
+                              </span>
+                            )}
+                          </div>
+                          <div className="text-right">
+                            {holding.quantity}
+                            {isMetalHolding && (
+                              <span className="ml-1 text-xs text-muted-foreground">
+                                {t('units.troyOz', 'oz')}
+                              </span>
+                            )}
+                          </div>
+                          <div className="text-right">{formatCurrency(holding.averageCost)}</div>
+                          <div className="text-right">
+                            {holding.currentPrice ? formatCurrency(holding.currentPrice) : '--'}
+                          </div>
+                          <div className="text-right">
+                            {holding.currentValue ? formatCurrency(holding.currentValue) : '--'}
+                          </div>
+                          <div className={cn('text-right flex items-center justify-end gap-1', getPriceChangeColor(holding.gain ?? 0))}>
+                            {holding.gain !== undefined && (
+                              <>
+                                {holding.gain >= 0 ? (
+                                  <ArrowUpRight className="h-3 w-3" />
+                                ) : (
+                                  <ArrowDownRight className="h-3 w-3" />
+                                )}
+                                {formatPercent(holding.gainPercent ?? 0)}
+                              </>
+                            )}
+                          </div>
                         </div>
-                        <div className="text-right">
-                          {holding.currentValue ? formatCurrency(holding.currentValue) : '--'}
-                        </div>
-                        <div className={cn('text-right flex items-center justify-end gap-1', getPriceChangeColor(holding.gain ?? 0))}>
-                          {holding.gain !== undefined && (
-                            <>
-                              {holding.gain >= 0 ? (
-                                <ArrowUpRight className="h-3 w-3" />
-                              ) : (
-                                <ArrowDownRight className="h-3 w-3" />
-                              )}
-                              {formatPercent(holding.gainPercent ?? 0)}
-                            </>
-                          )}
-                        </div>
-                      </div>
-                    ))}
+                      )
+                    })}
                   </div>
                 </ScrollArea>
               ) : (

@@ -16,6 +16,7 @@ class MarketType(str, Enum):
     HK = "hk"
     SH = "sh"
     SZ = "sz"
+    METAL = "metal"  # Precious metals futures (COMEX/NYMEX)
 
 
 class HistoryInterval(str, Enum):

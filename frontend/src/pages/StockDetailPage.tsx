@@ -28,13 +28,14 @@ import {
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu'
 import { StockChart, ChartControls, useChartControls } from '@/components/chart'
-import { cn } from '@/lib/utils'
 import {
+  cn,
   formatCurrency,
   formatCompactNumber,
   formatPercent,
   formatDate,
   getPriceChangeColor,
+  isMetal,
 } from '@/lib/utils'
 import { stockApi, watchlistApi, newsApi, analysisApi } from '@/api'
 import { useStockStore } from '@/stores/stockStore'
@@ -54,6 +55,7 @@ export default function StockDetailPage() {
   const abortRef = useRef<AbortController | null>(null)
 
   const upperSymbol = symbol?.toUpperCase() ?? ''
+  const isMetalAsset = isMetal(upperSymbol)
 
   // Fetch stock quote
   const {
@@ -78,14 +80,14 @@ export default function StockDetailPage() {
     enabled: !!upperSymbol,
   })
 
-  // Fetch stock financials
+  // Fetch stock financials (disabled for metals - no fundamentals available)
   const {
     data: financials,
     isLoading: isLoadingFinancials,
   } = useQuery({
     queryKey: ['stock-financials', upperSymbol],
     queryFn: () => stockApi.getFinancials(upperSymbol),
-    enabled: !!upperSymbol,
+    enabled: !!upperSymbol && !isMetalAsset,
   })
 
   // Fetch chart data (auto-refresh for intraday timeframes)
@@ -374,9 +376,9 @@ export default function StockDetailPage() {
 
           {/* Tabs for Analysis, Financials, News */}
           <Tabs defaultValue="analysis" className="space-y-4">
-            <TabsList className="grid w-full grid-cols-3">
+            <TabsList className={cn("grid w-full", isMetalAsset ? "grid-cols-2" : "grid-cols-3")}>
               <TabsTrigger value="analysis">{t('stock.analysis')}</TabsTrigger>
-              <TabsTrigger value="financials">{t('stock.fundamentals')}</TabsTrigger>
+              {!isMetalAsset && <TabsTrigger value="financials">{t('stock.fundamentals')}</TabsTrigger>}
               <TabsTrigger value="news">{t('stock.news')}</TabsTrigger>
             </TabsList>
 
@@ -419,27 +421,29 @@ export default function StockDetailPage() {
               </Card>
             </TabsContent>
 
-            <TabsContent value="financials">
-              <Card>
-                <CardHeader>
-                  <CardTitle>{t('stock.fundamentals')}</CardTitle>
-                  <CardDescription>{t('stock.financials.revenue')}</CardDescription>
-                </CardHeader>
-                <CardContent>
-                  {isLoadingFinancials ? (
-                    <div className="flex h-[200px] items-center justify-center">
-                      <Loader2 className="h-6 w-6 animate-spin" />
-                    </div>
-                  ) : financials ? (
-                    <FinancialsGrid financials={financials} />
-                  ) : (
-                    <div className="flex h-[200px] items-center justify-center text-muted-foreground">
-                      {t('common:status.noData', 'No data available')}
-                    </div>
-                  )}
-                </CardContent>
-              </Card>
-            </TabsContent>
+            {!isMetalAsset && (
+              <TabsContent value="financials">
+                <Card>
+                  <CardHeader>
+                    <CardTitle>{t('stock.fundamentals')}</CardTitle>
+                    <CardDescription>{t('stock.financials.revenue')}</CardDescription>
+                  </CardHeader>
+                  <CardContent>
+                    {isLoadingFinancials ? (
+                      <div className="flex h-[200px] items-center justify-center">
+                        <Loader2 className="h-6 w-6 animate-spin" />
+                      </div>
+                    ) : financials ? (
+                      <FinancialsGrid financials={financials} />
+                    ) : (
+                      <div className="flex h-[200px] items-center justify-center text-muted-foreground">
+                        {t('common:status.noData', 'No data available')}
+                      </div>
+                    )}
+                  </CardContent>
+                </Card>
+              </TabsContent>
+            )}
 
             <TabsContent value="news">
               <Card>
@@ -478,30 +482,45 @@ export default function StockDetailPage() {
                   <Loader2 className="h-6 w-6 animate-spin" />
                 </div>
               ) : quote ? (
-                <StatsGrid quote={quote} />
+                isMetalAsset ? (
+                  <MetalStatsGrid quote={quote} symbol={upperSymbol} />
+                ) : (
+                  <StatsGrid quote={quote} />
+                )
               ) : null}
             </CardContent>
           </Card>
 
-          {/* Company info */}
-          <Card>
-            <CardHeader>
-              <CardTitle>{t('stock.description')}</CardTitle>
-            </CardHeader>
-            <CardContent>
-              {isLoadingInfo ? (
-                <div className="flex h-[200px] items-center justify-center">
-                  <Loader2 className="h-6 w-6 animate-spin" />
-                </div>
-              ) : info ? (
-                <CompanyInfo info={info} />
-              ) : (
-                <div className="flex h-[100px] items-center justify-center text-muted-foreground">
-                  {t('common:status.noData', 'No data available')}
-                </div>
-              )}
-            </CardContent>
-          </Card>
+          {/* Company info / Commodity info */}
+          {isMetalAsset ? (
+            <Card>
+              <CardHeader>
+                <CardTitle>{t('stock.commodityInfo', 'Commodity Info')}</CardTitle>
+              </CardHeader>
+              <CardContent>
+                <CommodityInfo symbol={upperSymbol} />
+              </CardContent>
+            </Card>
+          ) : (
+            <Card>
+              <CardHeader>
+                <CardTitle>{t('stock.description')}</CardTitle>
+              </CardHeader>
+              <CardContent>
+                {isLoadingInfo ? (
+                  <div className="flex h-[200px] items-center justify-center">
+                    <Loader2 className="h-6 w-6 animate-spin" />
+                  </div>
+                ) : info ? (
+                  <CompanyInfo info={info} />
+                ) : (
+                  <div className="flex h-[100px] items-center justify-center text-muted-foreground">
+                    {t('common:status.noData', 'No data available')}
+                  </div>
+                )}
+              </CardContent>
+            </Card>
+          )}
         </div>
       </div>
 
@@ -511,7 +530,7 @@ export default function StockDetailPage() {
   )
 }
 
-// Stats grid component
+// Stats grid component for stocks
 function StatsGrid({ quote }: { quote: StockQuote }) {
   const stats = [
     { label: 'Open', value: quote.open != null ? formatCurrency(quote.open) : 'N/A' },
@@ -533,6 +552,80 @@ function StatsGrid({ quote }: { quote: StockQuote }) {
           <p className="font-medium">{stat.value}</p>
         </div>
       ))}
+    </div>
+  )
+}
+
+// Stats grid component for precious metals
+function MetalStatsGrid({ quote, symbol }: { quote: StockQuote; symbol: string }) {
+  // Determine exchange based on symbol
+  const getExchange = (sym: string): string => {
+    const upperSym = sym.toUpperCase()
+    if (upperSym.includes('GC') || upperSym.includes('SI')) {
+      return 'COMEX'
+    }
+    return 'NYMEX'
+  }
+
+  const stats = [
+    { label: 'Exchange', value: quote.market === 'METAL' ? getExchange(symbol) : (quote.market || 'COMEX') },
+    { label: 'Unit', value: 'troy oz' },
+    { label: 'Day High', value: quote.dayHigh != null ? formatCurrency(quote.dayHigh) : 'N/A' },
+    { label: 'Day Low', value: quote.dayLow != null ? formatCurrency(quote.dayLow) : 'N/A' },
+    { label: 'Open', value: quote.open != null ? formatCurrency(quote.open) : 'N/A' },
+    { label: 'Previous Close', value: quote.previousClose != null ? formatCurrency(quote.previousClose) : 'N/A' },
+  ]
+
+  return (
+    <div className="grid grid-cols-2 gap-4">
+      {stats.map((stat) => (
+        <div key={stat.label}>
+          <p className="text-sm text-muted-foreground">{stat.label}</p>
+          <p className="font-medium">{stat.value}</p>
+        </div>
+      ))}
+    </div>
+  )
+}
+
+// Commodity info component for precious metals
+function CommodityInfo({ symbol }: { symbol: string }) {
+  const upperSym = symbol.toUpperCase()
+
+  // Determine exchange and contract size based on symbol
+  const getExchange = (): string => {
+    if (upperSym.includes('GC') || upperSym.includes('SI')) {
+      return 'COMEX'
+    }
+    return 'NYMEX'
+  }
+
+  const getContractSize = (): string => {
+    if (upperSym.includes('GC')) return '100 troy oz (Gold)'
+    if (upperSym.includes('SI')) return '5,000 troy oz (Silver)'
+    if (upperSym.includes('PL')) return '50 troy oz (Platinum)'
+    if (upperSym.includes('PA')) return '100 troy oz (Palladium)'
+    return 'N/A'
+  }
+
+  return (
+    <div className="space-y-2 text-sm">
+      <div>
+        <span className="text-muted-foreground">Type: </span>
+        <span>Precious Metal Futures</span>
+      </div>
+      <div>
+        <span className="text-muted-foreground">Exchange: </span>
+        <span>{getExchange()}</span>
+      </div>
+      <div>
+        <span className="text-muted-foreground">Unit: </span>
+        <span>USD per troy ounce</span>
+      </div>
+      <div>
+        <span className="text-muted-foreground">Contract Size: </span>
+        <span>{getContractSize()}</span>
+      </div>
     </div>
   )
 }

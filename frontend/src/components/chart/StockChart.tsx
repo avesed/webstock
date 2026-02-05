@@ -12,7 +12,7 @@ import {
 } from 'lightweight-charts'
 import { useThemeStore } from '@/stores/themeStore'
 import type { CandlestickData, ChartTimeframe } from '@/types'
-import { cn } from '@/lib/utils'
+import { cn, isMetal } from '@/lib/utils'
 
 interface StockChartProps {
   data: CandlestickData[]
@@ -171,6 +171,7 @@ export default function StockChart({
   }, [])
 
   // Format volume with compact notation
+  // Note: For precious metals (futures), volume represents contracts, not shares
   const formatVolume = useCallback((volume: number): string => {
     if (volume >= 1_000_000_000) {
       return `${(volume / 1_000_000_000).toFixed(2)}B`
@@ -183,6 +184,9 @@ export default function StockChart({
     }
     return volume.toString()
   }, [])
+
+  // Check if this is a metal symbol for volume label
+  const isMetalSymbol = isMetal(symbol)
 
   // Initialize chart
   useEffect(() => {
@@ -419,7 +423,10 @@ export default function StockChart({
               </span>
               {displayData.volume !== undefined && (
                 <>
-                  <span className="text-muted-foreground">Vol:</span>
+                  {/* For precious metals, volume is in contracts (futures); for stocks it's shares */}
+                  <span className="text-muted-foreground">
+                    {isMetalSymbol ? 'Contracts:' : 'Vol:'}
+                  </span>
                   <span>{formatVolume(displayData.volume)}</span>
                 </>
               )}

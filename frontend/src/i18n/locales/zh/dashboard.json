@@ -187,9 +187,34 @@
     "us": "美股",
     "hk": "港股",
     "cn": "A股",
+    "metal": "贵金属",
     "open": "交易中",
     "closed": "已收盘",
     "preMarket": "盘前交易",
     "afterHours": "盘后交易"
+  },
+  "metals": {
+    "gold": "黄金",
+    "silver": "白银",
+    "platinum": "铂金",
+    "palladium": "钯金",
+    "futures": "期货",
+    "pricePerOz": "每金衡盎司价格",
+    "exchange": "交易所",
+    "commodityInfo": "商品信息",
+    "contractSize": "合约规模"
+  },
+  "units": {
+    "troyOz": "金衡盎司",
+    "gram": "克",
+    "kilogram": "千克"
+  },
+  "currency": {
+    "usd": "美元",
+    "eur": "欧元",
+    "cny": "人民币",
+    "gbp": "英镑",
+    "jpy": "日元",
+    "hkd": "港币"
   }
 }

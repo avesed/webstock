@@ -17,7 +17,7 @@ def is_trading_hours(market: str = "US") -> bool:
     Check if current time is within trading hours.
 
     Args:
-        market: Market identifier (US, HK, SH, SZ)
+        market: Market identifier (US, HK, SH, SZ, METAL)
 
     Returns:
         True if within trading hours
@@ -26,15 +26,35 @@ def is_trading_hours(market: str = "US") -> bool:
     - US: 9:30 AM - 4:00 PM ET (Mon-Fri)
     - HK: 9:30 AM - 4:00 PM HKT (Mon-Fri)
     - CN: 9:30 AM - 3:00 PM CST (Mon-Fri)
+    - METAL: Sun 6:00 PM - Fri 5:00 PM ET (CME Globex, nearly 24/5)
     """
     now = datetime.now(timezone.utc)
     weekday = now.weekday()
+    hour = now.hour
 
-    # Skip weekends for all markets
+    if market == "METAL":
+        # Precious metals on CME Globex trade Sun 6pm - Fri 5pm ET (nearly 24/5)
+        # In UTC: Sun 23:00 - Fri 22:00 (approximately)
+        # Simplified trading schedule:
+        # - Saturday: completely closed
+        # - Sunday: opens at 6pm ET (23:00 UTC)
+        # - Monday-Thursday: 24 hours
+        # - Friday: closes at 5pm ET (22:00 UTC)
+        if weekday == 5:  # Saturday - completely closed
+            logger.debug(f"METAL market closed: Saturday")
+            return False
+        if weekday == 6 and hour < 23:  # Sunday before 6pm ET (23:00 UTC) - closed
+            logger.debug(f"METAL market closed: Sunday before open (hour={hour})")
+            return False
+        if weekday == 4 and hour >= 22:  # Friday after 5pm ET (22:00 UTC) - closed
+            logger.debug(f"METAL market closed: Friday after close (hour={hour})")
+            return False
+        logger.debug(f"METAL market open: weekday={weekday}, hour={hour}")
+        return True
+
+    # Skip weekends for stock markets
     if weekday >= 5:  # Saturday = 5, Sunday = 6
         return False
-
-    hour = now.hour
 
     if market == "US":
         # US market: 14:30 - 21:00 UTC (9:30 AM - 4:00 PM ET)
@@ -52,14 +72,34 @@ def is_trading_hours(market: str = "US") -> bool:
 
 
 def detect_market(symbol: str) -> str:
-    """Detect market from symbol format."""
+    """
+    Detect market from symbol format.
+
+    Args:
+        symbol: Stock or commodity symbol
+
+    Returns:
+        Market identifier (US, HK, SH, SZ, METAL)
+    """
     symbol = symbol.upper()
+
+    # Check for precious metals futures first (they use =F suffix)
+    # GC=F (Gold), SI=F (Silver), PL=F (Platinum), PA=F (Palladium)
+    if symbol in ("GC=F", "SI=F", "PL=F", "PA=F"):
+        logger.debug(f"Detected market METAL for symbol: {symbol}")
+        return "METAL"
+
     if symbol.endswith(".HK"):
+        logger.debug(f"Detected market HK for symbol: {symbol}")
         return "HK"
     elif symbol.endswith(".SS"):
+        logger.debug(f"Detected market SH for symbol: {symbol}")
         return "SH"
     elif symbol.endswith(".SZ"):
+        logger.debug(f"Detected market SZ for symbol: {symbol}")
         return "SZ"
+
+    logger.debug(f"Detected market US for symbol: {symbol}")
     return "US"
 
 

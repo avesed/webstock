@@ -187,9 +187,34 @@
     "us": "US Market",
     "hk": "Hong Kong",
     "cn": "China A-Shares",
+    "metal": "Precious Metals",
     "open": "Market Open",
     "closed": "Market Closed",
     "preMarket": "Pre-Market",
     "afterHours": "After Hours"
+  },
+  "metals": {
+    "gold": "Gold",
+    "silver": "Silver",
+    "platinum": "Platinum",
+    "palladium": "Palladium",
+    "futures": "Futures",
+    "pricePerOz": "Price per troy oz",
+    "exchange": "Exchange",
+    "commodityInfo": "Commodity Info",
+    "contractSize": "Contract Size"
+  },
+  "units": {
+    "troyOz": "troy oz",
+    "gram": "gram",
+    "kilogram": "kilogram"
+  },
+  "currency": {
+    "usd": "US Dollar",
+    "eur": "Euro",
+    "cny": "Chinese Yuan",
+    "gbp": "British Pound",
+    "jpy": "Japanese Yen",
+    "hkd": "Hong Kong Dollar"
   }
 }

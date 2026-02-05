@@ -1,15 +1,52 @@
 # Services module
 from app.services.cache_service import CacheService, get_cache_service
+from app.services.currency_service import (
+    Currency,
+    convert_to_currency,
+    convert_from_currency,
+    get_exchange_rates,
+    get_currency_symbol,
+    get_currency_name,
+    format_currency,
+    get_supported_currencies,
+)
 from app.services.data_aggregator import DataAggregator, get_data_aggregator
-from app.services.stock_service import StockService, get_stock_service
 from app.services.portfolio_service import PortfolioService
+from app.services.stock_service import StockService, get_stock_service, search_metals
+from app.services.unit_converter import (
+    WeightUnit,
+    convert_weight,
+    convert_price_per_unit,
+    get_conversion_factor,
+    get_unit_display_name,
+)
 
 __all__ = [
+    # Cache
     "CacheService",
     "get_cache_service",
+    # Currency
+    "Currency",
+    "convert_to_currency",
+    "convert_from_currency",
+    "get_exchange_rates",
+    "get_currency_symbol",
+    "get_currency_name",
+    "format_currency",
+    "get_supported_currencies",
+    # Data aggregator
     "DataAggregator",
     "get_data_aggregator",
+    # Portfolio
+    "PortfolioService",
+    # Stock
     "StockService",
     "get_stock_service",
-    "PortfolioService",
+    "search_metals",
+    # Unit converter
+    "WeightUnit",
+    "convert_weight",
+    "convert_price_per_unit",
+    "get_conversion_factor",
+    "get_unit_display_name",
 ]

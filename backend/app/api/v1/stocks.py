@@ -1,7 +1,6 @@
 """Stock data API endpoints."""
 
 import logging
-import re
 from typing import List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
@@ -29,6 +28,7 @@ from app.services.stock_service import (
     Market,
     get_stock_service,
 )
+from app.utils.symbol_validation import validate_symbol
 
 logger = logging.getLogger(__name__)
 
@@ -36,66 +36,6 @@ router = APIRouter(prefix="/stocks", tags=["Stocks"])
 
 # Rate limiting: 100 requests per minute for stock queries
 STOCK_RATE_LIMIT = rate_limit(max_requests=100, window_seconds=60, key_prefix="stock_api")
-
-# Symbol validation patterns
-SYMBOL_PATTERNS = {
-    "US": re.compile(r"^[A-Z]{1,5}$"),           # US: 1-5 uppercase letters
-    "HK": re.compile(r"^[0-9]{4,5}\.HK$"),       # HK: 4-5 digits followed by .HK
-    "A_SHARE": re.compile(r"^[0-9]{6}\.(SS|SZ)$"),  # A-Share: 6 digits followed by .SS or .SZ
-    "A_SHARE_BARE": re.compile(r"^[0-9]{6}$"),    # A-Share without suffix
-    "HK_BARE": re.compile(r"^[0-9]{4,5}$"),       # HK without .HK suffix
-}
-
-# Shanghai: 600xxx, 601xxx, 603xxx, 605xxx, 688xxx (STAR Market)
-_SHANGHAI_PREFIXES = ("600", "601", "603", "605", "688")
-# Shenzhen: 000xxx, 001xxx, 002xxx, 003xxx, 300xxx (ChiNext), 301xxx
-_SHENZHEN_PREFIXES = ("000", "001", "002", "003", "300", "301")
-
-
-def validate_symbol(symbol: str) -> str:
-    """Validate and normalize stock symbol with regex pattern matching."""
-    symbol = symbol.strip().upper()
-    if not symbol or len(symbol) > 20:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Invalid symbol format: symbol is empty or too long",
-        )
-
-    # Auto-append exchange suffix for bare 6-digit A-share codes
-    if SYMBOL_PATTERNS["A_SHARE_BARE"].match(symbol):
-        if symbol.startswith(_SHANGHAI_PREFIXES):
-            symbol = f"{symbol}.SS"
-        elif symbol.startswith(_SHENZHEN_PREFIXES):
-            symbol = f"{symbol}.SZ"
-
-    # Auto-append .HK for bare 4-5 digit codes that look like HK stocks
-    if SYMBOL_PATTERNS["HK_BARE"].match(symbol):
-        symbol = f"{symbol}.HK"
-
-    # Check against valid patterns
-    is_valid = (
-        SYMBOL_PATTERNS["US"].match(symbol) or
-        SYMBOL_PATTERNS["HK"].match(symbol) or
-        SYMBOL_PATTERNS["A_SHARE"].match(symbol)
-    )
-
-    if not is_valid:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=(
-                "Invalid symbol format. Valid formats: "
-                "US (e.g., AAPL), HK (e.g., 0700.HK), "
-                "Shanghai (e.g., 600519.SS), Shenzhen (e.g., 000001.SZ)"
-            ),
-        )
-
-    # Normalize HK symbols: 01810.HK → 1810.HK (yfinance uses 4-digit codes)
-    if symbol.endswith(".HK"):
-        code = symbol[:-3]  # strip ".HK"
-        code = str(int(code)).zfill(4)  # 01810 → 1810, 00700 → 0700
-        symbol = f"{code}.HK"
-
-    return symbol
 
 
 @router.get(
