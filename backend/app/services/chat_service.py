@@ -343,21 +343,44 @@ class ChatService:
                         break
 
                 # Prepare API call
-                # Use max_completion_tokens for newer models (gpt-4o, o1, etc.)
-                # Temperature is only included if user explicitly sets it,
-                # since some models (o1, gpt-5-mini, etc.) don't support custom temperature.
+                # Only include parameters that the user explicitly configured.
+                # Let the API use its defaults for unset parameters.
                 api_kwargs: dict[str, Any] = {
                     "model": model,
                     "messages": messages,
-                    "max_completion_tokens": get_openai_max_tokens(),
                     "stream": True,
-                    "stream_options": {"include_usage": True},
                 }
 
-                # Only include temperature if user explicitly set it
+                model_lower = model.lower()
+                user_max_tokens = get_openai_max_tokens()
                 user_temperature = get_openai_temperature()
-                if user_temperature is not None:
+
+                # Detect reasoning models (o1, o3, gpt-5 series)
+                # These do NOT support temperature parameter
+                is_reasoning_model = any(m in model_lower for m in (
+                    "o1-", "o1", "o3-", "o3", "gpt-5"
+                ))
+
+                # Detect OpenAI models for stream_options support
+                is_openai_model = any(m in model_lower for m in (
+                    "gpt-3.5", "gpt-4", "gpt-5", "o1", "o3", "chatgpt", "davinci", "turbo"
+                ))
+
+                # Add max_tokens only if user set it
+                if user_max_tokens is not None:
+                    if is_reasoning_model:
+                        # Reasoning models require max_completion_tokens
+                        api_kwargs["max_completion_tokens"] = user_max_tokens
+                    else:
+                        api_kwargs["max_tokens"] = user_max_tokens
+
+                # Add temperature only if user set it AND model supports it
+                if user_temperature is not None and not is_reasoning_model:
                     api_kwargs["temperature"] = user_temperature
+
+                # Add stream_options only for OpenAI models
+                if is_openai_model:
+                    api_kwargs["stream_options"] = {"include_usage": True}
 
                 # Only include tools on non-final iterations and if supported
                 if tools_supported and iteration < _MAX_TOOL_ITERATIONS:

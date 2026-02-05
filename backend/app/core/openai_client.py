@@ -66,12 +66,12 @@ class OpenAIClientManager:
             return user_config.model
         return settings.OPENAI_MODEL
 
-    def get_max_tokens(self) -> int:
-        """Get max_tokens, respecting per-user configuration."""
+    def get_max_tokens(self) -> Optional[int]:
+        """Get max_tokens if user explicitly set it, otherwise None (use API default)."""
         user_config = current_user_ai_config.get()
         if user_config and user_config.max_tokens:
             return user_config.max_tokens
-        return settings.OPENAI_MAX_TOKENS
+        return None  # Let API use its default
 
     def get_temperature(self) -> Optional[float]:
         """Get temperature, respecting per-user configuration. Returns None if not set."""
@@ -116,8 +116,8 @@ def get_openai_model() -> str:
     return _manager.get_model()
 
 
-def get_openai_max_tokens() -> int:
-    """Convenience function to get max_tokens."""
+def get_openai_max_tokens() -> Optional[int]:
+    """Convenience function to get max_tokens (None if not set by user)."""
     return _manager.get_max_tokens()
 
 

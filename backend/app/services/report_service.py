@@ -698,6 +698,7 @@ class ReportGenerator:
             context = "\n\n".join(context_parts)
 
             # Generate summary
+            # Don't pass max_tokens/temperature for compatibility with reasoning models
             response = await client.chat.completions.create(
                 model=settings.OPENAI_MODEL,
                 messages=[
@@ -715,8 +716,6 @@ class ReportGenerator:
                         "content": f"Summarize this market data:\n\n{context}",
                     },
                 ],
-                max_tokens=200,
-                temperature=0.7,
             )
 
             summary = response.choices[0].message.content

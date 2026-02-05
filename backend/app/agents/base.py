@@ -265,14 +265,19 @@ class BaseAgent(ABC):
         ]
 
         model = get_openai_model()
+        model_lower = model.lower()
 
-        response = await client.chat.completions.create(
-            model=model,
-            messages=messages,
-            max_tokens=settings.OPENAI_MAX_TOKENS,
-            temperature=0.7,
-            stream=stream,
-        )
+        # Build API kwargs with model-appropriate parameters
+        api_kwargs = {
+            "model": model,
+            "messages": messages,
+            "stream": stream,
+        }
+
+        # Don't pass any default values - let the API use its own defaults.
+        # This ensures maximum compatibility with different models/providers.
+
+        response = await client.chat.completions.create(**api_kwargs)
 
         return response
 

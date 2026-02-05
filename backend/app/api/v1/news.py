@@ -426,14 +426,14 @@ async def analyze_news(
             market=data.market or "US",
         )
 
+        # Don't pass max_tokens/temperature - let API use defaults
+        # This ensures compatibility with reasoning models (o1, gpt-5, etc.)
         response = await client.chat.completions.create(
             model=settings.OPENAI_MODEL,
             messages=[
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_prompt},
             ],
-            max_tokens=1000,
-            temperature=0.3,
         )
 
         content = response.choices[0].message.content
