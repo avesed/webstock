@@ -5,10 +5,13 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
-from sqlalchemy import select
+from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
+import logging
+
+logger = logging.getLogger(__name__)
 from app.core.rate_limiter import rate_limit
 from app.core.security import (
     add_token_to_blacklist,
@@ -21,7 +24,7 @@ from app.core.security import (
     verify_password,
 )
 from app.db.database import get_db
-from app.models.user import User
+from app.models.user import User, UserRole
 from app.models.login_log import LoginLog
 from app.schemas.user import (
     MessageResponse,
@@ -204,6 +207,14 @@ async def login(
     user.failed_login_attempts = 0
     user.is_locked = False
     user.locked_until = None
+
+    # Auto-promote to admin if this is the only user in the system
+    if user.role != UserRole.ADMIN:
+        user_count_result = await db.execute(select(func.count(User.id)))
+        total_users = user_count_result.scalar()
+        if total_users == 1:
+            user.role = UserRole.ADMIN
+            logger.info(f"Auto-promoted user {user.id} ({user.email}) to admin (only user in system)")
 
     # Log successful login
     await _log_login_attempt(db, user.id, ip_address, user_agent, True)

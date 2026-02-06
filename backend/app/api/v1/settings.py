@@ -10,7 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.rate_limiter import rate_limit
 from app.core.security import get_current_user
 from app.db.database import get_db
-from app.models.user import User
+from app.models.user import User, UserRole
 from app.models.user_settings import UserSettings
 from app.schemas.settings import (
     UpdateSettingsRequest,
@@ -70,7 +70,11 @@ async def get_settings(
         can_customize_api,
     )
 
-    return UserSettingsResponse(
+    # Check if user is admin
+    is_admin = current_user.role == UserRole.ADMIN
+
+    # Build response - news settings only for admins
+    response = UserSettingsResponse(
         notifications=NotificationSettings(
             price_alerts=settings.notify_price_alerts,
             news_alerts=settings.notify_news_alerts,
@@ -86,10 +90,16 @@ async def get_settings(
             openai_temperature=settings.openai_temperature,
             openai_system_prompt=settings.openai_system_prompt,
         ),
-        news_source=NewsSourceSettings(
+        can_customize_api=can_customize_api,
+        is_admin=is_admin,
+    )
+
+    # Only include news settings for admins
+    if is_admin:
+        response.news_source = NewsSourceSettings(
             source=getattr(settings, 'news_source', None) or "auto",
-        ),
-        news_content=NewsContentSettings(
+        )
+        response.news_content = NewsContentSettings(
             source=getattr(settings, 'full_content_source', None) or "scraper",
             polygon_api_key=getattr(settings, 'polygon_api_key', None),
             retention_days=getattr(settings, 'news_retention_days', None) or 30,
@@ -97,9 +107,9 @@ async def get_settings(
             openai_api_key=getattr(settings, 'news_openai_api_key', None),
             embedding_model=getattr(settings, 'news_embedding_model', None) or "text-embedding-3-small",
             filter_model=getattr(settings, 'news_filter_model', None) or "gpt-4o-mini",
-        ),
-        can_customize_api=can_customize_api,
-    )
+        )
+
+    return response
 
 
 @router.put(
@@ -117,9 +127,10 @@ async def update_settings(
     """Update user settings."""
     settings = await get_or_create_user_settings(current_user.id, db)
 
-    # Check if user can customize API settings
+    # Check if user can customize API settings and if they are admin
     settings_service = get_settings_service()
     can_customize_api = await settings_service.user_can_customize_api(db, current_user.id)
+    is_admin = current_user.role == UserRole.ADMIN
 
     # Check permission for API key updates
     if data.api_keys and not can_customize_api:
@@ -134,20 +145,15 @@ async def update_settings(
                 detail="You don't have permission to customize API settings. Please contact an administrator.",
             )
 
-    # Check permission for news content API settings
-    if data.news_content and not can_customize_api:
-        # Check if trying to modify API-related fields
-        if (
-            data.news_content.openai_base_url is not None
-            or data.news_content.openai_api_key is not None
-        ):
-            logger.warning(
-                f"User {current_user.id} attempted to modify news API settings without permission"
-            )
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="You don't have permission to customize API settings. Please contact an administrator.",
-            )
+    # News settings are admin-only
+    if (data.news_source or data.news_content) and not is_admin:
+        logger.warning(
+            f"Non-admin user {current_user.id} attempted to modify news settings"
+        )
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="News settings can only be modified by administrators.",
+        )
 
     # Update notifications
     if data.notifications:
@@ -177,24 +183,22 @@ async def update_settings(
         if data.api_keys.openai_system_prompt is not None:
             settings.openai_system_prompt = data.api_keys.openai_system_prompt or None
 
-    # Update news source
-    if data.news_source and data.news_source.source is not None:
+    # Update news source (admin only)
+    if is_admin and data.news_source and data.news_source.source is not None:
         settings.news_source = data.news_source.source
 
-    # Update news content settings
-    if data.news_content:
+    # Update news content settings (admin only)
+    if is_admin and data.news_content:
         if data.news_content.source is not None:
             settings.full_content_source = data.news_content.source
         if data.news_content.polygon_api_key is not None:
             settings.polygon_api_key = data.news_content.polygon_api_key or None
         if data.news_content.retention_days is not None:
             settings.news_retention_days = data.news_content.retention_days
-        # API settings only if permitted
-        if can_customize_api:
-            if data.news_content.openai_base_url is not None:
-                settings.news_openai_base_url = data.news_content.openai_base_url or None
-            if data.news_content.openai_api_key is not None:
-                settings.news_openai_api_key = data.news_content.openai_api_key or None
+        if data.news_content.openai_base_url is not None:
+            settings.news_openai_base_url = data.news_content.openai_base_url or None
+        if data.news_content.openai_api_key is not None:
+            settings.news_openai_api_key = data.news_content.openai_api_key or None
         if data.news_content.embedding_model is not None:
             settings.news_embedding_model = data.news_content.embedding_model or None
         if data.news_content.filter_model is not None:
@@ -205,7 +209,8 @@ async def update_settings(
 
     logger.info(f"Updated settings for user {current_user.id}")
 
-    return UserSettingsResponse(
+    # Build response - news settings only for admins
+    response = UserSettingsResponse(
         notifications=NotificationSettings(
             price_alerts=settings.notify_price_alerts,
             news_alerts=settings.notify_news_alerts,
@@ -221,10 +226,16 @@ async def update_settings(
             openai_temperature=settings.openai_temperature,
             openai_system_prompt=settings.openai_system_prompt,
         ),
-        news_source=NewsSourceSettings(
+        can_customize_api=can_customize_api,
+        is_admin=is_admin,
+    )
+
+    # Only include news settings for admins
+    if is_admin:
+        response.news_source = NewsSourceSettings(
             source=getattr(settings, 'news_source', None) or "auto",
-        ),
-        news_content=NewsContentSettings(
+        )
+        response.news_content = NewsContentSettings(
             source=getattr(settings, 'full_content_source', None) or "scraper",
             polygon_api_key=getattr(settings, 'polygon_api_key', None),
             retention_days=getattr(settings, 'news_retention_days', None) or 30,
@@ -232,6 +243,6 @@ async def update_settings(
             openai_api_key=getattr(settings, 'news_openai_api_key', None),
             embedding_model=getattr(settings, 'news_embedding_model', None) or "text-embedding-3-small",
             filter_model=getattr(settings, 'news_filter_model', None) or "gpt-4o-mini",
-        ),
-        can_customize_api=can_customize_api,
-    )
+        )
+
+    return response

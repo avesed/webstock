@@ -181,15 +181,14 @@ done
 # ============ Run Database Migrations ============
 echo "[3/4] Running database migrations..."
 
-if [ -f /app/backend/migrations/auto_migrate.py ]; then
-    cd /app/backend
-    python3 migrations/auto_migrate.py || {
-        echo "  -> WARNING: Migration script failed, continuing anyway"
-    }
-    cd /app
+cd /app/backend
+if alembic upgrade head; then
+    echo "  -> Database migrations completed successfully"
 else
-    echo "  -> Migration script not found, skipping"
+    echo "  -> WARNING: Database migrations failed, continuing anyway"
+    echo "  -> You may need to run migrations manually: alembic upgrade head"
 fi
+cd /app
 
 # ============ Ready ============
 echo "[4/4] Starting services..."

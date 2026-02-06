@@ -44,9 +44,10 @@ class UserSettingsResponse(BaseModel):
     """User settings response."""
     notifications: NotificationSettings
     api_keys: ApiKeySettings
-    news_source: NewsSourceSettings
-    news_content: NewsContentSettings
+    news_source: Optional[NewsSourceSettings] = None  # Only visible to admins
+    news_content: Optional[NewsContentSettings] = None  # Only visible to admins
     can_customize_api: bool = False  # Whether user has permission to customize API settings
+    is_admin: bool = False  # Whether user is an administrator
 
     class Config:
         from_attributes = True

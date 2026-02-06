@@ -53,10 +53,10 @@ interface UserSettings {
     openai_temperature: number | null
     openai_system_prompt: string | null
   }
-  news_source: {
+  news_source?: {
     source: string
   }
-  news_content: {
+  news_content?: {
     source: NewsContentSource
     polygon_api_key: string | null
     retention_days: number
@@ -66,6 +66,8 @@ interface UserSettings {
     filter_model: string
     can_customize_api: boolean
   }
+  can_customize_api: boolean
+  is_admin: boolean
 }
 
 const DEFAULT_SETTINGS: UserSettings = {
@@ -84,19 +86,8 @@ const DEFAULT_SETTINGS: UserSettings = {
     openai_temperature: null,
     openai_system_prompt: null,
   },
-  news_source: {
-    source: 'yfinance',
-  },
-  news_content: {
-    source: 'scraper',
-    polygon_api_key: null,
-    retention_days: 30,
-    openai_base_url: null,
-    openai_api_key: null,
-    embedding_model: 'text-embedding-3-small',
-    filter_model: 'gpt-4o-mini',
-    can_customize_api: false,
-  },
+  can_customize_api: false,
+  is_admin: false,
 }
 
 // API functions
@@ -247,8 +238,21 @@ export default function SettingsPage() {
       backendUpdate.filter_model = newsContentUpdate.filterModel
     }
 
+    // Provide defaults for news_content if it's not present (admin-only field)
+    const defaultNewsContent = {
+      source: 'scraper' as NewsContentSource,
+      polygon_api_key: null,
+      retention_days: 30,
+      openai_base_url: null,
+      openai_api_key: null,
+      embedding_model: 'text-embedding-3-small',
+      filter_model: 'gpt-4o-mini',
+      can_customize_api: false,
+    }
+
     updateSettingsMutation.mutate({
       news_content: {
+        ...defaultNewsContent,
         ...currentSettings.news_content,
         ...backendUpdate,
       },
@@ -264,8 +268,11 @@ export default function SettingsPage() {
     openaiApiKey: currentSettings.news_content?.openai_api_key || null,
     embeddingModel: currentSettings.news_content?.embedding_model || 'text-embedding-3-small',
     filterModel: currentSettings.news_content?.filter_model || 'gpt-4o-mini',
-    canCustomizeApi: currentSettings.news_content?.can_customize_api ?? false,
+    canCustomizeApi: currentSettings.can_customize_api ?? false,
   }
+
+  // Check if user is admin (news settings only visible to admins)
+  const isAdmin = currentSettings.is_admin ?? false
 
   // Handle profile update
   const handleProfileUpdate = async () => {
@@ -330,10 +337,12 @@ export default function SettingsPage() {
               {t('sections.ai')}
             </TabsTrigger>
           )}
-          <TabsTrigger value="news-content" className="flex items-center gap-2">
-            <Newspaper className="h-4 w-4" />
-            {t('newsContent.title')}
-          </TabsTrigger>
+          {isAdmin && (
+            <TabsTrigger value="news-content" className="flex items-center gap-2">
+              <Newspaper className="h-4 w-4" />
+              {t('newsContent.title')}
+            </TabsTrigger>
+          )}
         </TabsList>
 
         {/* Profile Tab */}
@@ -734,14 +743,16 @@ export default function SettingsPage() {
         </TabsContent>
         )}
 
-        {/* News Content Tab */}
-        <TabsContent value="news-content" className="space-y-4">
-          <NewsSettings
-            settings={newsContentSettings}
-            onUpdate={updateNewsContentSettings}
-            isLoading={updateSettingsMutation.isPending}
-          />
-        </TabsContent>
+        {/* News Content Tab - Admin only */}
+        {isAdmin && (
+          <TabsContent value="news-content" className="space-y-4">
+            <NewsSettings
+              settings={newsContentSettings}
+              onUpdate={updateNewsContentSettings}
+              isLoading={updateSettingsMutation.isPending}
+            />
+          </TabsContent>
+        )}
       </Tabs>
     </div>
   )
