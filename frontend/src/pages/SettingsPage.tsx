@@ -9,10 +9,12 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { useToast, useLocale } from '@/hooks'
 import { useAuthStore } from '@/stores/authStore'
 import apiClient from '@/api/client'
-import { User, Bell, Key, Moon, Sun, Eye, EyeOff, Loader2, Globe } from 'lucide-react'
+import { User, Bell, Key, Moon, Sun, Eye, EyeOff, Loader2, Globe, Newspaper } from 'lucide-react'
 import { useThemeStore } from '@/stores/themeStore'
 import { cn } from '@/lib/utils'
 import type { Locale } from '@/hooks'
+import { NewsSettings } from '@/components/settings'
+import type { NewsContentSettings, NewsContentSource } from '@/types'
 
 interface ToggleButtonProps {
   checked: boolean
@@ -54,6 +56,15 @@ interface UserSettings {
   news_source: {
     source: string
   }
+  news_content: {
+    source: NewsContentSource
+    polygon_api_key: string | null
+    retention_days: number
+    openai_base_url: string | null
+    openai_api_key: string | null
+    embedding_model: string
+    filter_model: string
+  }
 }
 
 const DEFAULT_SETTINGS: UserSettings = {
@@ -74,6 +85,15 @@ const DEFAULT_SETTINGS: UserSettings = {
   },
   news_source: {
     source: 'yfinance',
+  },
+  news_content: {
+    source: 'scraper',
+    polygon_api_key: null,
+    retention_days: 30,
+    openai_base_url: null,
+    openai_api_key: null,
+    embedding_model: 'text-embedding-3-small',
+    filter_model: 'gpt-4o-mini',
   },
 }
 
@@ -199,6 +219,51 @@ export default function SettingsPage() {
     updateSettingsMutation.mutate(newSettings)
   }
 
+  // Handle news content settings update
+  const updateNewsContentSettings = (newsContentUpdate: Partial<NewsContentSettings>) => {
+    // Map from frontend camelCase to backend snake_case
+    const backendUpdate: Partial<UserSettings['news_content']> = {}
+    if (newsContentUpdate.source !== undefined) {
+      backendUpdate.source = newsContentUpdate.source
+    }
+    if (newsContentUpdate.polygonApiKey !== undefined) {
+      backendUpdate.polygon_api_key = newsContentUpdate.polygonApiKey
+    }
+    if (newsContentUpdate.retentionDays !== undefined) {
+      backendUpdate.retention_days = newsContentUpdate.retentionDays
+    }
+    if (newsContentUpdate.openaiBaseUrl !== undefined) {
+      backendUpdate.openai_base_url = newsContentUpdate.openaiBaseUrl
+    }
+    if (newsContentUpdate.openaiApiKey !== undefined) {
+      backendUpdate.openai_api_key = newsContentUpdate.openaiApiKey
+    }
+    if (newsContentUpdate.embeddingModel !== undefined) {
+      backendUpdate.embedding_model = newsContentUpdate.embeddingModel
+    }
+    if (newsContentUpdate.filterModel !== undefined) {
+      backendUpdate.filter_model = newsContentUpdate.filterModel
+    }
+
+    updateSettingsMutation.mutate({
+      news_content: {
+        ...currentSettings.news_content,
+        ...backendUpdate,
+      },
+    })
+  }
+
+  // Convert backend news_content to frontend NewsContentSettings
+  const newsContentSettings: NewsContentSettings = {
+    source: currentSettings.news_content?.source || 'scraper',
+    polygonApiKey: currentSettings.news_content?.polygon_api_key || null,
+    retentionDays: currentSettings.news_content?.retention_days || 30,
+    openaiBaseUrl: currentSettings.news_content?.openai_base_url || null,
+    openaiApiKey: currentSettings.news_content?.openai_api_key || null,
+    embeddingModel: currentSettings.news_content?.embedding_model || 'text-embedding-3-small',
+    filterModel: currentSettings.news_content?.filter_model || 'gpt-4o-mini',
+  }
+
   // Handle profile update
   const handleProfileUpdate = async () => {
     if (profileForm.newPassword && profileForm.newPassword !== profileForm.confirmPassword) {
@@ -259,6 +324,10 @@ export default function SettingsPage() {
           <TabsTrigger value="api" className="flex items-center gap-2">
             <Key className="h-4 w-4" />
             {t('sections.ai')}
+          </TabsTrigger>
+          <TabsTrigger value="news-content" className="flex items-center gap-2">
+            <Newspaper className="h-4 w-4" />
+            {t('newsContent.title')}
           </TabsTrigger>
         </TabsList>
 
@@ -656,6 +725,15 @@ export default function SettingsPage() {
               </div>
             </CardContent>
           </Card>
+        </TabsContent>
+
+        {/* News Content Tab */}
+        <TabsContent value="news-content" className="space-y-4">
+          <NewsSettings
+            settings={newsContentSettings}
+            onUpdate={updateNewsContentSettings}
+            isLoading={updateSettingsMutation.isPending}
+          />
         </TabsContent>
       </Tabs>
     </div>

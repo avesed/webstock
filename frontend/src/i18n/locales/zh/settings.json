@@ -144,5 +144,53 @@
     "saved": "设置已保存",
     "reset": "恢复默认",
     "resetConfirm": "确定要将所有设置恢复为默认值吗？"
+  },
+  "newsContent": {
+    "title": "新闻内容设置",
+    "description": "配置新闻抓取来源、保留时间和AI处理模型",
+    "source": {
+      "label": "数据来源",
+      "description": "选择新闻全文内容的抓取方式",
+      "scraper": "网页抓取 (默认，免费)",
+      "polygon": "Polygon API (付费，更稳定)"
+    },
+    "polygonKey": {
+      "label": "Polygon API Key",
+      "description": "使用Polygon API需要提供有效的API Key",
+      "placeholder": "输入您的 Polygon API Key",
+      "getKey": "获取API Key：",
+      "show": "显示密钥",
+      "hide": "隐藏密钥"
+    },
+    "retention": {
+      "label": "新闻保留天数",
+      "description": "新闻内容在数据库中保留的天数，过期后自动清理",
+      "days": "天"
+    },
+    "customApi": {
+      "title": "自定义API配置（可选）",
+      "baseUrl": "API 地址",
+      "baseUrlPlaceholder": "https://api.openai.com/v1",
+      "baseUrlHint": "留空使用默认OpenAI API，或填写自托管LLM地址（如Ollama、vLLM等）",
+      "apiKey": "API 密钥",
+      "apiKeyPlaceholder": "sk-...",
+      "apiKeyHint": "如使用自定义API地址，请填写对应的API密钥"
+    },
+    "models": {
+      "title": "AI处理模型",
+      "description": "选择或输入用于新闻向量化和筛选的AI模型",
+      "embedding": "向量化模型",
+      "filter": "筛选模型",
+      "recommended": "推荐",
+      "more accurate": "更精确",
+      "legacy": "旧版",
+      "smarter": "更智能",
+      "cheapest": "最便宜",
+      "custom": "自定义"
+    },
+    "info": {
+      "title": "提示",
+      "description": "向量化模型用于将新闻转换为可搜索的向量，筛选模型用于判断新闻相关性。模型选择会影响处理成本和准确性。"
+    }
   }
 }

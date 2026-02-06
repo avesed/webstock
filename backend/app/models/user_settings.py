@@ -103,6 +103,55 @@ class UserSettings(Base):
         default="auto",
     )
 
+    # === 新闻全文抓取设置 ===
+    full_content_source: Mapped[Optional[str]] = mapped_column(
+        String(20),
+        nullable=True,
+        default="scraper",
+        comment="全文抓取来源: scraper (newspaper4k) 或 polygon",
+    )
+
+    polygon_api_key: Mapped[Optional[str]] = mapped_column(
+        Text,
+        nullable=True,
+        comment="用户的Polygon.io API Key（用于新闻全文）",
+    )
+
+    news_retention_days: Mapped[Optional[int]] = mapped_column(
+        Integer,
+        nullable=True,
+        default=30,
+        comment="新闻内容保留天数",
+    )
+
+    # === 新闻AI处理设置 ===
+    # 自定义API配置（用于embedding和filter）
+    news_openai_base_url: Mapped[Optional[str]] = mapped_column(
+        String(500),
+        nullable=True,
+        comment="新闻处理的自定义OpenAI兼容API地址",
+    )
+
+    news_openai_api_key: Mapped[Optional[str]] = mapped_column(
+        Text,
+        nullable=True,
+        comment="新闻处理的自定义API Key",
+    )
+
+    news_embedding_model: Mapped[Optional[str]] = mapped_column(
+        String(100),
+        nullable=True,
+        default="text-embedding-3-small",
+        comment="新闻向量模型",
+    )
+
+    news_filter_model: Mapped[Optional[str]] = mapped_column(
+        String(100),
+        nullable=True,
+        default="gpt-4o-mini",
+        comment="新闻筛选模型（用于判断相关性）",
+    )
+
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         default=lambda: datetime.now(timezone.utc),

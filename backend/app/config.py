@@ -84,6 +84,15 @@ class Settings(BaseSettings):
     TUSHARE_TOKEN: Optional[str] = None
     ALPHA_VANTAGE_API_KEY: Optional[str] = None
 
+    # News Full Content Settings
+    FULL_CONTENT_ENABLED: bool = True
+    FULL_CONTENT_DEFAULT_SOURCE: str = "scraper"  # scraper / polygon
+    POLYGON_API_KEY: Optional[str] = None
+    SCRAPER_RATE_LIMIT: int = 10  # requests per minute per domain
+    SCRAPER_TIMEOUT: int = 30  # seconds
+    NEWS_RETENTION_DAYS_DEFAULT: int = 30  # default retention days
+    NEWS_CONTENT_BASE_PATH: str = "data/news_content"  # JSON storage path
+
     # OpenAI Rate Limiting (layered)
     # Global rate limit for all OpenAI API calls combined
     OPENAI_RATE_LIMIT: int = 200  # total requests per minute across all features

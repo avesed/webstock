@@ -18,6 +18,7 @@ from app.schemas.settings import (
     NotificationSettings,
     ApiKeySettings,
     NewsSourceSettings,
+    NewsContentSettings,
 )
 
 logger = logging.getLogger(__name__)
@@ -57,7 +58,7 @@ async def get_settings(
 ):
     """Get user settings."""
     settings = await get_or_create_user_settings(current_user.id, db)
-    
+
     return UserSettingsResponse(
         notifications=NotificationSettings(
             price_alerts=settings.notify_price_alerts,
@@ -75,7 +76,16 @@ async def get_settings(
             openai_system_prompt=settings.openai_system_prompt,
         ),
         news_source=NewsSourceSettings(
-            source=settings.news_source or "yfinance",
+            source=getattr(settings, 'news_source', None) or "auto",
+        ),
+        news_content=NewsContentSettings(
+            source=getattr(settings, 'full_content_source', None) or "scraper",
+            polygon_api_key=getattr(settings, 'polygon_api_key', None),
+            retention_days=getattr(settings, 'news_retention_days', None) or 30,
+            openai_base_url=getattr(settings, 'news_openai_base_url', None),
+            openai_api_key=getattr(settings, 'news_openai_api_key', None),
+            embedding_model=getattr(settings, 'news_embedding_model', None) or "text-embedding-3-small",
+            filter_model=getattr(settings, 'news_filter_model', None) or "gpt-4o-mini",
         ),
     )
 
@@ -126,12 +136,29 @@ async def update_settings(
     # Update news source
     if data.news_source and data.news_source.source is not None:
         settings.news_source = data.news_source.source
-    
+
+    # Update news content settings
+    if data.news_content:
+        if data.news_content.source is not None:
+            settings.full_content_source = data.news_content.source
+        if data.news_content.polygon_api_key is not None:
+            settings.polygon_api_key = data.news_content.polygon_api_key or None
+        if data.news_content.retention_days is not None:
+            settings.news_retention_days = data.news_content.retention_days
+        if data.news_content.openai_base_url is not None:
+            settings.news_openai_base_url = data.news_content.openai_base_url or None
+        if data.news_content.openai_api_key is not None:
+            settings.news_openai_api_key = data.news_content.openai_api_key or None
+        if data.news_content.embedding_model is not None:
+            settings.news_embedding_model = data.news_content.embedding_model or None
+        if data.news_content.filter_model is not None:
+            settings.news_filter_model = data.news_content.filter_model or None
+
     await db.commit()
     await db.refresh(settings)
-    
+
     logger.info(f"Updated settings for user {current_user.id}")
-    
+
     return UserSettingsResponse(
         notifications=NotificationSettings(
             price_alerts=settings.notify_price_alerts,
@@ -149,6 +176,15 @@ async def update_settings(
             openai_system_prompt=settings.openai_system_prompt,
         ),
         news_source=NewsSourceSettings(
-            source=settings.news_source or "yfinance",
+            source=getattr(settings, 'news_source', None) or "auto",
+        ),
+        news_content=NewsContentSettings(
+            source=getattr(settings, 'full_content_source', None) or "scraper",
+            polygon_api_key=getattr(settings, 'polygon_api_key', None),
+            retention_days=getattr(settings, 'news_retention_days', None) or 30,
+            openai_base_url=getattr(settings, 'news_openai_base_url', None),
+            openai_api_key=getattr(settings, 'news_openai_api_key', None),
+            embedding_model=getattr(settings, 'news_embedding_model', None) or "text-embedding-3-small",
+            filter_model=getattr(settings, 'news_filter_model', None) or "gpt-4o-mini",
         ),
     )

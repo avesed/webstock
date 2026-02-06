@@ -1,7 +1,7 @@
 """Add user AI config columns to user_settings.
 
-Adds openai_max_tokens, openai_temperature, openai_system_prompt columns
-to allow users to customize AI chat parameters.
+Adds openai_max_tokens, openai_temperature, openai_system_prompt, news_source columns
+to allow users to customize AI chat parameters and news source preferences.
 
 Revision ID: 001_add_user_ai_config
 Revises:
@@ -42,6 +42,9 @@ def upgrade() -> None:
     if 'openai_system_prompt' not in existing_columns:
         op.add_column('user_settings', sa.Column('openai_system_prompt', sa.Text(), nullable=True))
 
+    if 'news_source' not in existing_columns:
+        op.add_column('user_settings', sa.Column('news_source', sa.String(50), nullable=True, server_default='auto'))
+
 
 def downgrade() -> None:
     """Remove AI config columns from user_settings."""
@@ -61,3 +64,6 @@ def downgrade() -> None:
 
     if 'openai_max_tokens' in existing_columns:
         op.drop_column('user_settings', 'openai_max_tokens')
+
+    if 'news_source' in existing_columns:
+        op.drop_column('user_settings', 'news_source')

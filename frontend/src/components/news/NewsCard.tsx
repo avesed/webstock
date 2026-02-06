@@ -1,5 +1,6 @@
 import { useState, useCallback } from 'react'
 import { useMutation } from '@tanstack/react-query'
+import { useTranslation } from 'react-i18next'
 import DOMPurify from 'dompurify'
 import {
   ExternalLink,
@@ -41,20 +42,24 @@ const SENTIMENT_CONFIG: Record<NewsSentiment, { icon: typeof TrendingUp; color: 
 
 export default function NewsCard({ article, compact = false, className, onSymbolClick }: NewsCardProps) {
   const { toast } = useToast()
+  const { t, i18n } = useTranslation('dashboard')
   const [isAnalysisOpen, setIsAnalysisOpen] = useState(false)
   const [analysisContent, setAnalysisContent] = useState<string | null>(article.aiAnalysis ?? null)
 
+  // Get current language for API call (zh or en)
+  const language = i18n.language?.startsWith('zh') ? 'zh' : 'en'
+
   // Analyze article mutation
   const analyzeMutation = useMutation({
-    mutationFn: () => newsApi.analyzeArticle(article),
+    mutationFn: () => newsApi.analyzeArticle(article, language),
     onSuccess: (updatedArticle) => {
       setAnalysisContent(updatedArticle.aiAnalysis ?? null)
       setIsAnalysisOpen(true)
     },
     onError: () => {
       toast({
-        title: 'Analysis failed',
-        description: 'Could not analyze this article. Please try again.',
+        title: t('news.analysisFailed', 'Analysis failed'),
+        description: t('news.analysisFailedDesc', 'Could not analyze this article. Please try again.'),
         variant: 'destructive',
       })
     },
@@ -183,7 +188,7 @@ export default function NewsCard({ article, compact = false, className, onSymbol
         <CardContent className="pt-0 flex items-center gap-2">
           <Button variant="outline" size="sm" onClick={handleOpenArticle}>
             <ExternalLink className="mr-2 h-4 w-4" />
-            Read More
+            {t('news.readMore', 'Read More')}
           </Button>
           <Button
             variant="ghost"
@@ -196,7 +201,7 @@ export default function NewsCard({ article, compact = false, className, onSymbol
             ) : (
               <Brain className="mr-2 h-4 w-4" />
             )}
-            {analysisContent ? 'View Analysis' : 'Analyze'}
+            {analysisContent ? t('news.viewAnalysis', 'View Analysis') : t('news.analyze', 'Analyze')}
           </Button>
         </CardContent>
       </Card>
@@ -207,7 +212,7 @@ export default function NewsCard({ article, compact = false, className, onSymbol
           <DialogHeader>
             <DialogTitle className="flex items-center gap-2">
               <Brain className="h-5 w-5" />
-              AI Analysis
+              {t('news.aiAnalysis', 'AI Analysis')}
             </DialogTitle>
             <DialogDescription>
               {truncate(article.title, 100)}
@@ -241,10 +246,10 @@ export default function NewsCard({ article, compact = false, className, onSymbol
                     )
                   }
 
-                  if (line.startsWith('- ') || line.startsWith('* ')) {
+                  if (line.startsWith('- ') || line.startsWith('* ') || line.startsWith('• ')) {
                     return (
                       <li key={index} className="ml-4">
-                        {line.replace(/^[-*]\s*/, '')}
+                        {line.replace(/^[-*•]\s*/, '')}
                       </li>
                     )
                   }
@@ -267,7 +272,7 @@ export default function NewsCard({ article, compact = false, className, onSymbol
                   )
                 })
               ) : (
-                <p className="text-muted-foreground">No analysis available.</p>
+                <p className="text-muted-foreground">{t('news.noAnalysis', 'No analysis available.')}</p>
               )}
             </div>
           </ScrollArea>

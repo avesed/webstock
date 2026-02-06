@@ -20,6 +20,8 @@ from app.models.user import User
 from app.models.user_settings import UserSettings
 from app.models.watchlist import Watchlist, WatchlistItem
 from app.schemas.news import (
+    BatchFetchRequest,
+    BatchFetchResponse,
     MessageResponse,
     NewsAlertCreate,
     NewsAlertListResponse,
@@ -28,6 +30,7 @@ from app.schemas.news import (
     NewsAnalysisRequest,
     NewsAnalysisResponse,
     NewsFeedResponse,
+    NewsFullContentResponse,
     NewsResponse,
     TrendingNewsResponse,
 )
@@ -46,6 +49,8 @@ FEED_RATE_LIMIT = rate_limit(max_requests=30, window_seconds=60, key_prefix="new
 ANALYZE_RATE_LIMIT = rate_limit(max_requests=10, window_seconds=60, key_prefix="news_analyze")
 # Alerts CRUD: 60 requests per minute
 ALERTS_RATE_LIMIT = rate_limit(max_requests=60, window_seconds=60, key_prefix="news_alerts")
+# Full content: 30 requests per minute
+CONTENT_RATE_LIMIT = rate_limit(max_requests=30, window_seconds=60, key_prefix="news_content")
 
 
 @router.get(
@@ -387,36 +392,70 @@ async def get_stock_news(
 async def analyze_news(
     data: NewsAnalysisRequest,
     current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
     _rate_limit: None = Depends(ANALYZE_RATE_LIMIT),
 ):
     """
     Get AI analysis for a news article.
 
     Accepts news content directly in the request body for analysis.
+    Uses user's configured OpenAI API key if available, otherwise falls back to system config.
 
     Returns sentiment score, impact prediction, and key points.
     """
-    # Check if OpenAI is configured
-    if not settings.OPENAI_API_KEY:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="AI analysis is not available. OpenAI API key not configured.",
-        )
-
     from app.agents.prompts.news_prompt import (
         build_news_analysis_prompt,
         get_news_analysis_system_prompt,
     )
     from openai import AsyncOpenAI
+    from sqlalchemy import select
+    from app.models.user_settings import UserSettings
+
+    # Get user's API configuration from settings (always fetch to avoid lazy load issues)
+    result = await db.execute(
+        select(UserSettings).where(UserSettings.user_id == current_user.id)
+    )
+    user_settings = result.scalar_one_or_none()
+
+    # Determine API key and base URL (user settings > system config)
+    api_key = None
+    base_url = None
+    model = settings.OPENAI_MODEL or "gpt-4o-mini"
+
+    if user_settings:
+        # First try user's general OpenAI settings
+        api_key = getattr(user_settings, 'openai_api_key', None)
+        base_url = getattr(user_settings, 'openai_base_url', None)
+        user_model = getattr(user_settings, 'openai_model', None)
+        if user_model:
+            model = user_model
+
+    # Fall back to system config if user hasn't configured
+    if not api_key:
+        api_key = settings.OPENAI_API_KEY
+    if not base_url:
+        base_url = settings.OPENAI_API_BASE
+
+    # Check if we have an API key
+    if not api_key:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="AI analysis is not available. Please configure your OpenAI API key in Settings.",
+        )
 
     try:
         client = AsyncOpenAI(
-            api_key=settings.OPENAI_API_KEY,
-            base_url=settings.OPENAI_API_BASE,
+            api_key=api_key,
+            base_url=base_url if base_url else None,
         )
 
+        # Determine language (from request, default to "en")
+        language = data.language or "en"
+        if language not in ("en", "zh"):
+            language = "en"
+
         # Build prompt from request data
-        system_prompt = get_news_analysis_system_prompt()
+        system_prompt = get_news_analysis_system_prompt(language=language)
         user_prompt = build_news_analysis_prompt(
             symbol=data.symbol,
             title=data.title,
@@ -424,12 +463,13 @@ async def analyze_news(
             source=data.source or "unknown",
             published_at=data.published_at.isoformat() if data.published_at else datetime.now(timezone.utc).isoformat(),
             market=data.market or "US",
+            language=language,
         )
 
         # Don't pass max_tokens/temperature - let API use defaults
         # This ensures compatibility with reasoning models (o1, gpt-5, etc.)
         response = await client.chat.completions.create(
-            model=settings.OPENAI_MODEL,
+            model=model,
             messages=[
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_prompt},
@@ -476,3 +516,170 @@ async def analyze_news(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to analyze news article",
         )
+
+
+@router.get(
+    "/content/{news_id}",
+    response_model=NewsFullContentResponse,
+    summary="Get news full content",
+    description="Get full content of a news article including scraped text.",
+)
+async def get_news_full_content(
+    news_id: str,
+    force_refresh: bool = Query(False, description="Force re-fetch content"),
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+    _rate_limit: None = Depends(CONTENT_RATE_LIMIT),
+):
+    """
+    Get full content of a news article.
+
+    - **news_id**: UUID of the news article
+    - **force_refresh**: If True, re-fetch content even if already fetched
+    """
+    from app.models.news import ContentStatus
+    from app.services.news_storage_service import get_news_storage_service
+
+    try:
+        news_uuid = UUID(news_id)
+    except ValueError:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid news ID format",
+        )
+
+    # Get news record
+    query = select(News).where(News.id == news_uuid)
+    result = await db.execute(query)
+    news = result.scalar_one_or_none()
+
+    if not news:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="News article not found",
+        )
+
+    # Check if we need to trigger fetch
+    is_fetching = False
+    if force_refresh or news.content_status == ContentStatus.PENDING.value:
+        # Trigger async fetch
+        try:
+            from worker.tasks.full_content_tasks import fetch_news_content
+            fetch_news_content.delay(
+                str(news.id),
+                news.url,
+                news.market,
+                news.symbol,
+                current_user.id,
+            )
+            is_fetching = True
+            logger.info("Triggered content fetch for news_id=%s", news_id)
+        except Exception as e:
+            logger.error("Failed to trigger content fetch: %s", e)
+
+    # Get full content from storage
+    full_content = None
+    word_count = 0
+    storage_service = get_news_storage_service()
+
+    if news.content_file_path:
+        content_data = storage_service.read_content(news.content_file_path)
+        if content_data:
+            full_content = content_data.get("full_text")
+            word_count = content_data.get("word_count", 0)
+
+    return NewsFullContentResponse(
+        id=str(news.id),
+        title=news.title,
+        full_content=full_content,
+        content_status=news.content_status,
+        language=news.language,
+        authors=news.authors,
+        keywords=news.keywords,
+        word_count=word_count,
+        is_fetching=is_fetching,
+        fetched_at=news.content_fetched_at,
+        error=news.content_error,
+    )
+
+
+@router.post(
+    "/batch-fetch-content",
+    response_model=BatchFetchResponse,
+    summary="Batch fetch news content",
+    description="Trigger content fetching for multiple news articles.",
+)
+async def batch_fetch_content(
+    data: BatchFetchRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+    _rate_limit: None = Depends(CONTENT_RATE_LIMIT),
+):
+    """
+    Batch trigger content fetching for multiple news articles.
+
+    - **news_ids**: List of news article UUIDs (max 50)
+    """
+    from app.models.news import ContentStatus
+
+    # Validate UUIDs
+    valid_uuids = []
+    for news_id in data.news_ids:
+        try:
+            valid_uuids.append(UUID(news_id))
+        except ValueError:
+            continue
+
+    if not valid_uuids:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="No valid news IDs provided",
+        )
+
+    # Get news records
+    query = select(News).where(
+        News.id.in_(valid_uuids),
+        News.content_status.in_([
+            ContentStatus.PENDING.value,
+            ContentStatus.FAILED.value,
+        ]),
+    )
+    result = await db.execute(query)
+    news_list = result.scalars().all()
+
+    if not news_list:
+        return BatchFetchResponse(
+            queued=0,
+            message="No news articles need content fetching",
+        )
+
+    # Build batch items
+    batch_items = []
+    for news in news_list:
+        batch_items.append({
+            "news_id": str(news.id),
+            "url": news.url,
+            "market": news.market,
+            "symbol": news.symbol,
+            "user_id": current_user.id,
+        })
+
+    # Dispatch batch task
+    try:
+        from worker.tasks.full_content_tasks import fetch_batch_content
+        fetch_batch_content.delay(batch_items)
+        logger.info(
+            "Queued batch content fetch for %d news articles",
+            len(batch_items),
+        )
+    except Exception as e:
+        logger.error("Failed to queue batch fetch: %s", e)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to queue batch fetch",
+        )
+
+    return BatchFetchResponse(
+        queued=len(batch_items),
+        message=f"Queued {len(batch_items)} news articles for content fetching",
+    )

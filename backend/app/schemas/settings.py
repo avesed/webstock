@@ -28,12 +28,25 @@ class NewsSourceSettings(BaseModel):
     source: str = "yfinance"  # Options: "yfinance", "finnhub", "auto"
 
 
+class NewsContentSettings(BaseModel):
+    """News full content settings."""
+    source: str = "scraper"  # Options: "scraper", "polygon"
+    polygon_api_key: Optional[str] = None
+    retention_days: int = 30
+    # AI processing settings (allows custom OpenAI-compatible endpoints)
+    openai_base_url: Optional[str] = None  # Custom API base URL
+    openai_api_key: Optional[str] = None  # Custom API key
+    embedding_model: str = "text-embedding-3-small"
+    filter_model: str = "gpt-4o-mini"
+
+
 class UserSettingsResponse(BaseModel):
     """User settings response."""
     notifications: NotificationSettings
     api_keys: ApiKeySettings
     news_source: NewsSourceSettings
-    
+    news_content: NewsContentSettings
+
     class Config:
         from_attributes = True
 
@@ -62,8 +75,22 @@ class UpdateNewsSourceSettings(BaseModel):
     source: Optional[str] = Field(None, pattern="^(yfinance|finnhub|auto)$")
 
 
+class UpdateNewsContentSettings(BaseModel):
+    """Update news content settings request."""
+    source: Optional[str] = Field(None, pattern="^(scraper|polygon)$")
+    polygon_api_key: Optional[str] = Field(None, max_length=1000)
+    retention_days: Optional[int] = Field(None, ge=7, le=365)
+    # AI processing settings (allows custom OpenAI-compatible endpoints)
+    openai_base_url: Optional[str] = Field(None, max_length=500)
+    openai_api_key: Optional[str] = Field(None, max_length=1000)
+    # Model names - no pattern restriction to allow custom models
+    embedding_model: Optional[str] = Field(None, max_length=100)
+    filter_model: Optional[str] = Field(None, max_length=100)
+
+
 class UpdateSettingsRequest(BaseModel):
     """Update user settings request."""
     notifications: Optional[UpdateNotificationSettings] = None
     api_keys: Optional[UpdateApiKeySettings] = None
     news_source: Optional[UpdateNewsSourceSettings] = None
+    news_content: Optional[UpdateNewsContentSettings] = None

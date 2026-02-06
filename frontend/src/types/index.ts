@@ -349,3 +349,17 @@ export interface ToolCallStatus {
   label: string
   status: 'running' | 'completed' | 'failed'
 }
+
+// News content settings types
+export type NewsContentSource = 'scraper' | 'polygon'
+
+export interface NewsContentSettings {
+  source: NewsContentSource
+  polygonApiKey: string | null
+  retentionDays: number
+  // Custom AI API settings (for self-hosted LLMs or other OpenAI-compatible providers)
+  openaiBaseUrl: string | null
+  openaiApiKey: string | null
+  embeddingModel: string
+  filterModel: string
+}

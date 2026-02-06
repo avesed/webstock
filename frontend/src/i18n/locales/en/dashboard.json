@@ -114,7 +114,12 @@
     "positive": "Positive",
     "negative": "Negative",
     "neutral": "Neutral",
-    "aiAnalysis": "AI Analysis"
+    "aiAnalysis": "AI Analysis",
+    "analyze": "Analyze",
+    "viewAnalysis": "View Analysis",
+    "analysisFailed": "Analysis failed",
+    "analysisFailedDesc": "Could not analyze this article. Please try again.",
+    "noAnalysis": "No analysis available."
   },
   "stock": {
     "title": "Stock Details",

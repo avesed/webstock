@@ -114,7 +114,12 @@
     "positive": "正面",
     "negative": "负面",
     "neutral": "中性",
-    "aiAnalysis": "AI 分析"
+    "aiAnalysis": "AI 分析",
+    "analyze": "分析",
+    "viewAnalysis": "查看分析",
+    "analysisFailed": "分析失败",
+    "analysisFailedDesc": "无法分析此文章，请重试。",
+    "noAnalysis": "暂无分析结果。"
   },
   "stock": {
     "title": "股票详情",

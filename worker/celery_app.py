@@ -20,6 +20,7 @@ celery_app = Celery(
         "worker.tasks.report_generator",
         "worker.tasks.key_rotation",
         "worker.tasks.embedding_tasks",
+        "worker.tasks.full_content_tasks",
     ],
 )
 
@@ -31,6 +32,15 @@ celery_app.conf.update(
     result_serializer="json",
     timezone="UTC",
     enable_utc=True,
+
+    # Task routing - route scraping tasks to dedicated queue
+    task_routes={
+        "worker.tasks.full_content_tasks.fetch_news_content": {"queue": "scraping"},
+        "worker.tasks.full_content_tasks.fetch_batch_content": {"queue": "scraping"},
+        "worker.tasks.full_content_tasks.evaluate_news_relevance": {"queue": "scraping"},
+        "worker.tasks.full_content_tasks.embed_news_full_content": {"queue": "default"},
+        "worker.tasks.full_content_tasks.cleanup_expired_news": {"queue": "default"},
+    },
 
     # Task execution settings
     task_acks_late=True,
@@ -74,6 +84,10 @@ celery_app.conf.update(
         "cleanup-old-reports": {
             "task": "worker.tasks.report_generator.cleanup_old_reports",
             "schedule": crontab(hour=5, minute=0),  # Daily at 5:00 AM
+        },
+        "cleanup-news-content": {
+            "task": "worker.tasks.full_content_tasks.cleanup_expired_news",
+            "schedule": crontab(hour=4, minute=0),  # Daily at 4:00 AM
         },
         # JWT Key Rotation - DISABLED by default
         # Manual rotation recommended: python worker/scripts/manage_keys.py rotate

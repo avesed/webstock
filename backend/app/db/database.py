@@ -58,8 +58,8 @@ async def get_db() -> AsyncGenerator[AsyncSession, None]:
     async with AsyncSessionLocal() as session:
         try:
             yield session
-        except Exception:
-            logger.warning("Database session rollback due to exception")
+        except Exception as e:
+            logger.warning(f"Database session rollback due to exception: {e}")
             await session.rollback()
             raise
 

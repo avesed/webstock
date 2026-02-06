@@ -473,15 +473,93 @@ export const newsApi = {
     return response.data.news
   },
 
-  analyzeArticle: async (article: NewsArticle): Promise<NewsArticle> => {
-    const response = await apiClient.post<NewsArticle>('/news/analyze', {
+  analyzeArticle: async (article: NewsArticle, language: string = 'en'): Promise<NewsArticle> => {
+    interface AnalysisResponse {
+      news_id: string
+      sentiment_score: number
+      sentiment_label: string
+      impact_prediction: string
+      key_points: string[]
+      summary: string
+      analyzed_at: string
+    }
+    const response = await apiClient.post<AnalysisResponse>('/news/analyze', {
       symbol: article.symbol,
       title: article.title,
       summary: article.summary,
       source: article.source,
       published_at: article.publishedAt,
+      language,
     })
-    return response.data
+    // Map the analysis response to update the article with AI analysis
+    const analysis = response.data
+
+    // Translation maps for Chinese display
+    const sentimentLabelMap: Record<string, Record<string, string>> = {
+      zh: { positive: '正面', negative: '负面', neutral: '中性' },
+      en: { positive: 'Positive', negative: 'Negative', neutral: 'Neutral' },
+    }
+    const directionMap: Record<string, Record<string, string>> = {
+      zh: { bullish: '看涨', bearish: '看跌', neutral: '中性' },
+      en: { bullish: 'Bullish', bearish: 'Bearish', neutral: 'Neutral' },
+    }
+    const magnitudeMap: Record<string, Record<string, string>> = {
+      zh: { high: '高', medium: '中', low: '低' },
+      en: { high: 'High', medium: 'Medium', low: 'Low' },
+    }
+    const timeframeMap: Record<string, Record<string, string>> = {
+      zh: { immediate: '即时', short_term: '短期', long_term: '长期' },
+      en: { immediate: 'Immediate', short_term: 'Short-term', long_term: 'Long-term' },
+    }
+    const confidenceMap: Record<string, Record<string, string>> = {
+      zh: { high: '高', medium: '中', low: '低' },
+      en: { high: 'High', medium: 'Medium', low: 'Low' },
+    }
+
+    const lang = language === 'zh' ? 'zh' : 'en'
+
+    // Translate sentiment label
+    const translatedSentiment = sentimentLabelMap[lang]?.[analysis.sentiment_label] ?? analysis.sentiment_label
+
+    // Parse and format impact prediction
+    let impactText = ''
+    try {
+      const impact = typeof analysis.impact_prediction === 'string'
+        ? JSON.parse(analysis.impact_prediction)
+        : analysis.impact_prediction
+      const dir = directionMap[lang]?.[impact.direction] ?? impact.direction
+      const mag = magnitudeMap[lang]?.[impact.magnitude] ?? impact.magnitude
+      const time = timeframeMap[lang]?.[impact.timeframe] ?? impact.timeframe
+      const conf = confidenceMap[lang]?.[impact.confidence] ?? impact.confidence
+      if (lang === 'zh') {
+        impactText = `方向: ${dir}, 幅度: ${mag}, 时间: ${time}, 置信度: ${conf}`
+      } else {
+        impactText = `Direction: ${dir}, Magnitude: ${mag}, Timeframe: ${time}, Confidence: ${conf}`
+      }
+    } catch {
+      impactText = String(analysis.impact_prediction)
+    }
+
+    // Use language-appropriate labels
+    const labels = lang === 'zh'
+      ? { sentiment: '情感分析', impact: '影响预测', keyPoints: '关键要点', summary: '总结' }
+      : { sentiment: 'Sentiment', impact: 'Impact Prediction', keyPoints: 'Key Points', summary: 'Summary' }
+
+    const aiAnalysis = `**${labels.sentiment}**: ${translatedSentiment} (${(analysis.sentiment_score * 100).toFixed(0)}%)\n\n**${labels.impact}**: ${impactText}\n\n**${labels.keyPoints}**:\n${analysis.key_points.map(p => `• ${p}`).join('\n')}\n\n**${labels.summary}**: ${analysis.summary}`
+
+    // Map sentiment label to valid NewsSentiment type
+    const sentimentMap: Record<string, NewsArticle['sentiment']> = {
+      positive: 'POSITIVE',
+      negative: 'NEGATIVE',
+      neutral: 'NEUTRAL',
+    }
+    const mappedSentiment = sentimentMap[analysis.sentiment_label]
+    return {
+      ...article,
+      aiAnalysis,
+      ...(mappedSentiment ? { sentiment: mappedSentiment } : {}),
+      sentimentScore: analysis.sentiment_score,
+    }
   },
 }
 

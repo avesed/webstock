@@ -3,7 +3,7 @@ from app.models.user import User
 from app.models.user_settings import UserSettings
 from app.models.login_log import LoginLog
 from app.models.watchlist import Watchlist, WatchlistItem
-from app.models.news import News, NewsAlert
+from app.models.news import News, NewsAlert, ContentStatus
 from app.models.portfolio import Portfolio, Holding, Transaction
 from app.models.alert import PriceAlert, PushSubscription, AlertConditionType
 from app.models.report import (
@@ -24,6 +24,7 @@ __all__ = [
     "WatchlistItem",
     "News",
     "NewsAlert",
+    "ContentStatus",
     "Portfolio",
     "Holding",
     "Transaction",

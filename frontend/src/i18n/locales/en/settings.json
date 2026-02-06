@@ -144,5 +144,53 @@
     "saved": "Settings saved",
     "reset": "Reset to Defaults",
     "resetConfirm": "Are you sure you want to reset all settings to defaults?"
+  },
+  "newsContent": {
+    "title": "News Content Settings",
+    "description": "Configure news scraping source, retention period, and AI processing models",
+    "source": {
+      "label": "Data Source",
+      "description": "Choose how to fetch full news content",
+      "scraper": "Web Scraper (default, free)",
+      "polygon": "Polygon API (paid, more reliable)"
+    },
+    "polygonKey": {
+      "label": "Polygon API Key",
+      "description": "A valid API Key is required to use Polygon API",
+      "placeholder": "Enter your Polygon API Key",
+      "getKey": "Get API Key from",
+      "show": "Show API Key",
+      "hide": "Hide API Key"
+    },
+    "retention": {
+      "label": "News Retention Days",
+      "description": "How long news content is kept in the database before automatic cleanup",
+      "days": "days"
+    },
+    "customApi": {
+      "title": "Custom API Configuration (Optional)",
+      "baseUrl": "API Base URL",
+      "baseUrlPlaceholder": "https://api.openai.com/v1",
+      "baseUrlHint": "Leave empty to use default OpenAI API, or enter self-hosted LLM URL (e.g., Ollama, vLLM)",
+      "apiKey": "API Key",
+      "apiKeyPlaceholder": "sk-...",
+      "apiKeyHint": "If using a custom API URL, enter the corresponding API key"
+    },
+    "models": {
+      "title": "AI Processing Models",
+      "description": "Select or enter AI models for news vectorization and filtering",
+      "embedding": "Embedding Model",
+      "filter": "Filter Model",
+      "recommended": "recommended",
+      "more accurate": "more accurate",
+      "legacy": "legacy",
+      "smarter": "smarter",
+      "cheapest": "cheapest",
+      "custom": "custom"
+    },
+    "info": {
+      "title": "Note",
+      "description": "The embedding model converts news into searchable vectors, while the filter model determines news relevance. Model selection affects processing cost and accuracy."
+    }
   }
 }

@@ -1,6 +1,7 @@
 """News SQLAlchemy models."""
 
 from datetime import datetime, timezone
+from enum import Enum
 from typing import Optional, List
 import uuid
 
@@ -13,10 +14,22 @@ from sqlalchemy import (
     String,
     Text,
 )
-from sqlalchemy.dialects.postgresql import ARRAY, UUID
+from sqlalchemy.dialects.postgresql import ARRAY, UUID, JSON
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.database import Base
+
+
+class ContentStatus(str, Enum):
+    """Status of full content fetching."""
+
+    PENDING = "pending"      # 等待抓取
+    FETCHED = "fetched"      # 已抓取全文
+    EMBEDDED = "embedded"    # 已生成向量
+    PARTIAL = "partial"      # 内容不完整（<500字符）
+    FAILED = "failed"        # 抓取失败
+    BLOCKED = "blocked"      # 域名被屏蔽
+    DELETED = "deleted"      # 已删除（被过滤）
 
 
 class News(Base):
@@ -82,6 +95,58 @@ class News(Base):
         DateTime(timezone=True),
         default=lambda: datetime.now(timezone.utc),
         nullable=False,
+    )
+
+    # === 全文内容引用字段 ===
+    content_file_path: Mapped[Optional[str]] = mapped_column(
+        String(500),
+        nullable=True,
+        comment="JSON文件路径，存储全文内容",
+    )
+
+    content_status: Mapped[str] = mapped_column(
+        String(20),
+        nullable=False,
+        default=ContentStatus.PENDING.value,
+        index=True,
+        comment="内容状态: pending, fetched, embedded, partial, failed, blocked, deleted",
+    )
+
+    content_fetched_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+        comment="全文抓取时间",
+    )
+
+    content_error: Mapped[Optional[str]] = mapped_column(
+        String(500),
+        nullable=True,
+        comment="抓取错误信息",
+    )
+
+    language: Mapped[Optional[str]] = mapped_column(
+        String(10),
+        nullable=True,
+        comment="文章语言: en, zh 等",
+    )
+
+    # === newspaper4k 元数据 ===
+    authors: Mapped[Optional[list]] = mapped_column(
+        JSON,
+        nullable=True,
+        comment="作者列表",
+    )
+
+    keywords: Mapped[Optional[list]] = mapped_column(
+        JSON,
+        nullable=True,
+        comment="关键词列表",
+    )
+
+    top_image: Mapped[Optional[str]] = mapped_column(
+        String(1024),
+        nullable=True,
+        comment="文章主图URL",
     )
 
     def __repr__(self) -> str:

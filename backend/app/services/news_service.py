@@ -711,12 +711,16 @@ class NewsService:
         # Fetch from appropriate source based on market
         articles: List[NewsArticle] = []
 
-        # Get user's Finnhub API key if available
-        finnhub_key = user.settings.finnhub_api_key if user and user.settings else None
+        # Get user's Finnhub API key if available (defensive access in case column doesn't exist)
+        finnhub_key = None
+        if user and user.settings:
+            finnhub_key = getattr(user.settings, 'finnhub_api_key', None)
 
         if market == Market.US.value:
-            # US stocks: Check user preference
-            news_source = user.settings.news_source if user and user.settings else "yfinance"
+            # US stocks: Check user preference (defensive access for news_source)
+            news_source = "yfinance"
+            if user and user.settings:
+                news_source = getattr(user.settings, 'news_source', None) or "yfinance"
             
             if news_source == "finnhub":
                 # Use Finnhub only
@@ -769,8 +773,10 @@ class NewsService:
         Returns:
             List of trending news articles
         """
-        # Get user's news source preference
-        news_source = user.settings.news_source if user and user.settings else "auto"
+        # Get user's news source preference (defensive access for news_source column)
+        news_source = "auto"
+        if user and user.settings:
+            news_source = getattr(user.settings, 'news_source', None) or "auto"
 
         # Build cache key including user's news source preference
         cache_suffix = f"{market or 'all'}:{news_source}"
@@ -785,8 +791,10 @@ class NewsService:
 
         articles: List[NewsArticle] = []
 
-        # Get user's Finnhub API key if available
-        finnhub_key = user.settings.finnhub_api_key if user and user.settings else None
+        # Get user's Finnhub API key if available (defensive access)
+        finnhub_key = None
+        if user and user.settings:
+            finnhub_key = getattr(user.settings, 'finnhub_api_key', None)
 
         # Determine which markets to fetch based on news_source preference
         # auto = US→YFinance/Finnhub, A-shares→AKShare (fetch both)

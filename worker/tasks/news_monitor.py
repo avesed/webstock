@@ -153,19 +153,26 @@ async def _monitor_news_async() -> Dict[str, Any]:
                         importance,
                     )
 
-            # Dispatch embedding for ALL newly stored articles (for RAG search)
+            # Dispatch full content fetching for ALL newly stored articles
+            # This replaces direct embedding - full_content_tasks will handle embedding
             for news_obj in all_new_articles:
                 try:
                     await db.refresh(news_obj)
-                    if news_obj.id:
-                        embed_content = f"{news_obj.title or ''}\n\n{news_obj.summary or ''}"
-                        if embed_content.strip():
-                            from worker.tasks.embedding_tasks import embed_news_article
-                            embed_news_article.delay(
-                                str(news_obj.id), embed_content, news_obj.symbol
-                            )
+                    if news_obj.id and news_obj.url:
+                        from worker.tasks.full_content_tasks import fetch_news_content
+                        fetch_news_content.delay(
+                            str(news_obj.id),
+                            news_obj.url,
+                            news_obj.market,
+                            news_obj.symbol,
+                            None,  # user_id - use default settings
+                        )
+                        logger.debug(
+                            "Dispatched full content fetch for news_id=%s",
+                            news_obj.id,
+                        )
                 except Exception as e:
-                    logger.warning("Failed to dispatch news embedding: %s", e)
+                    logger.warning("Failed to dispatch full content fetch: %s", e)
 
             # Check news alerts
             alerts_triggered = await _check_news_alerts(db, stats["articles_stored"])

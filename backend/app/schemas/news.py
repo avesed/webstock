@@ -56,6 +56,7 @@ class NewsAnalysisRequest(BaseModel):
     source: Optional[str] = Field(None, max_length=100, description="News source")
     published_at: Optional[datetime] = Field(None, description="Publication timestamp")
     market: Optional[str] = Field(None, max_length=10, description="Market (US, HK, SH, SZ)")
+    language: Optional[str] = Field(None, max_length=10, description="Language code (en, zh)")
 
 
 class NewsAnalysisResponse(BaseModel):
@@ -129,4 +130,33 @@ class NewsAlertListResponse(BaseModel):
 class MessageResponse(BaseModel):
     """Simple message response."""
 
+    message: str
+
+
+class NewsFullContentResponse(CamelModel):
+    """Response schema for news full content."""
+
+    id: str
+    title: str
+    full_content: Optional[str] = None
+    content_status: str
+    language: Optional[str] = None
+    authors: Optional[List[str]] = None
+    keywords: Optional[List[str]] = None
+    word_count: int = 0
+    is_fetching: bool = False
+    fetched_at: Optional[datetime] = None
+    error: Optional[str] = None
+
+
+class BatchFetchRequest(CamelModel):
+    """Request schema for batch content fetching."""
+
+    news_ids: List[str] = Field(..., min_length=1, max_length=50)
+
+
+class BatchFetchResponse(CamelModel):
+    """Response schema for batch content fetching."""
+
+    queued: int
     message: str
