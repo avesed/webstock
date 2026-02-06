@@ -140,6 +140,11 @@ class Settings(BaseSettings):
     VAPID_PRIVATE_KEY: Optional[str] = None
     VAPID_CLAIMS_EMAIL: str = "admin@webstock.local"
 
+    # First admin configuration
+    # If set, this email will be promoted to admin role on first startup
+    # Only takes effect if no admin users exist yet
+    FIRST_ADMIN_EMAIL: Optional[str] = None
+
 
 @lru_cache
 def get_settings() -> Settings:

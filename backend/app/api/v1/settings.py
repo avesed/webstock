@@ -20,6 +20,7 @@ from app.schemas.settings import (
     NewsSourceSettings,
     NewsContentSettings,
 )
+from app.services.settings_service import get_settings_service
 
 logger = logging.getLogger(__name__)
 
@@ -57,7 +58,17 @@ async def get_settings(
     db: AsyncSession = Depends(get_db),
 ):
     """Get user settings."""
+    logger.debug("Getting settings for user %d", current_user.id)
     settings = await get_or_create_user_settings(current_user.id, db)
+
+    # Check if user can customize API settings
+    settings_service = get_settings_service()
+    can_customize_api = await settings_service.user_can_customize_api(db, current_user.id)
+    logger.debug(
+        "User %d settings retrieved, can_customize_api=%s",
+        current_user.id,
+        can_customize_api,
+    )
 
     return UserSettingsResponse(
         notifications=NotificationSettings(
@@ -87,6 +98,7 @@ async def get_settings(
             embedding_model=getattr(settings, 'news_embedding_model', None) or "text-embedding-3-small",
             filter_model=getattr(settings, 'news_filter_model', None) or "gpt-4o-mini",
         ),
+        can_customize_api=can_customize_api,
     )
 
 
@@ -104,7 +116,39 @@ async def update_settings(
 ):
     """Update user settings."""
     settings = await get_or_create_user_settings(current_user.id, db)
-    
+
+    # Check if user can customize API settings
+    settings_service = get_settings_service()
+    can_customize_api = await settings_service.user_can_customize_api(db, current_user.id)
+
+    # Check permission for API key updates
+    if data.api_keys and not can_customize_api:
+        # Check if user is trying to modify any API settings
+        api_updates = data.api_keys.model_dump(exclude_none=True)
+        if api_updates:
+            logger.warning(
+                f"User {current_user.id} attempted to modify API settings without permission"
+            )
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="You don't have permission to customize API settings. Please contact an administrator.",
+            )
+
+    # Check permission for news content API settings
+    if data.news_content and not can_customize_api:
+        # Check if trying to modify API-related fields
+        if (
+            data.news_content.openai_base_url is not None
+            or data.news_content.openai_api_key is not None
+        ):
+            logger.warning(
+                f"User {current_user.id} attempted to modify news API settings without permission"
+            )
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="You don't have permission to customize API settings. Please contact an administrator.",
+            )
+
     # Update notifications
     if data.notifications:
         if data.notifications.price_alerts is not None:
@@ -115,9 +159,9 @@ async def update_settings(
             settings.notify_report_generation = data.notifications.report_notifications
         if data.notifications.email_notifications is not None:
             settings.notify_email = data.notifications.email_notifications
-    
-    # Update API keys
-    if data.api_keys:
+
+    # Update API keys (only if permitted)
+    if data.api_keys and can_customize_api:
         if data.api_keys.finnhub_api_key is not None:
             settings.finnhub_api_key = data.api_keys.finnhub_api_key or None
         if data.api_keys.openai_api_key is not None:
@@ -145,10 +189,12 @@ async def update_settings(
             settings.polygon_api_key = data.news_content.polygon_api_key or None
         if data.news_content.retention_days is not None:
             settings.news_retention_days = data.news_content.retention_days
-        if data.news_content.openai_base_url is not None:
-            settings.news_openai_base_url = data.news_content.openai_base_url or None
-        if data.news_content.openai_api_key is not None:
-            settings.news_openai_api_key = data.news_content.openai_api_key or None
+        # API settings only if permitted
+        if can_customize_api:
+            if data.news_content.openai_base_url is not None:
+                settings.news_openai_base_url = data.news_content.openai_base_url or None
+            if data.news_content.openai_api_key is not None:
+                settings.news_openai_api_key = data.news_content.openai_api_key or None
         if data.news_content.embedding_model is not None:
             settings.news_embedding_model = data.news_content.embedding_model or None
         if data.news_content.filter_model is not None:
@@ -187,4 +233,5 @@ async def update_settings(
             embedding_model=getattr(settings, 'news_embedding_model', None) or "text-embedding-3-small",
             filter_model=getattr(settings, 'news_filter_model', None) or "gpt-4o-mini",
         ),
+        can_customize_api=can_customize_api,
     )

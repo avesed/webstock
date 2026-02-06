@@ -82,6 +82,9 @@ RUN chown -R www-data:www-data /var/www/html
 RUN mkdir -p /app/logs /app/data /var/run/redis /var/log/nginx \
     && chown -R appuser:appgroup /app/logs /app/data
 
+# Copy pre-built stock list data for fast search on first startup
+COPY --chown=appuser:appgroup docker/seed/stock_list/ /app/data/stock_list/
+
 # Copy supervisor config
 COPY docker/supervisord.conf /etc/supervisor/conf.d/webstock.conf
 

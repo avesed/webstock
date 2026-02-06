@@ -145,6 +145,7 @@
     "reset": "Reset to Defaults",
     "resetConfirm": "Are you sure you want to reset all settings to defaults?"
   },
+  "configuredByAdmin": "This setting is configured by the system administrator.",
   "newsContent": {
     "title": "News Content Settings",
     "description": "Configure news scraping source, retention period, and AI processing models",

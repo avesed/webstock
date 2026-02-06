@@ -24,6 +24,7 @@ interface AuthActions {
   initAuth: () => Promise<void>
   clearError: () => void
   setUser: (user: User | null) => void
+  isAdmin: () => boolean
 }
 
 type AuthStore = AuthState & AuthActions
@@ -150,6 +151,11 @@ export const useAuthStore = create<AuthStore>((set, get) => {
 
     setUser: (user: User | null) => {
       set({ user, isAuthenticated: user !== null })
+    },
+
+    isAdmin: (): boolean => {
+      const { user } = get()
+      return user?.role === 'admin'
     },
   }
 })

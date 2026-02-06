@@ -6,6 +6,7 @@ from typing import Optional
 
 from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator
 
+from app.models.user import UserRole
 from app.schemas.base import CamelModel
 
 
@@ -49,6 +50,7 @@ class UserResponse(UserBase):
     """Schema for user response (public data)."""
 
     id: int
+    role: UserRole
     is_active: bool
     created_at: datetime
 

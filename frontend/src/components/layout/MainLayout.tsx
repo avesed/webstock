@@ -16,6 +16,7 @@ import {
   ChevronLeft,
   ChevronRight,
   Home,
+  Shield,
 } from 'lucide-react'
 import { useState, useEffect } from 'react'
 import { useTranslation } from 'react-i18next'
@@ -62,7 +63,7 @@ const themeOptions = [
 ] as const
 
 // Breadcrumb configuration
-type CommonNavigationKey = 'navigation.dashboard' | 'navigation.watchlist' | 'navigation.portfolio' | 'navigation.alerts' | 'navigation.reports' | 'navigation.news' | 'navigation.chat' | 'navigation.analysis'
+type CommonNavigationKey = 'navigation.dashboard' | 'navigation.watchlist' | 'navigation.portfolio' | 'navigation.alerts' | 'navigation.reports' | 'navigation.news' | 'navigation.chat' | 'navigation.analysis' | 'navigation.admin'
 
 interface BreadcrumbConfig {
   path: string
@@ -79,6 +80,7 @@ const breadcrumbConfig: BreadcrumbConfig[] = [
   { path: '/reports', labelKey: 'navigation.reports' },
   { path: '/news', labelKey: 'navigation.news' },
   { path: '/chat', labelKey: 'navigation.chat' },
+  { path: '/admin', labelKey: 'navigation.admin' },
   { path: '/stock', labelKey: 'navigation.analysis', match: /^\/stock\//, dynamic: true },
 ]
 
@@ -340,8 +342,17 @@ export default function MainLayout() {
                 <DropdownMenuContent align="end" className="w-56">
                   <DropdownMenuLabel>
                     <p className="font-medium">{user?.email}</p>
+                    {user?.role === 'admin' && (
+                      <p className="text-xs text-muted-foreground">{t('navigation.admin')}</p>
+                    )}
                   </DropdownMenuLabel>
                   <DropdownMenuSeparator />
+                  {user?.role === 'admin' && (
+                    <DropdownMenuItem onClick={() => navigate('/admin')}>
+                      <Shield className="mr-2 h-4 w-4" />
+                      {t('navigation.admin')}
+                    </DropdownMenuItem>
+                  )}
                   <DropdownMenuItem onClick={() => navigate('/settings')}>
                     <Settings className="mr-2 h-4 w-4" />
                     {t('navigation.settings')}

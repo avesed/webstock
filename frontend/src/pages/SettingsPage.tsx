@@ -64,6 +64,7 @@ interface UserSettings {
     openai_api_key: string | null
     embedding_model: string
     filter_model: string
+    can_customize_api: boolean
   }
 }
 
@@ -94,6 +95,7 @@ const DEFAULT_SETTINGS: UserSettings = {
     openai_api_key: null,
     embedding_model: 'text-embedding-3-small',
     filter_model: 'gpt-4o-mini',
+    can_customize_api: false,
   },
 }
 
@@ -262,6 +264,7 @@ export default function SettingsPage() {
     openaiApiKey: currentSettings.news_content?.openai_api_key || null,
     embeddingModel: currentSettings.news_content?.embedding_model || 'text-embedding-3-small',
     filterModel: currentSettings.news_content?.filter_model || 'gpt-4o-mini',
+    canCustomizeApi: currentSettings.news_content?.can_customize_api ?? false,
   }
 
   // Handle profile update
@@ -321,10 +324,12 @@ export default function SettingsPage() {
             <Globe className="h-4 w-4" />
             {t('sections.language')}
           </TabsTrigger>
-          <TabsTrigger value="api" className="flex items-center gap-2">
-            <Key className="h-4 w-4" />
-            {t('sections.ai')}
-          </TabsTrigger>
+          {newsContentSettings.canCustomizeApi && (
+            <TabsTrigger value="api" className="flex items-center gap-2">
+              <Key className="h-4 w-4" />
+              {t('sections.ai')}
+            </TabsTrigger>
+          )}
           <TabsTrigger value="news-content" className="flex items-center gap-2">
             <Newspaper className="h-4 w-4" />
             {t('newsContent.title')}
@@ -522,7 +527,8 @@ export default function SettingsPage() {
           </Card>
         </TabsContent>
 
-        {/* API Keys Tab */}
+        {/* API Keys Tab - only shown when user has permission */}
+        {newsContentSettings.canCustomizeApi && (
         <TabsContent value="api" className="space-y-4">
           <Card>
             <CardHeader>
@@ -726,6 +732,7 @@ export default function SettingsPage() {
             </CardContent>
           </Card>
         </TabsContent>
+        )}
 
         {/* News Content Tab */}
         <TabsContent value="news-content" className="space-y-4">

@@ -216,9 +216,10 @@ export const stockApi = {
     }))
   },
 
-  search: async (query: string): Promise<SearchResult[]> => {
+  search: async (query: string, signal?: AbortSignal): Promise<SearchResult[]> => {
     const response = await apiClient.get<{ results: SearchResult[]; count: number }>('/stocks/search', {
       params: { q: query },
+      ...(signal && { signal }),
     })
     return response.data.results
   },
@@ -756,3 +757,4 @@ export const analysisApi = {
 }
 
 export { default as apiClient, getErrorMessage, isNetworkError, isTimeoutError } from './client'
+export { adminApi } from './admin'

@@ -152,6 +152,14 @@ class UserSettings(Base):
         comment="新闻筛选模型（用于判断相关性）",
     )
 
+    # === Admin Permission Flags ===
+    can_use_custom_api_key: Mapped[bool] = mapped_column(
+        Boolean,
+        default=False,
+        nullable=False,
+        comment="管理员授权：允许此用户使用自定义 API Key",
+    )
+
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         default=lambda: datetime.now(timezone.utc),

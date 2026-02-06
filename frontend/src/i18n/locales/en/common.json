@@ -77,7 +77,8 @@
     "help": "Help",
     "logout": "Logout",
     "login": "Login",
-    "register": "Register"
+    "register": "Register",
+    "admin": "Admin"
   },
   "time": {
     "justNow": "Just now",

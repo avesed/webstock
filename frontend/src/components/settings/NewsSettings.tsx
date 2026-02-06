@@ -12,7 +12,8 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select'
-import { Eye, EyeOff, Newspaper, Database, Brain, Clock } from 'lucide-react'
+import { Eye, EyeOff, Newspaper, Database, Brain, Clock, Info } from 'lucide-react'
+import { Alert, AlertDescription } from '@/components/ui/alert'
 
 export type NewsContentSource = 'scraper' | 'polygon'
 
@@ -25,6 +26,8 @@ export interface NewsContentSettings {
   openaiApiKey: string | null
   embeddingModel: string
   filterModel: string
+  // Whether the user is allowed to customize API settings (controlled by admin)
+  canCustomizeApi: boolean
 }
 
 interface NewsSettingsProps {
@@ -63,6 +66,7 @@ const DEFAULT_SETTINGS: NewsContentSettings = {
   openaiApiKey: null,
   embeddingModel: 'text-embedding-3-small',
   filterModel: 'gpt-4o-mini',
+  canCustomizeApi: false,
 }
 
 export default function NewsSettings({ settings, onUpdate, isLoading = false }: NewsSettingsProps) {
@@ -292,7 +296,18 @@ export default function NewsSettings({ settings, onUpdate, isLoading = false }: 
               {t('newsContent.models.description')}
             </p>
 
-            {/* Custom API Configuration */}
+            {/* Show admin-configured message when user cannot customize API */}
+            {!currentSettings.canCustomizeApi && (
+              <Alert>
+                <Info className="h-4 w-4" />
+                <AlertDescription>
+                  {t('configuredByAdmin')}
+                </AlertDescription>
+              </Alert>
+            )}
+
+            {/* Custom API Configuration - only shown when user has permission */}
+            {currentSettings.canCustomizeApi && (
             <div className="space-y-4 p-4 bg-muted/30 rounded-lg border border-dashed">
               <p className="text-sm font-medium text-muted-foreground">
                 {t('newsContent.customApi.title')}
@@ -348,8 +363,11 @@ export default function NewsSettings({ settings, onUpdate, isLoading = false }: 
                 </p>
               </div>
             </div>
+            )}
 
-            {/* Embedding Model */}
+            {/* Embedding Model - only editable when user has permission */}
+            {currentSettings.canCustomizeApi && (
+            <>
             <div className="space-y-2">
               <Label htmlFor="embeddingModel" className="text-sm">
                 {t('newsContent.models.embedding')}
@@ -450,6 +468,8 @@ export default function NewsSettings({ settings, onUpdate, isLoading = false }: 
                 )}
               </div>
             </div>
+            </>
+            )}
           </div>
         </div>
 

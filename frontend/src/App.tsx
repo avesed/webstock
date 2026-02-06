@@ -6,6 +6,7 @@ import { Toaster } from '@/components/ui/toaster'
 
 // Layout
 import MainLayout from '@/components/layout/MainLayout'
+import { AdminRoute } from '@/components/layout/AdminRoute'
 
 // Pages
 import DashboardPage from '@/pages/DashboardPage'
@@ -19,6 +20,7 @@ import ReportsPage from '@/pages/ReportsPage'
 import NewsPage from '@/pages/NewsPage'
 import ChatPage from '@/pages/ChatPage'
 import SettingsPage from '@/pages/SettingsPage'
+import AdminDashboardPage from '@/pages/admin/AdminDashboardPage'
 import NotFoundPage from '@/pages/NotFoundPage'
 
 // Protected Route wrapper
@@ -124,6 +126,14 @@ function App() {
           <Route path="news" element={<NewsPage />} />
           <Route path="chat" element={<ChatPage />} />
           <Route path="settings" element={<SettingsPage />} />
+          <Route
+            path="admin"
+            element={
+              <AdminRoute>
+                <AdminDashboardPage />
+              </AdminRoute>
+            }
+          />
         </Route>
 
         {/* 404 */}

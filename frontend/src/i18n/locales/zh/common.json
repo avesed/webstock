@@ -77,7 +77,8 @@
     "help": "帮助",
     "logout": "退出登录",
     "login": "登录",
-    "register": "注册"
+    "register": "注册",
+    "admin": "管理控制台"
   },
   "time": {
     "justNow": "刚刚",

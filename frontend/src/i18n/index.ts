@@ -8,12 +8,14 @@ import enAuth from './locales/en/auth.json'
 import enDashboard from './locales/en/dashboard.json'
 import enChat from './locales/en/chat.json'
 import enSettings from './locales/en/settings.json'
+import enAdmin from './locales/en/admin.json'
 
 import zhCommon from './locales/zh/common.json'
 import zhAuth from './locales/zh/auth.json'
 import zhDashboard from './locales/zh/dashboard.json'
 import zhChat from './locales/zh/chat.json'
 import zhSettings from './locales/zh/settings.json'
+import zhAdmin from './locales/zh/admin.json'
 
 export const defaultNS = 'common'
 export const supportedLngs = ['en', 'zh'] as const
@@ -29,6 +31,7 @@ export const resources = {
     dashboard: enDashboard,
     chat: enChat,
     settings: enSettings,
+    admin: enAdmin,
   },
   zh: {
     common: zhCommon,
@@ -36,6 +39,7 @@ export const resources = {
     dashboard: zhDashboard,
     chat: zhChat,
     settings: zhSettings,
+    admin: zhAdmin,
   },
 } as const
 
@@ -47,7 +51,7 @@ i18n
     fallbackLng: 'en',
     supportedLngs,
     defaultNS,
-    ns: ['common', 'auth', 'dashboard', 'chat', 'settings'],
+    ns: ['common', 'auth', 'dashboard', 'chat', 'settings', 'admin'],
 
     detection: {
       order: ['localStorage', 'navigator'],

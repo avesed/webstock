@@ -1,6 +1,8 @@
 # Models module
-from app.models.user import User
+from app.models.user import User, UserRole
 from app.models.user_settings import UserSettings
+from app.models.system_settings import SystemSettings
+from app.models.admin_audit_log import AdminAuditLog
 from app.models.login_log import LoginLog
 from app.models.watchlist import Watchlist, WatchlistItem
 from app.models.news import News, NewsAlert, ContentStatus
@@ -18,7 +20,10 @@ from app.models.chat import Conversation, ChatMessage
 
 __all__ = [
     "User",
+    "UserRole",
     "UserSettings",
+    "SystemSettings",
+    "AdminAuditLog",
     "LoginLog",
     "Watchlist",
     "WatchlistItem",

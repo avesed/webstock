@@ -1,5 +1,6 @@
 """Security utilities for JWT and password hashing."""
 
+import logging
 import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
@@ -14,7 +15,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.config import settings
 from app.db.database import get_db
 from app.db.redis import get_redis
-from app.models.user import User
+from app.models.user import User, UserRole
+
+logger = logging.getLogger(__name__)
 
 # Token blacklist key prefix
 TOKEN_BLACKLIST_PREFIX = "token:blacklist:"
@@ -207,10 +210,7 @@ async def get_current_user(
     db: AsyncSession = Depends(get_db),
 ) -> User:
     """Get current authenticated user from JWT token."""
-    import logging
-    logger = logging.getLogger(__name__)
-    
-    logger.info(f"[Auth] get_current_user called, credentials present: {credentials is not None}")
+    logger.debug("[Auth] get_current_user called, credentials present: %s", credentials is not None)
     
     if credentials is None:
         logger.warning("[Auth] No credentials provided - Authorization header missing")
@@ -340,13 +340,13 @@ async def get_user_from_refresh_token(
 def get_key_rotation_info() -> dict[str, Any]:
     """
     Get information about current key configuration for monitoring.
-    
+
     Returns:
         Dict with key info (safe for logging, no actual key values)
     """
     primary = settings.JWT_SECRET_KEY
     previous = settings.jwt_previous_keys
-    
+
     return {
         "primary_key_fingerprint": f"{primary[:8]}...{primary[-8:]}" if len(primary) > 16 else "[hidden]",
         "primary_key_length": len(primary),
@@ -359,3 +359,44 @@ def get_key_rotation_info() -> dict[str, Any]:
         "access_token_expire_minutes": settings.JWT_ACCESS_TOKEN_EXPIRE_MINUTES,
         "refresh_token_expire_days": settings.JWT_REFRESH_TOKEN_EXPIRE_DAYS,
     }
+
+
+async def require_admin(
+    current_user: User = Depends(get_current_user),
+) -> User:
+    """
+    Dependency that requires the current user to be an administrator.
+
+    Use this dependency on endpoints that should only be accessible to admin users.
+    It first validates that the user is authenticated via get_current_user,
+    then checks if they have the ADMIN role.
+
+    Args:
+        current_user: The authenticated user from get_current_user dependency
+
+    Returns:
+        The authenticated admin user
+
+    Raises:
+        HTTPException: 401 if user is not authenticated (from get_current_user)
+        HTTPException: 403 if user is not an admin
+
+    Example:
+        @router.get("/admin/settings")
+        async def get_admin_settings(
+            admin: User = Depends(require_admin),
+        ):
+            return {"message": "Admin access granted"}
+    """
+    if current_user.role != UserRole.ADMIN:
+        logger.warning(
+            f"Non-admin user {current_user.id} ({current_user.email}) "
+            f"attempted to access admin-only resource"
+        )
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Administrator access required",
+        )
+
+    logger.debug(f"Admin access granted for user {current_user.id}")
+    return current_user

@@ -1,10 +1,83 @@
 // User types
+export type UserRole = 'admin' | 'user'
+
 export interface User {
   id: string
   email: string
+  role: UserRole
   isActive: boolean
   createdAt: string
   updatedAt: string
+}
+
+// Admin types
+export interface UserAdminItem {
+  id: number
+  email: string
+  role: UserRole
+  isActive: boolean
+  isLocked: boolean
+  failedLoginAttempts: number
+  lockedUntil: string | null
+  createdAt: string
+  updatedAt: string
+  canUseCustomApiKey: boolean
+}
+
+export interface UserListResponse {
+  users: UserAdminItem[]
+  total: number
+}
+
+export interface UpdateUserRequest {
+  role?: UserRole
+  isActive?: boolean
+  isLocked?: boolean
+  canUseCustomApiKey?: boolean
+}
+
+export interface SystemSettings {
+  openaiApiKeySet: boolean
+  openaiBaseUrl: string | null
+  openaiModel: string
+  openaiMaxTokens: number | null
+  openaiTemperature: number | null
+  embeddingModel: string
+  newsFilterModel: string
+  newsRetentionDays: number
+  finnhubApiKeySet: boolean
+  polygonApiKeySet: boolean
+  allowUserCustomApiKeys: boolean
+  updatedAt: string
+  updatedBy: number | null
+}
+
+export interface UpdateSystemSettingsRequest {
+  openaiApiKey?: string
+  openaiBaseUrl?: string
+  openaiModel?: string
+  openaiMaxTokens?: number
+  openaiTemperature?: number
+  embeddingModel?: string
+  newsFilterModel?: string
+  newsRetentionDays?: number
+  finnhubApiKey?: string
+  polygonApiKey?: string
+  allowUserCustomApiKeys?: boolean
+}
+
+export interface ApiCallStats {
+  chatRequestsToday: number
+  analysisRequestsToday: number
+  totalTokensToday: number
+}
+
+export interface SystemStats {
+  totalUsers: number
+  totalAdmins: number
+  activeUsers: number
+  logins24h: number
+  apiStats: ApiCallStats
 }
 
 export interface AuthTokens {
@@ -285,11 +358,15 @@ export interface ChartOptions {
 }
 
 // Search types
+export type MatchField = 'symbol' | 'name' | 'name_zh' | 'pinyin' | 'pinyin_initial'
+
 export interface SearchResult {
   symbol: string
   name: string
   market: Market
   exchange: string
+  matchField?: MatchField
+  nameZh?: string
 }
 
 // Theme types
@@ -362,4 +439,86 @@ export interface NewsContentSettings {
   openaiApiKey: string | null
   embeddingModel: string
   filterModel: string
+  // Whether the user is allowed to customize API settings (controlled by admin)
+  canCustomizeApi: boolean
+}
+
+// Admin User Management types (for paginated list)
+export interface AdminUser {
+  id: number
+  email: string
+  role: UserRole
+  isActive: boolean
+  apiPermissions: {
+    canUseOwnApiKey: boolean
+    dailyApiLimit: number | null
+  }
+  createdAt: string
+  lastLoginAt: string | null
+}
+
+export interface AdminUserListResponse {
+  users: AdminUser[]
+  total: number
+  page: number
+  pageSize: number
+  totalPages: number
+}
+
+export interface UserFilters {
+  search: string
+  role: 'all' | 'user' | 'admin'
+  status: 'all' | 'active' | 'inactive'
+}
+
+// Admin System Configuration types
+export interface SystemConfig {
+  llm: {
+    apiKey: string | null
+    baseUrl: string
+    model: string
+    maxTokens: number
+    temperature: number
+  }
+  news: {
+    defaultSource: NewsContentSource
+    retentionDays: number
+    embeddingModel: string
+    filterModel: string
+    autoFetchEnabled: boolean
+  }
+  features: {
+    allowUserApiKeys: boolean
+    allowUserCustomModels: boolean
+    enableNewsAnalysis: boolean
+    enableStockAnalysis: boolean
+  }
+}
+
+// Admin System Monitor types
+export interface SystemMonitorStats {
+  users: {
+    total: number
+    active: number
+    newToday: number
+    newThisWeek: number
+  }
+  activity: {
+    todayLogins: number
+    activeConversations: number
+    reportsGenerated: number
+    apiCallsToday: number
+  }
+  system: {
+    cpuUsage: number
+    memoryUsage: number
+    diskUsage: number
+    uptime: number
+  }
+  api: {
+    totalRequests: number
+    averageLatency: number
+    errorRate: number
+    rateLimitHits: number
+  }
 }

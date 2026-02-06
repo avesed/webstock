@@ -1,15 +1,23 @@
 """User SQLAlchemy model."""
 
 from datetime import datetime, timezone
+from enum import Enum as PyEnum
 from typing import TYPE_CHECKING, Optional
 
-from sqlalchemy import Boolean, DateTime, Integer, String
+from sqlalchemy import Boolean, DateTime, Enum, Integer, String
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.database import Base
 
 if TYPE_CHECKING:
     from app.models.user_settings import UserSettings
+
+
+class UserRole(str, PyEnum):
+    """User role enumeration for authorization."""
+
+    ADMIN = "admin"
+    USER = "user"
 
 
 class User(Base):
@@ -21,6 +29,13 @@ class User(Base):
         Integer,
         primary_key=True,
         autoincrement=True,
+    )
+
+    role: Mapped[UserRole] = mapped_column(
+        Enum(UserRole, name="user_role"),
+        default=UserRole.USER,
+        nullable=False,
+        index=True,
     )
 
     email: Mapped[str] = mapped_column(
@@ -79,5 +94,10 @@ class User(Base):
         cascade="all, delete-orphan",
     )
 
+    @property
+    def is_admin(self) -> bool:
+        """Check if user has admin role."""
+        return self.role == UserRole.ADMIN
+
     def __repr__(self) -> str:
-        return f"<User(id={self.id}, email={self.email})>"
+        return f"<User(id={self.id}, email={self.email}, role={self.role.value})>"

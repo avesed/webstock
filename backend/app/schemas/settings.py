@@ -46,6 +46,7 @@ class UserSettingsResponse(BaseModel):
     api_keys: ApiKeySettings
     news_source: NewsSourceSettings
     news_content: NewsContentSettings
+    can_customize_api: bool = False  # Whether user has permission to customize API settings
 
     class Config:
         from_attributes = True

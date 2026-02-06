@@ -1,6 +1,7 @@
-import { useState, useEffect, useRef, useCallback } from 'react'
+import { useState, useEffect, useRef, useCallback, type ReactNode } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useTranslation } from 'react-i18next'
+import axios from 'axios'
 import { Search, X, Clock, TrendingUp, Loader2 } from 'lucide-react'
 import { Input } from '@/components/ui/input'
 import { Button } from '@/components/ui/button'
@@ -18,20 +19,105 @@ interface StockSearchProps {
   showRecentSearches?: boolean
 }
 
-const DEBOUNCE_MS = 300
+const DEBOUNCE_MS = 100
 
-// Market flag/label mapping (SH/SZ are Shanghai/Shenzhen A-shares)
+// Market flag/label mapping (SH/SZ/BJ are Shanghai/Shenzhen/Beijing A-shares)
 const marketLabels: Record<string, { label: string; color: string }> = {
   US: { label: 'US', color: 'bg-blue-500/10 text-blue-600 dark:text-blue-400' },
   HK: { label: 'HK', color: 'bg-red-500/10 text-red-600 dark:text-red-400' },
   CN: { label: 'CN', color: 'bg-amber-500/10 text-amber-600 dark:text-amber-400' },
   SH: { label: 'SH', color: 'bg-amber-500/10 text-amber-600 dark:text-amber-400' },
   SZ: { label: 'SZ', color: 'bg-amber-500/10 text-amber-600 dark:text-amber-400' },
+  BJ: { label: 'BJ', color: 'bg-purple-500/10 text-purple-600 dark:text-purple-400' },
   METAL: { label: 'METAL', color: 'bg-amber-100 text-amber-800 dark:bg-amber-900/30 dark:text-amber-200' },
 }
 
 // Default market label for unknown markets
 const defaultMarketLabel = { label: '??', color: 'bg-gray-500/10 text-gray-600 dark:text-gray-400' }
+
+/**
+ * Highlights matching text within a string
+ * @param text - The text to search in
+ * @param query - The search query to highlight
+ * @returns ReactNode with highlighted matching portion
+ */
+function highlightMatch(text: string, query: string): ReactNode {
+  if (!query || !text) return text
+
+  const queryLower = query.toLowerCase()
+  const textLower = text.toLowerCase()
+  const index = textLower.indexOf(queryLower)
+
+  if (index === -1) return text
+
+  return (
+    <>
+      {text.slice(0, index)}
+      <mark className="bg-yellow-200 dark:bg-yellow-800 rounded px-0.5">
+        {text.slice(index, index + query.length)}
+      </mark>
+      {text.slice(index + query.length)}
+    </>
+  )
+}
+
+/**
+ * Renders the symbol with optional highlighting based on match field
+ */
+function renderSymbol(result: SearchResult, query: string): ReactNode {
+  if (result.matchField === 'symbol') {
+    return highlightMatch(result.symbol, query)
+  }
+  return result.symbol
+}
+
+/**
+ * Renders the name/description line with appropriate highlighting based on match field
+ */
+function renderName(result: SearchResult, query: string): ReactNode {
+  const matchField = result.matchField
+  const displayName = result.name || result.exchange
+
+  // Highlight Chinese name if that's what matched
+  if (matchField === 'name_zh' && result.nameZh) {
+    return (
+      <>
+        {highlightMatch(result.nameZh, query)}
+        {result.name && <span className="ml-1 text-xs opacity-70">({result.name})</span>}
+      </>
+    )
+  }
+
+  // Highlight English name if that's what matched
+  if (matchField === 'name') {
+    return (
+      <>
+        {highlightMatch(displayName, query)}
+        {result.nameZh && <span className="ml-1 text-xs opacity-70">({result.nameZh})</span>}
+      </>
+    )
+  }
+
+  // For pinyin matches, show the Chinese name with a pinyin indicator
+  if ((matchField === 'pinyin' || matchField === 'pinyin_initial') && result.nameZh) {
+    return (
+      <>
+        {result.nameZh}
+        <span className="ml-1 text-xs opacity-70" title="Matched by pinyin">
+          ({displayName})
+        </span>
+      </>
+    )
+  }
+
+  // Default: show name with optional Chinese name suffix
+  return (
+    <>
+      {displayName}
+      {result.nameZh && <span className="ml-1 text-xs opacity-70">({result.nameZh})</span>}
+    </>
+  )
+}
 
 export default function StockSearch({
   placeholder,
@@ -59,7 +145,7 @@ export default function StockSearch({
     setSelectedSymbol,
   } = useStockStore()
 
-  // Debounced search
+  // Debounced search with AbortController to prevent race conditions
   useEffect(() => {
     const trimmedQuery = query.trim()
 
@@ -69,29 +155,39 @@ export default function StockSearch({
       return
     }
 
+    const abortController = new AbortController()
+
     const timeoutId = setTimeout(async () => {
       setIsLoading(true)
       setError(null)
 
       try {
-        const searchResults = await stockApi.search(trimmedQuery)
+        const searchResults = await stockApi.search(trimmedQuery, abortController.signal)
         // Ensure each result has a valid market field
         const normalizedResults = searchResults.map(r => ({
           ...r,
           market: (r.market || 'US') as Market,
         }))
-        console.log('Search results:', normalizedResults)
         setResults(normalizedResults)
         setHighlightedIndex(-1)
-      } catch {
+      } catch (err) {
+        // Ignore aborted/cancelled requests
+        if (axios.isCancel(err)) {
+          return
+        }
         setError('Failed to search stocks')
         setResults([])
       } finally {
-        setIsLoading(false)
+        if (!abortController.signal.aborted) {
+          setIsLoading(false)
+        }
       }
     }, DEBOUNCE_MS)
 
-    return () => clearTimeout(timeoutId)
+    return () => {
+      clearTimeout(timeoutId)
+      abortController.abort()
+    }
   }, [query])
 
   // Handle click outside to close dropdown
@@ -212,6 +308,11 @@ export default function StockSearch({
           placeholder={defaultPlaceholder}
           autoFocus={autoFocus}
           className="h-10 pl-9 pr-9"
+          role="combobox"
+          aria-expanded={showDropdown}
+          aria-autocomplete="list"
+          aria-controls="search-results-listbox"
+          aria-activedescendant={highlightedIndex >= 0 ? `search-result-${highlightedIndex}` : undefined}
         />
         {(query.length > 0 || isLoading) && (
           <div className="absolute right-2 top-1/2 -translate-y-1/2">
@@ -223,6 +324,7 @@ export default function StockSearch({
                 size="icon"
                 className="h-6 w-6"
                 onClick={handleClear}
+                aria-label="Clear search"
               >
                 <X className="h-3 w-3" />
               </Button>
@@ -233,7 +335,12 @@ export default function StockSearch({
 
       {/* Dropdown */}
       {showDropdown && (
-        <div className="absolute top-full z-50 mt-1 w-full rounded-lg border bg-popover shadow-lg">
+        <div
+          id="search-results-listbox"
+          role="listbox"
+          aria-label="Search results"
+          className="absolute top-full z-50 mt-1 w-full rounded-lg border bg-popover shadow-lg"
+        >
           <ScrollArea className="max-h-80">
             {/* Search results */}
             {query.trim().length > 0 && (
@@ -248,6 +355,9 @@ export default function StockSearch({
                       <button
                         key={`${result.symbol}-${result.market}`}
                         type="button"
+                        role="option"
+                        id={`search-result-${index}`}
+                        aria-selected={highlightedIndex === index}
                         onClick={() => handleSelect(result)}
                         onMouseEnter={() => setHighlightedIndex(index)}
                         className={cn(
@@ -262,18 +372,18 @@ export default function StockSearch({
                         </div>
                         <div className="flex-1 overflow-hidden">
                           <div className="flex items-center gap-2">
-                            <span className="font-medium">{result.symbol}</span>
+                            <span className="font-medium">{renderSymbol(result, query)}</span>
                             <span
                               className={cn(
                                 'rounded px-1.5 py-0.5 text-[10px] font-medium',
-                                (marketLabels[result.market] ?? defaultMarketLabel).color
+                                (marketLabels[result.market.toUpperCase()] ?? defaultMarketLabel).color
                               )}
                             >
-                              {(marketLabels[result.market] ?? defaultMarketLabel).label}
+                              {(marketLabels[result.market.toUpperCase()] ?? defaultMarketLabel).label}
                             </span>
                           </div>
                           <p className="truncate text-sm text-muted-foreground">
-                            {result.name || result.exchange}
+                            {renderName(result, query)}
                           </p>
                         </div>
                       </button>
@@ -310,6 +420,9 @@ export default function StockSearch({
                   <button
                     key={symbol}
                     type="button"
+                    role="option"
+                    id={`search-result-${index}`}
+                    aria-selected={highlightedIndex === index}
                     onClick={() => handleRecentClick(symbol)}
                     onMouseEnter={() => setHighlightedIndex(index)}
                     className={cn(

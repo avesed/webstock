@@ -477,12 +477,50 @@ async def search_stocks(
     Search for stocks by symbol or name.
 
     - **q**: Search query (symbol or company name)
-    - **markets**: Optional list of markets to search (us, hk, sh, sz)
+    - **markets**: Optional list of markets to search (us, hk, sh, sz, metal)
+
+    Uses local in-memory search for fast response (<10ms).
+    Falls back to API search if local data is not available.
 
     Returns matching stocks from all requested markets.
     """
     logger.info(f"Searching stocks: {q} (markets: {markets})")
 
+    # Convert schema enum to market strings for local search
+    market_list = None
+    if markets:
+        market_list = [m.value for m in markets]
+
+    # Try local search first
+    try:
+        from app.services.stock_list_service import get_stock_list_service
+
+        stock_list_service = await get_stock_list_service(auto_load=True)
+
+        if stock_list_service.is_loaded:
+            # Use fast local search
+            results = stock_list_service.search(q, markets=market_list, limit=50)
+
+            if results:
+                logger.debug(f"Local search found {len(results)} results for '{q}'")
+                # Filter to only include fields expected by SearchResultResponse
+                allowed_fields = {'symbol', 'name', 'exchange', 'market', 'match_field', 'name_zh'}
+                filtered_results = [
+                    {k: v for k, v in r.items() if k in allowed_fields}
+                    for r in results
+                ]
+                return SearchResponse(
+                    results=[SearchResultResponse(**r) for r in filtered_results],
+                    count=len(results),
+                    source="local",
+                )
+            else:
+                logger.debug(f"Local search found no results for '{q}', falling back to API")
+
+    except Exception as e:
+        logger.warning(f"Local search failed, falling back to API: {e}")
+
+    # Fall back to API search
     stock_service = await get_stock_service()
 
     # Convert schema enum to service enum
@@ -495,11 +533,12 @@ async def search_stocks(
 
         # Debug: log first few results
         if results:
-            logger.debug(f"Search results sample: {results[:3]}")
+            logger.debug(f"API search results sample: {results[:3]}")
 
         return SearchResponse(
             results=[SearchResultResponse(**r) for r in results],
             count=len(results),
+            source="api",
         )
 
     except Exception as e:

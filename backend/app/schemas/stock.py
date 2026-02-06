@@ -136,6 +136,8 @@ class SearchResultResponse(CamelModel):
     name: str
     exchange: str
     market: str
+    match_field: Optional[str] = None  # Which field matched (for highlighting)
+    name_zh: Optional[str] = None  # Chinese name (for display)
 
 
 class SearchResponse(BaseModel):
@@ -143,6 +145,7 @@ class SearchResponse(BaseModel):
 
     results: List[SearchResultResponse]
     count: int
+    source: str = "api"  # "local" or "api" (indicates search source)
 
 
 class BatchQuoteRequest(BaseModel):

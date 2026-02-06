@@ -145,6 +145,7 @@
     "reset": "恢复默认",
     "resetConfirm": "确定要将所有设置恢复为默认值吗？"
   },
+  "configuredByAdmin": "此设置由系统管理员配置。",
   "newsContent": {
     "title": "新闻内容设置",
     "description": "配置新闻抓取来源、保留时间和AI处理模型",
