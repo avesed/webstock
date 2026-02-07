@@ -228,6 +228,7 @@ class AgentOrchestrator:
         self,
         symbol: str,
         market: str,
+        language: str = "en",
         agent_types: Optional[List[AgentType]] = None,
     ) -> AsyncGenerator[str, None]:
         """
@@ -238,6 +239,7 @@ class AgentOrchestrator:
         Args:
             symbol: Stock symbol
             market: Market identifier
+            language: Output language ('en' or 'zh')
             agent_types: Specific agents to run (default: all)
 
         Yields:
@@ -273,7 +275,7 @@ class AgentOrchestrator:
             agent = self._agents[agent_type]
             full_content = ""
 
-            async for chunk in agent.analyze_stream(symbol, market):
+            async for chunk in agent.analyze_stream(symbol, market, language):
                 if chunk.error:
                     yield self._format_sse_event({
                         "type": "agent_error",

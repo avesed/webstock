@@ -20,6 +20,14 @@ class UserRole(str, PyEnum):
     USER = "user"
 
 
+class AccountStatus(str, PyEnum):
+    """Account lifecycle status - determines whether user can access the system."""
+
+    ACTIVE = "active"  # Normal, fully functional account
+    PENDING_APPROVAL = "pending_approval"  # Awaiting admin approval after registration
+    SUSPENDED = "suspended"  # Suspended by admin (reserved for future use)
+
+
 class User(Base):
     """User model for authentication and authorization."""
 
@@ -36,6 +44,18 @@ class User(Base):
         default=UserRole.USER,
         nullable=False,
         index=True,
+    )
+
+    account_status: Mapped[AccountStatus] = mapped_column(
+        Enum(
+            AccountStatus,
+            name="account_status",
+            values_callable=lambda x: [e.value for e in x],
+        ),
+        default=AccountStatus.ACTIVE,
+        nullable=False,
+        index=True,
+        comment="Account lifecycle status: active, pending_approval, suspended",
     )
 
     email: Mapped[str] = mapped_column(
@@ -98,6 +118,11 @@ class User(Base):
     def is_admin(self) -> bool:
         """Check if user has admin role."""
         return self.role == UserRole.ADMIN
+
+    @property
+    def is_pending_approval(self) -> bool:
+        """Check if user account is pending admin approval."""
+        return self.account_status == AccountStatus.PENDING_APPROVAL
 
     def __repr__(self) -> str:
         return f"<User(id={self.id}, email={self.email}, role={self.role.value})>"

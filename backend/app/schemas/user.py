@@ -6,7 +6,7 @@ from typing import Optional
 
 from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator
 
-from app.models.user import UserRole
+from app.models.user import AccountStatus, UserRole
 from app.schemas.base import CamelModel
 
 
@@ -52,6 +52,7 @@ class UserResponse(UserBase):
     id: int
     role: UserRole
     is_active: bool
+    account_status: AccountStatus
     created_at: datetime
 
 

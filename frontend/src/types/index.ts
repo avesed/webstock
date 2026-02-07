@@ -1,13 +1,34 @@
 // User types
 export type UserRole = 'admin' | 'user'
+export type AccountStatus = 'active' | 'pending_approval' | 'suspended'
 
 export interface User {
   id: string
   email: string
   role: UserRole
   isActive: boolean
+  accountStatus: AccountStatus
   createdAt: string
   updatedAt: string
+}
+
+// Pending approval types
+export interface PendingApprovalResponse {
+  status: 'pending_approval'
+  message: string
+  pendingToken: string
+  email: string
+}
+
+export interface RegisterResponse {
+  user: User
+  requiresApproval: boolean
+}
+
+export interface CheckStatusResponse {
+  status: 'pending_approval' | 'active' | 'rejected'
+  message: string
+  rejectionReason?: string
 }
 
 // Admin types
@@ -449,6 +470,7 @@ export interface AdminUser {
   email: string
   role: UserRole
   isActive: boolean
+  accountStatus: AccountStatus
   apiPermissions: {
     canUseOwnApiKey: boolean
     dailyApiLimit: number | null
@@ -468,7 +490,7 @@ export interface AdminUserListResponse {
 export interface UserFilters {
   search: string
   role: 'all' | 'user' | 'admin'
-  status: 'all' | 'active' | 'inactive'
+  status: 'all' | 'active' | 'inactive' | 'pending'
 }
 
 // Admin System Configuration types
@@ -477,8 +499,8 @@ export interface SystemConfig {
     apiKey: string | null
     baseUrl: string
     model: string
-    maxTokens: number
-    temperature: number
+    maxTokens: number | null  // null = use model default
+    temperature: number | null  // null = use model default
   }
   news: {
     defaultSource: NewsContentSource
@@ -486,12 +508,16 @@ export interface SystemConfig {
     embeddingModel: string
     filterModel: string
     autoFetchEnabled: boolean
+    useLlmConfig: boolean  // Use LLM config's API settings
+    openaiBaseUrl: string | null  // Custom API URL (when useLlmConfig=false)
+    openaiApiKey: string | null  // Custom API key (when useLlmConfig=false)
   }
   features: {
     allowUserApiKeys: boolean
     allowUserCustomModels: boolean
     enableNewsAnalysis: boolean
     enableStockAnalysis: boolean
+    requireRegistrationApproval: boolean
   }
 }
 

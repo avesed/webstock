@@ -1,5 +1,5 @@
-import { useState } from 'react'
-import { Link } from 'react-router-dom'
+import { useState, useEffect } from 'react'
+import { Link, useNavigate } from 'react-router-dom'
 import { LineChart, Eye, EyeOff, Globe } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 
@@ -22,12 +22,21 @@ export default function LoginPage() {
   const { t } = useTranslation('auth')
   const { t: tCommon } = useTranslation('common')
   const { locale, setLocale } = useLocale()
-  const { login, isLoading, error, clearError } = useAuthStore()
+  const navigate = useNavigate()
+  const { login, isLoading, error, clearError, pendingApproval, resetPendingState } = useAuthStore()
 
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
   const [showPassword, setShowPassword] = useState(false)
   const [validationError, setValidationError] = useState('')
+
+  // Handle navigation when pendingApproval becomes true
+  useEffect(() => {
+    if (pendingApproval) {
+      resetPendingState()
+      navigate('/pending-approval')
+    }
+  }, [pendingApproval, navigate, resetPendingState])
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
@@ -44,7 +53,12 @@ export default function LoginPage() {
       return
     }
 
-    await login(email, password)
+    const result = await login(email, password)
+
+    // Navigation for pending approval is handled by useEffect
+    if (result.pendingApproval) {
+      return
+    }
   }
 
   const languageOptions: { value: Locale; label: string }[] = [

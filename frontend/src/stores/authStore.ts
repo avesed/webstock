@@ -1,5 +1,5 @@
 import { create } from 'zustand'
-import type { User } from '@/types'
+import type { User, PendingApprovalResponse, RegisterResponse } from '@/types'
 import {
   setAccessToken,
   clearAccessToken,
@@ -7,24 +7,41 @@ import {
   emitAuthEvent,
   onAuthEvent,
 } from '@/lib/auth'
+import { setPendingSession } from '@/lib/pendingSession'
 import { authApi } from '@/api'
 import { getErrorMessage } from '@/api/client'
+import { useStockStore } from './stockStore'
+
+// Type guard to check if response is pending approval
+function isPendingApprovalResponse(
+  response: unknown
+): response is PendingApprovalResponse {
+  return (
+    typeof response === 'object' &&
+    response !== null &&
+    'status' in response &&
+    (response as PendingApprovalResponse).status === 'pending_approval'
+  )
+}
 
 interface AuthState {
   user: User | null
   isAuthenticated: boolean
   isLoading: boolean
   error: string | null
+  pendingApproval: boolean
+  requiresApproval: boolean
 }
 
 interface AuthActions {
-  login: (email: string, password: string) => Promise<boolean>
-  register: (email: string, password: string) => Promise<boolean>
+  login: (email: string, password: string) => Promise<{ success: boolean; pendingApproval?: boolean }>
+  register: (email: string, password: string) => Promise<{ success: boolean; requiresApproval?: boolean }>
   logout: () => Promise<void>
   initAuth: () => Promise<void>
   clearError: () => void
   setUser: (user: User | null) => void
   isAdmin: () => boolean
+  resetPendingState: () => void
 }
 
 type AuthStore = AuthState & AuthActions
@@ -43,39 +60,63 @@ export const useAuthStore = create<AuthStore>((set, get) => {
     isAuthenticated: false,
     isLoading: true,
     error: null,
+    pendingApproval: false,
+    requiresApproval: false,
 
     // Actions
-    login: async (email: string, password: string): Promise<boolean> => {
-      set({ isLoading: true, error: null })
+    login: async (email: string, password: string): Promise<{ success: boolean; pendingApproval?: boolean }> => {
+      set({ isLoading: true, error: null, pendingApproval: false })
 
       try {
-        const tokens = await authApi.login({ email, password })
-        const accessToken = tokens.accessToken
-        setAccessToken(accessToken, tokens.expiresIn)
+        const response = await authApi.login({ email, password })
+
+        // Check if account is pending approval
+        if (isPendingApprovalResponse(response)) {
+          setPendingSession({
+            email: response.email,
+            pendingToken: response.pendingToken,
+          })
+          set({ isLoading: false, pendingApproval: true })
+          return { success: false, pendingApproval: true }
+        }
+
+        // Normal login flow
+        const accessToken = response.accessToken
+        setAccessToken(accessToken, response.expiresIn)
 
         // 显式传递 token
         const user = await authApi.me(accessToken)
         set({ user, isAuthenticated: true, isLoading: false })
+        // Load user-specific recent searches
+        useStockStore.getState().loadUserRecentSearches(user.id)
         emitAuthEvent('login')
-        return true
+        return { success: true }
       } catch (error) {
         const message = getErrorMessage(error)
         set({ error: message, isLoading: false })
-        return false
+        return { success: false }
       }
     },
 
-    register: async (email: string, password: string): Promise<boolean> => {
-      set({ isLoading: true, error: null })
+    register: async (email: string, password: string): Promise<{ success: boolean; requiresApproval?: boolean }> => {
+      set({ isLoading: true, error: null, requiresApproval: false })
 
       try {
-        await authApi.register({ email, password, confirmPassword: password })
-        // Auto-login after registration
-        return get().login(email, password)
+        const response: RegisterResponse = await authApi.register({ email, password, confirmPassword: password })
+
+        // Check if approval is required
+        if (response.requiresApproval) {
+          set({ isLoading: false, requiresApproval: true })
+          return { success: true, requiresApproval: true }
+        }
+
+        // Auto-login after registration (only if no approval required)
+        const loginResult = await get().login(email, password)
+        return { success: loginResult.success }
       } catch (error) {
         const message = getErrorMessage(error)
         set({ error: message, isLoading: false })
-        return false
+        return { success: false }
       }
     },
 
@@ -86,6 +127,8 @@ export const useAuthStore = create<AuthStore>((set, get) => {
         await authLogout()
       } finally {
         clearAccessToken()
+        // Clear user-specific recent searches from memory
+        useStockStore.getState().clearUserSession()
         set({ user: null, isAuthenticated: false, isLoading: false })
         emitAuthEvent('logout')
       }
@@ -139,6 +182,8 @@ export const useAuthStore = create<AuthStore>((set, get) => {
 
         const user = await meResponse.json()
         set({ user, isAuthenticated: true, isLoading: false })
+        // Load user-specific recent searches
+        useStockStore.getState().loadUserRecentSearches(user.id)
       } catch (error) {
         clearAccessToken()
         set({ user: null, isAuthenticated: false, isLoading: false })
@@ -156,6 +201,10 @@ export const useAuthStore = create<AuthStore>((set, get) => {
     isAdmin: (): boolean => {
       const { user } = get()
       return user?.role === 'admin'
+    },
+
+    resetPendingState: () => {
+      set({ pendingApproval: false, requiresApproval: false })
     },
   }
 })

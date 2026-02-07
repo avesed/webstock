@@ -11,9 +11,8 @@ from typing import Any, Dict, List
 
 from worker.celery_app import celery_app
 
-# Import shared database configuration from backend
-# This ensures proper connection pooling and consistent settings
-from app.db.database import AsyncSessionLocal
+# Use Celery-safe database utilities (avoids event loop conflicts)
+from worker.db_utils import get_task_session
 
 logger = logging.getLogger(__name__)
 
@@ -200,7 +199,7 @@ async def _embed_document_async(
     )
 
     stored_count = 0
-    async with AsyncSessionLocal() as db:
+    async with get_task_session() as db:
         # Acquire session-level advisory lock (released on session close)
         await db.execute(text("SELECT pg_advisory_lock(:key)"), {"key": lock_key})
 

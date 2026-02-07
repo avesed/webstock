@@ -26,6 +26,7 @@ class SendMessageRequest(CamelModel):
 
     content: str = Field(..., min_length=1, max_length=4000)
     symbol: Optional[str] = Field(None, max_length=20, description="Stock symbol for context")
+    language: Optional[str] = Field(None, max_length=10, description="User language (en or zh)")
 
 
 class UpdateConversationRequest(CamelModel):

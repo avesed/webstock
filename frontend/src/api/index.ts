@@ -24,6 +24,9 @@ import type {
   ChatMessage,
   ChatConversationList,
   ChatStreamEvent,
+  RegisterResponse,
+  PendingApprovalResponse,
+  CheckStatusResponse,
 } from '@/types'
 
 /**
@@ -52,13 +55,13 @@ function toMarketLocalTimestamp(isoDate: string): number {
 
 // Auth API
 export const authApi = {
-  login: async (credentials: LoginCredentials): Promise<AuthTokens> => {
-    const response = await apiClient.post<AuthTokens>('/auth/login', credentials)
+  login: async (credentials: LoginCredentials): Promise<AuthTokens | PendingApprovalResponse> => {
+    const response = await apiClient.post<AuthTokens | PendingApprovalResponse>('/auth/login', credentials)
     return response.data
   },
 
-  register: async (credentials: RegisterCredentials): Promise<User> => {
-    const response = await apiClient.post<User>('/auth/register', credentials)
+  register: async (credentials: RegisterCredentials): Promise<RegisterResponse> => {
+    const response = await apiClient.post<RegisterResponse>('/auth/register', credentials)
     return response.data
   },
 
@@ -85,6 +88,14 @@ export const authApi = {
       throw new Error(`HTTP ${response.status}`)
     }
     return response.json()
+  },
+
+  checkAccountStatus: async (email: string, pendingToken: string): Promise<CheckStatusResponse> => {
+    const response = await apiClient.post<CheckStatusResponse>('/auth/check-status', {
+      email,
+      pendingToken,
+    })
+    return response.data
   },
 }
 
@@ -607,6 +618,7 @@ export const chatApi = {
     conversationId: string,
     content: string,
     symbol: string | undefined,
+    language: string,
     onEvent: (event: ChatStreamEvent) => void,
     onError: (err: unknown) => void,
     onDone: () => void,
@@ -624,7 +636,7 @@ export const chatApi = {
             ...(token ? { Authorization: `Bearer ${token}` } : {}),
           },
           credentials: 'include',
-          body: JSON.stringify({ content, symbol }),
+          body: JSON.stringify({ content, symbol, language }),
           signal: controller.signal,
         })
 
@@ -678,19 +690,27 @@ export const analysisApi = {
   /**
    * Stream AI analysis for a stock using fetch (supports auth headers).
    * Returns an AbortController so the caller can cancel.
+   * @param symbol - Stock symbol
+   * @param language - Language for analysis output ('en' or 'zh')
+   * @param onEvent - Callback for SSE events
+   * @param onError - Callback for errors
+   * @param onDone - Callback when stream ends
    */
   streamAnalysis: (
     symbol: string,
+    language: string,
     onEvent: (data: Record<string, unknown>) => void,
     onError: (err: unknown) => void,
     onDone: () => void,
   ): AbortController => {
     const controller = new AbortController()
     const token = getAccessToken()
+    // Normalize language: 'zh-CN', 'zh-TW' etc. → 'zh', others → 'en'
+    const lang = language.toLowerCase().startsWith('zh') ? 'zh' : 'en'
 
     const run = async () => {
       try {
-        const resp = await fetch(`/api/v1/analysis/${symbol}/stream`, {
+        const resp = await fetch(`/api/v1/analysis/${symbol}/stream?language=${lang}`, {
           method: 'GET',
           headers: {
             Accept: 'text/event-stream',

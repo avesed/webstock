@@ -142,12 +142,13 @@ class BaseAgent(ABC):
         pass
 
     @abstractmethod
-    def get_system_prompt(self, market: str) -> str:
+    def get_system_prompt(self, market: str, language: str = "en") -> str:
         """
         Get the system prompt for this agent.
 
         Args:
             market: Market identifier (us, hk, sh, sz)
+            language: Output language ('en' or 'zh')
 
         Returns:
             System prompt string
@@ -160,6 +161,7 @@ class BaseAgent(ABC):
         symbol: str,
         market: str,
         data: Dict[str, Any],
+        language: str = "en",
     ) -> str:
         """
         Build the user prompt with stock data.
@@ -168,6 +170,7 @@ class BaseAgent(ABC):
             symbol: Stock symbol
             market: Market identifier
             data: Prepared data for analysis
+            language: Output language ('en' or 'zh')
 
         Returns:
             User prompt string
@@ -382,6 +385,7 @@ class BaseAgent(ABC):
         self,
         symbol: str,
         market: str,
+        language: str = "en",
     ) -> AsyncGenerator[StreamChunk, None]:
         """
         Perform streaming analysis on a stock.
@@ -389,6 +393,7 @@ class BaseAgent(ABC):
         Args:
             symbol: Stock symbol
             market: Market identifier (us, hk, sh, sz)
+            language: Output language ('en' or 'zh')
 
         Yields:
             StreamChunk objects with partial results
@@ -419,11 +424,11 @@ class BaseAgent(ABC):
             # Prepare data
             data = await self.prepare_data(symbol, market)
 
-            # Build prompts
-            system_prompt = self.get_system_prompt(market)
-            user_prompt = await self.build_user_prompt(symbol, market, data)
+            # Build prompts with language support
+            system_prompt = self.get_system_prompt(market, language)
+            user_prompt = await self.build_user_prompt(symbol, market, data, language)
 
-            logger.info(f"Agent {self.agent_type.value}: streaming analysis for {symbol}")
+            logger.info(f"Agent {self.agent_type.value}: streaming analysis for {symbol} (lang={language})")
 
             # Stream from OpenAI with timeout protection
             try:

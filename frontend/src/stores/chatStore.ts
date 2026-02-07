@@ -24,7 +24,7 @@ interface ChatActions {
   deleteConversation: (id: string) => Promise<void>
   updateConversation: (id: string, updates: { title?: string; isArchived?: boolean }) => Promise<void>
   loadMessages: (conversationId: string, limit?: number, offset?: number) => Promise<void>
-  sendMessage: (content: string, symbol?: string) => Promise<void>
+  sendMessage: (content: string, symbol?: string, language?: string) => Promise<void>
   cancelStream: () => void
   clearError: () => void
 }
@@ -131,9 +131,11 @@ export const useChatStore = create<ChatStore>((set, get) => ({
     }
   },
 
-  sendMessage: async (content: string, symbol?: string): Promise<void> => {
+  sendMessage: async (content: string, symbol?: string, language?: string): Promise<void> => {
     const { currentConversationId } = get()
     if (!currentConversationId) return
+    // Default to browser language if not specified
+    const lang = language ?? navigator.language ?? 'en'
 
     set({ error: null })
 
@@ -265,6 +267,7 @@ export const useChatStore = create<ChatStore>((set, get) => ({
       currentConversationId,
       content,
       symbol,
+      lang,
       onEvent,
       onError,
       onDone,

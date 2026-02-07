@@ -13,18 +13,33 @@ from app.core.security import hash_password, require_admin
 from app.db.database import get_db
 from app.db.redis import get_redis
 from app.models.system_settings import SystemSettings
-from app.models.user import User, UserRole
+from app.models.user import AccountStatus, User, UserRole
+from app.services.pending_token_service import clear_pending_token
 from app.models.user_settings import UserSettings
 from app.schemas.admin import (
+    ActivityStats,
     ApiCallStats,
+    ApiStats,
+    ApproveUserRequest,
+    CreateUserRequest,
+    FeaturesConfig,
+    LlmConfig,
+    NewsConfig,
+    RejectUserRequest,
     ResetPasswordRequest,
+    SystemConfigResponse,
+    SystemMonitorStatsResponse,
+    SystemResourceStats,
     SystemSettingsResponse,
     SystemStatsResponse,
+    UpdateSystemConfigRequest,
     UpdateSystemSettingsRequest,
     UpdateUserRequest,
     UserAdminResponse,
     UserListResponse,
+    UserStats,
 )
+from app.schemas.user import MessageResponse
 
 logger = logging.getLogger(__name__)
 
@@ -88,6 +103,7 @@ def build_user_admin_response(
         id=user.id,
         email=user.email,
         role=user.role,
+        account_status=user.account_status,
         is_active=user.is_active,
         is_locked=user.is_locked,
         failed_login_attempts=user.failed_login_attempts,
@@ -171,6 +187,63 @@ async def list_users(
     ]
 
     return UserListResponse(users=user_responses, total=total)
+
+
+@router.post(
+    "/users",
+    response_model=UserAdminResponse,
+    status_code=status.HTTP_201_CREATED,
+    summary="Create a new user",
+    description="Create a new user account with specified email, password, and role.",
+    dependencies=[Depends(rate_limit(max_requests=20, window_seconds=60))],
+)
+async def create_user(
+    data: CreateUserRequest,
+    admin: User = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Create a new user account.
+
+    Admin can create users with any role. Created users bypass registration
+    approval requirement and are immediately active.
+    """
+    logger.info(
+        f"Admin {admin.id} ({admin.email}) creating user: "
+        f"email={data.email}, role={data.role.value}"
+    )
+
+    # Check if email already exists
+    result = await db.execute(
+        select(User).where(User.email == data.email)
+    )
+    existing_user = result.scalar_one_or_none()
+
+    if existing_user:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Email already registered",
+        )
+
+    # Create new user (always active, bypasses approval)
+    user = User(
+        email=data.email,
+        password_hash=hash_password(data.password),
+        role=data.role,
+        account_status=AccountStatus.ACTIVE,
+        is_active=True,
+    )
+
+    db.add(user)
+    await db.commit()
+    await db.refresh(user)
+
+    logger.info(
+        f"[AUDIT] Admin {admin.id} created user {user.id} ({user.email}) "
+        f"with role {user.role.value}"
+    )
+
+    return build_user_admin_response(user, False)
 
 
 @router.get(
@@ -356,6 +429,127 @@ async def reset_user_password(
     return build_user_admin_response(user, can_use_custom_api_key)
 
 
+# ============== User Approval Endpoints ==============
+
+
+@router.post(
+    "/users/{user_id}/approve",
+    response_model=UserAdminResponse,
+    summary="Approve pending user",
+    description="Approve a user account that is pending approval.",
+    dependencies=[Depends(rate_limit(max_requests=30, window_seconds=60))],
+)
+async def approve_user(
+    user_id: int,
+    data: ApproveUserRequest = ApproveUserRequest(),
+    admin: User = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Approve a pending user account.
+
+    Changes the user's account_status from PENDING_APPROVAL to ACTIVE,
+    allowing them to log in normally.
+    """
+    logger.info(f"Admin {admin.id} ({admin.email}) approving user {user_id}")
+
+    user = await get_user_by_id(db, user_id)
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="User not found",
+        )
+
+    if user.account_status != AccountStatus.PENDING_APPROVAL:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"User is not pending approval (current status: {user.account_status.value})",
+        )
+
+    # Approve the user
+    user.account_status = AccountStatus.ACTIVE
+
+    # Clear any pending tokens from Redis
+    await clear_pending_token(user.id)
+
+    await db.commit()
+    await db.refresh(user)
+
+    logger.info(
+        f"[AUDIT] Admin {admin.id} approved user {user_id} ({user.email})"
+    )
+
+    # TODO: If data.send_notification is True, send email notification to user
+
+    can_use_custom_api_key = await get_user_can_use_custom_api_key(db, user_id)
+    return build_user_admin_response(user, can_use_custom_api_key)
+
+
+@router.post(
+    "/users/{user_id}/reject",
+    response_model=MessageResponse,
+    summary="Reject pending user",
+    description="Reject a user account that is pending approval.",
+    dependencies=[Depends(rate_limit(max_requests=30, window_seconds=60))],
+)
+async def reject_user(
+    user_id: int,
+    data: RejectUserRequest = RejectUserRequest(),
+    admin: User = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Reject a pending user account.
+
+    By default, performs a soft delete (is_active=False).
+    If delete_account is True, the account will be permanently deleted.
+    """
+    logger.info(
+        f"Admin {admin.id} ({admin.email}) rejecting user {user_id}, "
+        f"reason={data.reason}, delete={data.delete_account}"
+    )
+
+    user = await get_user_by_id(db, user_id)
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="User not found",
+        )
+
+    if user.account_status != AccountStatus.PENDING_APPROVAL:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"User is not pending approval (current status: {user.account_status.value})",
+        )
+
+    # Clear any pending tokens from Redis
+    await clear_pending_token(user.id)
+
+    if data.delete_account:
+        # Hard delete
+        await db.delete(user)
+        await db.commit()
+
+        logger.info(
+            f"[AUDIT] Admin {admin.id} rejected and deleted user {user_id} ({user.email}), "
+            f"reason: {data.reason or 'not specified'}"
+        )
+
+        return MessageResponse(message=f"User {user.email} has been rejected and deleted")
+    else:
+        # Soft delete - disable account
+        user.is_active = False
+        await db.commit()
+        await db.refresh(user)
+
+        logger.info(
+            f"[AUDIT] Admin {admin.id} rejected user {user_id} ({user.email}), "
+            f"reason: {data.reason or 'not specified'}"
+        )
+
+        return MessageResponse(message=f"User {user.email} has been rejected and disabled")
+
+
 # ============== System Settings Endpoints ==============
 
 
@@ -387,6 +581,7 @@ async def get_system_settings(
         finnhub_api_key_set=bool(settings.finnhub_api_key),
         polygon_api_key_set=bool(settings.polygon_api_key),
         allow_user_custom_api_keys=settings.allow_user_custom_api_keys,
+        require_registration_approval=settings.require_registration_approval,
         updated_at=settings.updated_at,
         updated_by=settings.updated_by,
     )
@@ -437,6 +632,32 @@ async def update_system_settings(
     if data.allow_user_custom_api_keys is not None:
         settings.allow_user_custom_api_keys = data.allow_user_custom_api_keys
 
+    # Handle require_registration_approval setting
+    # When turning OFF approval requirement, batch-promote all pending users
+    if data.require_registration_approval is not None:
+        old_value = settings.require_registration_approval
+        settings.require_registration_approval = data.require_registration_approval
+
+        # If turning OFF approval requirement, promote all pending users
+        if old_value and not data.require_registration_approval:
+            pending_users_result = await db.execute(
+                select(User).where(User.account_status == AccountStatus.PENDING_APPROVAL)
+            )
+            pending_users = pending_users_result.scalars().all()
+
+            promoted_count = 0
+            for user in pending_users:
+                user.account_status = AccountStatus.ACTIVE
+                # Clear any pending tokens
+                await clear_pending_token(user.id)
+                promoted_count += 1
+
+            if promoted_count > 0:
+                logger.info(
+                    f"[AUDIT] Admin {admin.id} disabled registration approval - "
+                    f"auto-promoted {promoted_count} pending users to active"
+                )
+
     # Record who made the update
     settings.updated_by = admin.id
 
@@ -459,6 +680,7 @@ async def update_system_settings(
         finnhub_api_key_set=bool(settings.finnhub_api_key),
         polygon_api_key_set=bool(settings.polygon_api_key),
         allow_user_custom_api_keys=settings.allow_user_custom_api_keys,
+        require_registration_approval=settings.require_registration_approval,
         updated_at=settings.updated_at,
         updated_by=settings.updated_by,
     )
@@ -538,4 +760,196 @@ async def get_system_stats(
         active_users=active_users,
         logins_24h=logins_24h,
         api_stats=api_stats,
+    )
+
+
+# ============== System Config Endpoints (Frontend Compatibility) ==============
+
+
+@router.get(
+    "/system/config",
+    response_model=SystemConfigResponse,
+    summary="Get system configuration",
+    description="Get system configuration in frontend-compatible format.",
+    dependencies=[Depends(rate_limit(max_requests=60, window_seconds=60))],
+)
+async def get_system_config(
+    admin: User = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """Get system configuration matching frontend SystemConfig type."""
+    logger.info(f"Admin {admin.id} ({admin.email}) viewing system config")
+
+    settings = await get_or_create_system_settings(db)
+
+    return SystemConfigResponse(
+        llm=LlmConfig(
+            api_key="***" if settings.openai_api_key else None,
+            base_url=settings.openai_base_url or "https://api.openai.com/v1",
+            model=settings.openai_model or "gpt-4o-mini",
+            max_tokens=settings.openai_max_tokens,  # None = use model default
+            temperature=settings.openai_temperature,  # None = use model default
+        ),
+        news=NewsConfig(
+            default_source="scraper",  # TODO: Add to system settings if needed
+            retention_days=settings.news_retention_days,
+            embedding_model=settings.embedding_model or "text-embedding-3-small",
+            filter_model=settings.news_filter_model or "gpt-4o-mini",
+            auto_fetch_enabled=True,  # TODO: Add to system settings if needed
+            use_llm_config=settings.news_use_llm_config,
+            openai_base_url=settings.news_openai_base_url,
+            openai_api_key="***" if settings.news_openai_api_key else None,
+        ),
+        features=FeaturesConfig(
+            allow_user_api_keys=settings.allow_user_custom_api_keys,
+            allow_user_custom_models=False,  # TODO: Add to system settings if needed
+            enable_news_analysis=settings.enable_news_analysis,
+            enable_stock_analysis=settings.enable_stock_analysis,
+            require_registration_approval=settings.require_registration_approval,
+        ),
+    )
+
+
+@router.put(
+    "/system/config",
+    response_model=SystemConfigResponse,
+    summary="Update system configuration",
+    description="Update system configuration from frontend format.",
+    dependencies=[Depends(rate_limit(max_requests=20, window_seconds=60))],
+)
+async def update_system_config(
+    data: UpdateSystemConfigRequest,
+    admin: User = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """Update system configuration from frontend format."""
+    logger.info(f"Admin {admin.id} ({admin.email}) updating system config")
+
+    settings = await get_or_create_system_settings(db)
+
+    # Update LLM settings
+    if data.llm:
+        if data.llm.api_key and data.llm.api_key != "***":
+            settings.openai_api_key = data.llm.api_key
+        if data.llm.base_url:
+            settings.openai_base_url = data.llm.base_url
+        if data.llm.model:
+            settings.openai_model = data.llm.model
+        # Allow max_tokens to be cleared (set to null)
+        settings.openai_max_tokens = data.llm.max_tokens
+        # Allow temperature to be cleared (set to null)
+        settings.openai_temperature = data.llm.temperature
+
+    # Update news settings
+    if data.news:
+        if data.news.retention_days:
+            settings.news_retention_days = data.news.retention_days
+        if data.news.embedding_model:
+            settings.embedding_model = data.news.embedding_model
+        if data.news.filter_model:
+            settings.news_filter_model = data.news.filter_model
+        if data.news.use_llm_config is not None:
+            settings.news_use_llm_config = data.news.use_llm_config
+        # Handle openai_base_url - allow clearing by passing empty string
+        if data.news.openai_base_url is not None:
+            settings.news_openai_base_url = data.news.openai_base_url or None
+        # Handle openai_api_key - only update if not masked
+        if data.news.openai_api_key and data.news.openai_api_key != "***":
+            settings.news_openai_api_key = data.news.openai_api_key or None
+
+    # Update feature flags
+    if data.features:
+        if data.features.allow_user_api_keys is not None:
+            settings.allow_user_custom_api_keys = data.features.allow_user_api_keys
+        if data.features.enable_news_analysis is not None:
+            settings.enable_news_analysis = data.features.enable_news_analysis
+        if data.features.enable_stock_analysis is not None:
+            settings.enable_stock_analysis = data.features.enable_stock_analysis
+        if data.features.require_registration_approval is not None:
+            settings.require_registration_approval = data.features.require_registration_approval
+
+    settings.updated_at = datetime.now(timezone.utc)
+    settings.updated_by = admin.id
+    await db.commit()
+    await db.refresh(settings)
+
+    # Return updated config
+    return await get_system_config(admin, db)
+
+
+@router.get(
+    "/system/stats",
+    response_model=SystemMonitorStatsResponse,
+    summary="Get system monitor statistics",
+    description="Get detailed system statistics for monitoring dashboard.",
+    dependencies=[Depends(rate_limit(max_requests=30, window_seconds=60))],
+)
+async def get_system_monitor_stats(
+    admin: User = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """Get system monitor statistics matching frontend SystemMonitorStats type."""
+    logger.info(f"Admin {admin.id} ({admin.email}) viewing system monitor stats")
+
+    now = datetime.now(timezone.utc)
+    today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    week_start = today_start - timedelta(days=7)
+
+    # User stats
+    total_users_result = await db.execute(select(func.count()).select_from(User))
+    total_users = total_users_result.scalar() or 0
+
+    active_users_result = await db.execute(
+        select(func.count()).select_from(User).where(User.is_active == True)
+    )
+    active_users = active_users_result.scalar() or 0
+
+    new_today_result = await db.execute(
+        select(func.count()).select_from(User).where(User.created_at >= today_start)
+    )
+    new_today = new_today_result.scalar() or 0
+
+    new_week_result = await db.execute(
+        select(func.count()).select_from(User).where(User.created_at >= week_start)
+    )
+    new_this_week = new_week_result.scalar() or 0
+
+    # Activity stats from Redis
+    today_logins = 0
+    api_calls_today = 0
+    try:
+        redis = await get_redis()
+        today_str = now.strftime("%Y-%m-%d")
+        logins = await redis.get(f"stats:logins:{today_str}")
+        today_logins = int(logins) if logins else 0
+        api_calls = await redis.get(f"stats:api:{today_str}")
+        api_calls_today = int(api_calls) if api_calls else 0
+    except Exception as e:
+        logger.warning(f"Failed to get activity stats from Redis: {e}")
+
+    return SystemMonitorStatsResponse(
+        users=UserStats(
+            total=total_users,
+            active=active_users,
+            new_today=new_today,
+            new_this_week=new_this_week,
+        ),
+        activity=ActivityStats(
+            today_logins=today_logins,
+            active_conversations=0,  # TODO: Implement if needed
+            reports_generated=0,  # TODO: Implement if needed
+            api_calls_today=api_calls_today,
+        ),
+        system=SystemResourceStats(
+            cpu_usage=0.0,  # TODO: Implement with psutil if needed
+            memory_usage=0.0,
+            disk_usage=0.0,
+            uptime=0,
+        ),
+        api=ApiStats(
+            total_requests=0,  # TODO: Implement if needed
+            average_latency=0.0,
+            error_rate=0.0,
+            rate_limit_hits=0,
+        ),
     )

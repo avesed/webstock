@@ -82,6 +82,25 @@ class SystemSettings(Base):
         comment="新闻内容保留天数",
     )
 
+    news_use_llm_config: Mapped[bool] = mapped_column(
+        Boolean,
+        nullable=False,
+        default=True,
+        comment="新闻处理是否使用 LLM 配置的 API 设置",
+    )
+
+    news_openai_base_url: Mapped[Optional[str]] = mapped_column(
+        String(500),
+        nullable=True,
+        comment="新闻处理专用 OpenAI API 地址",
+    )
+
+    news_openai_api_key: Mapped[Optional[str]] = mapped_column(
+        Text,
+        nullable=True,
+        comment="新闻处理专用 OpenAI API Key",
+    )
+
     # === External API Keys ===
     finnhub_api_key: Mapped[Optional[str]] = mapped_column(
         Text,
@@ -101,6 +120,28 @@ class SystemSettings(Base):
         nullable=False,
         default=False,
         comment="是否允许用户使用自定义 API Key（全局开关）",
+    )
+
+    require_registration_approval: Mapped[bool] = mapped_column(
+        Boolean,
+        nullable=False,
+        default=False,
+        comment="是否要求新用户注册后等待管理员审批",
+    )
+
+    # === Feature Toggles ===
+    enable_news_analysis: Mapped[bool] = mapped_column(
+        Boolean,
+        nullable=False,
+        default=True,
+        comment="是否启用新闻分析功能",
+    )
+
+    enable_stock_analysis: Mapped[bool] = mapped_column(
+        Boolean,
+        nullable=False,
+        default=True,
+        comment="是否启用股票分析功能",
     )
 
     # === Audit Fields ===

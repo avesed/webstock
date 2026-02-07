@@ -39,12 +39,13 @@ import {
 } from '@/lib/utils'
 import { stockApi, watchlistApi, newsApi, analysisApi } from '@/api'
 import { useStockStore } from '@/stores/stockStore'
-import { useToast } from '@/hooks'
+import { useToast, useLocale } from '@/hooks'
 import { StockChatWidget } from '@/components/chat'
 import type { StockQuote, StockInfo, StockFinancials, NewsArticle } from '@/types'
 
 export default function StockDetailPage() {
   const { t } = useTranslation('dashboard')
+  const { locale } = useLocale()
   const { symbol } = useParams<{ symbol: string }>()
   const queryClient = useQueryClient()
   const { toast } = useToast()
@@ -198,7 +199,8 @@ export default function StockDetailPage() {
 
     const controller = analysisApi.streamAnalysis(
       upperSymbol,
-      (data) => {
+      locale,
+      (data: Record<string, unknown>) => {
         const type = data.type as string
         if (type === 'agent_chunk' && data.content) {
           setAnalysisContent((prev) => prev + (data.content as string))
@@ -225,7 +227,7 @@ export default function StockDetailPage() {
       },
     )
     abortRef.current = controller
-  }, [upperSymbol, isAnalyzing, toast])
+  }, [upperSymbol, locale, isAnalyzing, toast, t])
 
   // Check if stock is in a watchlist
   const isInWatchlist = (watchlistId: number | string): boolean => {

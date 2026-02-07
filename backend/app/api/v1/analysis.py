@@ -44,30 +44,27 @@ async def apply_user_ai_config(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> None:
-    """Load user AI settings and set them in the request context."""
+    """Load AI settings using SettingsService and set them in the request context.
+
+    Priority: user settings (if permitted) > system settings > env variables.
+    """
+    from app.services.settings_service import get_settings_service
+
     try:
-        result = await db.execute(
-            select(UserSettings).where(UserSettings.user_id == current_user.id)
-        )
-        user_settings = result.scalar_one_or_none()
-        if user_settings and (
-            user_settings.openai_api_key
-            or user_settings.openai_base_url
-            or user_settings.openai_model
-            or user_settings.openai_max_tokens
-            or user_settings.openai_temperature is not None
-            or user_settings.openai_system_prompt
-        ):
-            current_user_ai_config.set(
-                UserAIConfig(
-                    api_key=user_settings.openai_api_key,
-                    base_url=user_settings.openai_base_url,
-                    model=user_settings.openai_model,
-                    max_tokens=user_settings.openai_max_tokens,
-                    temperature=user_settings.openai_temperature,
-                    system_prompt=user_settings.openai_system_prompt,
-                )
+        settings_service = get_settings_service()
+        ai_config = await settings_service.get_user_ai_config(db, current_user.id)
+
+        # Set resolved config in context for OpenAI client to use
+        current_user_ai_config.set(
+            UserAIConfig(
+                api_key=ai_config.api_key,
+                base_url=ai_config.base_url,
+                model=ai_config.model,
+                max_tokens=ai_config.max_tokens,
+                temperature=ai_config.temperature,
+                system_prompt=ai_config.system_prompt,
             )
+        )
     except Exception as e:
         logger.warning(f"Failed to load user AI config: {e}")
 
@@ -174,6 +171,7 @@ HEARTBEAT_INTERVAL_SECONDS = 15
 async def get_streaming_analysis(
     request: Request,
     symbol: str,
+    language: str = Query("en", description="Language for analysis output (en or zh)"),
     current_user: User = Depends(get_current_user),
     _rate_limit: None = Depends(AI_ANALYSIS_RATE_LIMIT),
     _ai_config: None = Depends(apply_user_ai_config),
@@ -200,8 +198,10 @@ async def get_streaming_analysis(
     """
     symbol = validate_symbol(symbol)
     market = detect_market(symbol)
+    # Normalize language to 'en' or 'zh'
+    lang = "zh" if language.lower().startswith("zh") else "en"
 
-    logger.info(f"Streaming analysis requested for {symbol} by user {current_user.id}")
+    logger.info(f"Streaming analysis requested for {symbol} by user {current_user.id} (lang={lang})")
 
     async def event_generator():
         """Generate SSE events with heartbeat and proper cleanup."""
@@ -236,7 +236,7 @@ async def get_streaming_analysis(
 
             # Stream analysis events with timeout
             async def stream_with_timeout():
-                async for event in orchestrator.analyze_stream(symbol, market.value):
+                async for event in orchestrator.analyze_stream(symbol, market.value, lang):
                     yield event
 
             try:

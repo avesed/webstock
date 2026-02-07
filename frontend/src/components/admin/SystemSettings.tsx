@@ -24,8 +24,8 @@ const DEFAULT_CONFIG: SystemConfig = {
     apiKey: null,
     baseUrl: 'https://api.openai.com/v1',
     model: 'gpt-4o-mini',
-    maxTokens: 4096,
-    temperature: 0.7,
+    maxTokens: null,  // null = use model default
+    temperature: null,  // null = use model default
   },
   news: {
     defaultSource: 'scraper',
@@ -33,12 +33,16 @@ const DEFAULT_CONFIG: SystemConfig = {
     embeddingModel: 'text-embedding-3-small',
     filterModel: 'gpt-4o-mini',
     autoFetchEnabled: true,
+    useLlmConfig: true,
+    openaiBaseUrl: null,
+    openaiApiKey: null,
   },
   features: {
     allowUserApiKeys: true,
     allowUserCustomModels: false,
     enableNewsAnalysis: true,
     enableStockAnalysis: true,
+    requireRegistrationApproval: false,
   },
 }
 
@@ -172,9 +176,9 @@ export function SystemSettings() {
                 <Input
                   id="llm-api-key"
                   type={showApiKey ? 'text' : 'password'}
-                  value={formData.llm.apiKey || ''}
+                  value={formData.llm.apiKey === '***' ? '' : (formData.llm.apiKey || '')}
                   onChange={(e) => handleChange('llm', 'apiKey', e.target.value || null)}
-                  placeholder={t('settings.apiKeyPlaceholder')}
+                  placeholder={formData.llm.apiKey === '***' ? t('settings.apiKeySet') : t('settings.apiKeyPlaceholder')}
                 />
                 <Button
                   variant="ghost"
@@ -185,6 +189,9 @@ export function SystemSettings() {
                   {showApiKey ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
                 </Button>
               </div>
+              {formData.llm.apiKey === '***' && (
+                <p className="text-xs text-muted-foreground">{t('settings.apiKeySetHint')}</p>
+              )}
             </div>
 
             <div className="space-y-2">
@@ -215,8 +222,9 @@ export function SystemSettings() {
                   type="number"
                   min={1}
                   max={128000}
-                  value={formData.llm.maxTokens}
-                  onChange={(e) => handleChange('llm', 'maxTokens', parseInt(e.target.value) || 4096)}
+                  placeholder={t('settings.useModelDefault')}
+                  value={formData.llm.maxTokens ?? ''}
+                  onChange={(e) => handleChange('llm', 'maxTokens', e.target.value === '' ? null : parseInt(e.target.value))}
                 />
               </div>
 
@@ -228,8 +236,9 @@ export function SystemSettings() {
                   min={0}
                   max={2}
                   step={0.1}
-                  value={formData.llm.temperature}
-                  onChange={(e) => handleChange('llm', 'temperature', parseFloat(e.target.value) || 0.7)}
+                  placeholder={t('settings.useModelDefault')}
+                  value={formData.llm.temperature ?? ''}
+                  onChange={(e) => handleChange('llm', 'temperature', e.target.value === '' ? null : parseFloat(e.target.value))}
                 />
               </div>
             </div>
@@ -302,6 +311,47 @@ export function SystemSettings() {
                 onCheckedChange={(checked) => handleChange('news', 'autoFetchEnabled', checked)}
               />
             </div>
+
+            <Separator />
+
+            <div className="flex items-center justify-between">
+              <div className="space-y-0.5">
+                <Label>{t('settings.useLlmConfig')}</Label>
+                <p className="text-sm text-muted-foreground">{t('settings.useLlmConfigDescription')}</p>
+              </div>
+              <ToggleSwitch
+                checked={formData.news.useLlmConfig}
+                onCheckedChange={(checked) => handleChange('news', 'useLlmConfig', checked)}
+              />
+            </div>
+
+            {!formData.news.useLlmConfig && (
+              <div className="grid gap-4 sm:grid-cols-2 pt-2">
+                <div className="space-y-2">
+                  <Label htmlFor="news-api-url">{t('settings.newsApiUrl')}</Label>
+                  <Input
+                    id="news-api-url"
+                    value={formData.news.openaiBaseUrl || ''}
+                    onChange={(e) => handleChange('news', 'openaiBaseUrl', e.target.value || null)}
+                    placeholder="https://api.openai.com/v1"
+                  />
+                </div>
+
+                <div className="space-y-2">
+                  <Label htmlFor="news-api-key">{t('settings.newsApiKey')}</Label>
+                  <Input
+                    id="news-api-key"
+                    type="password"
+                    value={formData.news.openaiApiKey === '***' ? '' : (formData.news.openaiApiKey || '')}
+                    onChange={(e) => handleChange('news', 'openaiApiKey', e.target.value || null)}
+                    placeholder={formData.news.openaiApiKey === '***' ? t('settings.apiKeySet') : t('settings.apiKeyPlaceholder')}
+                  />
+                  {formData.news.openaiApiKey === '***' && (
+                    <p className="text-xs text-muted-foreground">{t('settings.apiKeySetHint')}</p>
+                  )}
+                </div>
+              </div>
+            )}
           </CardContent>
         </Card>
 
@@ -369,6 +419,20 @@ export function SystemSettings() {
                 onCheckedChange={(checked) => handleChange('features', 'enableStockAnalysis', checked)}
               />
             </div>
+
+            <Separator />
+
+            <div className="flex items-center justify-between">
+              <div className="space-y-0.5">
+                <Label>{t('settings.requireApproval')}</Label>
+                <p className="text-sm text-muted-foreground">{t('settings.requireApprovalDescription')}</p>
+              </div>
+              <ToggleSwitch
+                checked={formData.features.requireRegistrationApproval}
+                onCheckedChange={(checked) => handleChange('features', 'requireRegistrationApproval', checked)}
+              />
+            </div>
+
           </CardContent>
         </Card>
 

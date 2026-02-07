@@ -3,6 +3,7 @@ import { useTranslation } from 'react-i18next'
 import { Bot, AlertCircle } from 'lucide-react'
 
 import { useChatStore } from '@/stores/chatStore'
+import { useLocale } from '@/hooks/useLocale'
 import { ChatMessageBubble } from './ChatMessageBubble'
 import { ChatInput } from './ChatInput'
 import { RagSourcesBadge } from './RagSourcesBadge'
@@ -11,6 +12,7 @@ import type { ChatMessage } from '@/types'
 
 export function ChatArea() {
   const { t } = useTranslation('chat')
+  const { locale } = useLocale()
   const currentConversationId = useChatStore((s) => s.currentConversationId)
   const messages = useChatStore((s) => s.messages)
   const isStreaming = useChatStore((s) => s.isStreaming)
@@ -33,7 +35,7 @@ export function ChatArea() {
   }, [messages, streamingContent, isStreaming, activeToolCalls])
 
   const handleSend = (content: string) => {
-    sendMessage(content)
+    sendMessage(content, undefined, locale)
   }
 
   // No conversation selected

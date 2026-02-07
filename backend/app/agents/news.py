@@ -40,19 +40,25 @@ class NewsAgent(BaseAgent):
         """Return the agent type."""
         return AgentType.NEWS
 
-    def get_system_prompt(self, market: str) -> str:
+    def get_system_prompt(self, market: str, language: str = "en") -> str:
         """Get the system prompt for news analysis."""
-        return get_news_analysis_system_prompt()
+        return get_news_analysis_system_prompt(language)
 
     async def build_user_prompt(
         self,
         symbol: str,
         market: str,
         data: Dict[str, Any],
+        language: str = "en",
     ) -> str:
         """Build the user prompt with news data."""
         articles = data.get("articles", [])
         if not articles:
+            if language == "zh":
+                return (
+                    f"未找到 {symbol} 的近期新闻文章。"
+                    f"请根据股票代码和市场（{market}）提供一般市场展望。"
+                )
             return (
                 f"No recent news articles found for {symbol}. "
                 f"Please provide a general market outlook based on the symbol "
@@ -69,21 +75,25 @@ class NewsAgent(BaseAgent):
         primary = articles[0]
         prompt = build_news_analysis_prompt(
             symbol=symbol,
-            title=primary.get("title", "No title"),
+            title=primary.get("title", "No title" if language == "en" else "无标题"),
             summary=(
                 "\n\n".join(combined_summaries)
                 if combined_summaries
                 else primary.get("summary")
             ),
-            source=primary.get("source", "unknown"),
-            published_at=primary.get("publishedAt", "unknown"),
+            source=primary.get("source", "unknown" if language == "en" else "未知"),
+            published_at=primary.get("publishedAt", "unknown" if language == "en" else "未知"),
             market=market,
             additional_context=data.get("stock_context"),
+            language=language,
         )
 
         # Append additional article titles for comprehensive analysis
         if len(articles) > 1:
-            prompt += "\n\n## Additional Recent Headlines\n"
+            if language == "zh":
+                prompt += "\n\n## 其他近期头条\n"
+            else:
+                prompt += "\n\n## Additional Recent Headlines\n"
             for article in articles[1:10]:
                 source = article.get("source", "")
                 prompt += f"- [{source}] {article.get('title', '')}\n"

@@ -1,7 +1,8 @@
 """Authentication API endpoints."""
 
+import logging
 from datetime import datetime, timedelta, timezone
-from typing import Any
+from typing import Any, Union
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
@@ -9,9 +10,6 @@ from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
-import logging
-
-logger = logging.getLogger(__name__)
 from app.core.rate_limiter import rate_limit
 from app.core.security import (
     add_token_to_blacklist,
@@ -24,8 +22,15 @@ from app.core.security import (
     verify_password,
 )
 from app.db.database import get_db
-from app.models.user import User, UserRole
+from app.models.system_settings import SystemSettings
+from app.models.user import AccountStatus, User, UserRole
 from app.models.login_log import LoginLog
+from app.schemas.auth import (
+    CheckStatusRequest,
+    CheckStatusResponse,
+    PendingApprovalResponse,
+    RegisterResponse,
+)
 from app.schemas.user import (
     MessageResponse,
     TokenResponse,
@@ -33,15 +38,38 @@ from app.schemas.user import (
     UserLogin,
     UserResponse,
 )
+from app.services.pending_token_service import (
+    clear_pending_token,
+    create_pending_token,
+    validate_pending_token,
+)
+
+logger = logging.getLogger(__name__)
 
 bearer_scheme = HTTPBearer(auto_error=False)
 
 router = APIRouter(prefix="/auth", tags=["Authentication"])
 
 
+async def _get_system_settings(db: AsyncSession) -> SystemSettings:
+    """Get system settings or create default if not exists."""
+    result = await db.execute(
+        select(SystemSettings).where(SystemSettings.id == 1)
+    )
+    system_settings = result.scalar_one_or_none()
+
+    if not system_settings:
+        system_settings = SystemSettings(id=1)
+        db.add(system_settings)
+        await db.commit()
+        await db.refresh(system_settings)
+
+    return system_settings
+
+
 @router.post(
     "/register",
-    response_model=UserResponse,
+    response_model=RegisterResponse,
     status_code=status.HTTP_201_CREATED,
     summary="Register a new user",
 )
@@ -55,6 +83,9 @@ async def register(
 
     - **email**: Valid email address (must be unique)
     - **password**: Password with at least 8 characters
+
+    If registration approval is enabled by admin, new users will be in
+    pending_approval status until approved by an administrator.
     """
     # Check if email already exists
     result = await db.execute(
@@ -68,17 +99,52 @@ async def register(
             detail="Email already registered",
         )
 
+    # Check system settings for registration approval requirement
+    system_settings = await _get_system_settings(db)
+    requires_approval = system_settings.require_registration_approval
+
+    # Determine account status
+    # FIRST_ADMIN_EMAIL always gets ACTIVE status and bypasses approval
+    is_first_admin = (
+        settings.FIRST_ADMIN_EMAIL
+        and user_data.email.lower() == settings.FIRST_ADMIN_EMAIL.lower()
+    )
+
+    if requires_approval and not is_first_admin:
+        account_status = AccountStatus.PENDING_APPROVAL
+        logger.info(
+            f"New user registration with pending approval: {user_data.email}"
+        )
+    else:
+        account_status = AccountStatus.ACTIVE
+
     # Create new user
     user = User(
         email=user_data.email,
         password_hash=hash_password(user_data.password),
+        account_status=account_status,
     )
 
     db.add(user)
     await db.commit()
     await db.refresh(user)
 
-    return user
+    logger.info(
+        f"User registered: id={user.id}, email={user.email}, "
+        f"status={user.account_status.value}, requires_approval={requires_approval and not is_first_admin}"
+    )
+
+    return RegisterResponse(
+        user=UserResponse(
+            id=user.id,
+            email=user.email,
+            role=user.role,
+            is_active=user.is_active,
+            account_status=user.account_status,
+            created_at=user.created_at,
+        ),
+        requires_approval=requires_approval and not is_first_admin,
+    )
 
 
 async def _log_login_attempt(
@@ -103,8 +169,12 @@ async def _log_login_attempt(
 
 @router.post(
     "/login",
-    response_model=TokenResponse,
+    response_model=Union[TokenResponse, PendingApprovalResponse],
     summary="Login with email and password",
+    responses={
+        200: {"model": TokenResponse, "description": "Successful login"},
+        202: {"model": PendingApprovalResponse, "description": "Account pending approval"},
+    },
 )
 async def login(
     user_data: UserLogin,
@@ -120,6 +190,9 @@ async def login(
 
     - **email**: User's email address
     - **password**: User's password
+
+    If the account is pending approval, returns HTTP 202 with a pending token
+    that can be used to check approval status.
     """
     # Get client info for logging
     ip_address = request.client.host if request.client else "unknown"
@@ -201,6 +274,29 @@ async def login(
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Account is disabled",
+        )
+
+    # Check if account is pending approval
+    if user.account_status == AccountStatus.PENDING_APPROVAL:
+        await _log_login_attempt(
+            db, user.id, ip_address, user_agent, False, "Account pending approval"
+        )
+        await db.commit()
+
+        # Create a pending token for status checking
+        pending_token = await create_pending_token(user.id)
+
+        logger.info(
+            f"Login attempt for pending user: id={user.id}, email={user.email}"
+        )
+
+        # Return 202 Accepted with pending approval info
+        response.status_code = status.HTTP_202_ACCEPTED
+        return PendingApprovalResponse(
+            status="pending_approval",
+            message="Your account is pending administrator approval. Please check back later.",
+            pending_token=pending_token,
+            email=user.email,
         )
 
     # Reset failed login attempts on successful login
@@ -362,10 +458,84 @@ async def get_key_status(
 ):
     """
     Get JWT key rotation status for monitoring.
-    
+
     Only returns key fingerprints (safe for logs), not actual keys.
     Requires authentication.
     """
     # TODO: Add admin check if needed
     # For now, any authenticated user can view this info
     return get_key_rotation_info()
+
+
+@router.post(
+    "/check-status",
+    response_model=CheckStatusResponse,
+    summary="Check account approval status",
+    dependencies=[Depends(rate_limit(max_requests=10, window_seconds=60, key_prefix="auth:check-status"))],
+)
+async def check_status(
+    data: CheckStatusRequest,
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Check the approval status of a pending account.
+
+    This endpoint allows users with pending accounts to check if their
+    account has been approved or rejected without needing to attempt login.
+
+    Rate limited to 10 requests per minute per IP.
+
+    - **email**: User's email address
+    - **pending_token**: Token received during login attempt while pending
+    """
+    # Find user by email
+    result = await db.execute(
+        select(User).where(User.email == data.email)
+    )
+    user = result.scalar_one_or_none()
+
+    if user is None:
+        # Don't reveal if email exists or not
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid request",
+        )
+
+    # Validate the pending token using constant-time comparison
+    is_valid = await validate_pending_token(data.pending_token, user.id)
+    if not is_valid:
+        logger.warning(
+            f"Invalid pending token for user {user.id} ({user.email})"
+        )
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid or expired token",
+        )
+
+    # Return status based on account state
+    if user.account_status == AccountStatus.PENDING_APPROVAL:
+        logger.debug(f"Status check: user {user.id} still pending approval")
+        return CheckStatusResponse(
+            status="pending_approval",
+            message="Your account is still pending administrator approval.",
+        )
+    elif user.account_status == AccountStatus.ACTIVE and user.is_active:
+        # Clear the pending token since account is now active
+        await clear_pending_token(user.id)
+        logger.info(f"Status check: user {user.id} ({user.email}) is now approved")
+        return CheckStatusResponse(
+            status="active",
+            message="Your account has been approved. You can now log in.",
+        )
+    else:
+        # Account was rejected (is_active=False or suspended)
+        # Clear the pending token
+        await clear_pending_token(user.id)
+        logger.info(
+            f"Status check: user {user.id} ({user.email}) was rejected "
+            f"(is_active={user.is_active}, status={user.account_status.value})"
+        )
+        return CheckStatusResponse(
+            status="rejected",
+            message="Your account registration was not approved.",
+        )

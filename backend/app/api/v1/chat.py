@@ -50,30 +50,27 @@ async def apply_user_ai_config(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> None:
-    """Load user AI settings and set them in the request context."""
+    """Load AI settings using SettingsService and set them in the request context.
+
+    Priority: user settings (if permitted) > system settings > env variables.
+    """
+    from app.services.settings_service import get_settings_service
+
     try:
-        result = await db.execute(
-            select(UserSettings).where(UserSettings.user_id == current_user.id)
-        )
-        user_settings = result.scalar_one_or_none()
-        if user_settings and (
-            user_settings.openai_api_key
-            or user_settings.openai_base_url
-            or user_settings.openai_model
-            or user_settings.openai_max_tokens
-            or user_settings.openai_temperature is not None
-            or user_settings.openai_system_prompt
-        ):
-            current_user_ai_config.set(
-                UserAIConfig(
-                    api_key=user_settings.openai_api_key,
-                    base_url=user_settings.openai_base_url,
-                    model=user_settings.openai_model,
-                    max_tokens=user_settings.openai_max_tokens,
-                    temperature=user_settings.openai_temperature,
-                    system_prompt=user_settings.openai_system_prompt,
-                )
+        settings_service = get_settings_service()
+        ai_config = await settings_service.get_user_ai_config(db, current_user.id)
+
+        # Set resolved config in context for OpenAI client to use
+        current_user_ai_config.set(
+            UserAIConfig(
+                api_key=ai_config.api_key,
+                base_url=ai_config.base_url,
+                model=ai_config.model,
+                max_tokens=ai_config.max_tokens,
+                temperature=ai_config.temperature,
+                system_prompt=ai_config.system_prompt,
             )
+        )
     except Exception as e:
         logger.warning(f"Failed to load user AI config: {e}")
 
@@ -469,6 +466,11 @@ async def send_message_stream(
 
             # Stream chat response events with timeout
             try:
+                # Normalize language: 'zh-CN', 'zh-TW' etc. → 'zh', others → 'en'
+                lang = "en"
+                if body.language:
+                    lang = "zh" if body.language.lower().startswith("zh") else "en"
+
                 async with asyncio.timeout(STREAMING_TIMEOUT_SECONDS):
                     async for event in chat_service.chat_stream(
                         db=db,
@@ -476,6 +478,7 @@ async def send_message_stream(
                         user_id=current_user.id,
                         user_message=body.content,
                         symbol=body.symbol,
+                        language=lang,
                     ):
                         # Check for client disconnect
                         if await request.is_disconnected():

@@ -16,8 +16,8 @@ from typing import Any, Dict, List, Optional
 
 from worker.celery_app import celery_app
 
-# Import shared database configuration from backend
-from app.db.database import AsyncSessionLocal
+# Use Celery-safe database utilities (avoids event loop conflicts)
+from worker.db_utils import get_task_session, setup_task_ai_context
 
 logger = logging.getLogger(__name__)
 
@@ -83,7 +83,7 @@ async def _fetch_news_content_async(
 
     logger.info("Fetching content for news_id=%s, url=%s", news_id, url[:100])
 
-    async with AsyncSessionLocal() as db:
+    async with get_task_session() as db:
         # Get news record
         query = select(News).where(News.id == uuid.UUID(news_id))
         result = await db.execute(query)
@@ -345,7 +345,7 @@ async def _evaluate_news_relevance_async(
 
     logger.info("Evaluating relevance for news_id=%s", news_id)
 
-    async with AsyncSessionLocal() as db:
+    async with get_task_session() as db:
         # Get news record
         query = select(News).where(News.id == uuid.UUID(news_id))
         result = await db.execute(query)
@@ -379,16 +379,17 @@ async def _evaluate_news_relevance_async(
         if content_data:
             full_text = content_data.get("full_text")
 
-        # Evaluate relevance
-        filter_service = get_news_filter_service(model=filter_model)
-        should_keep = await filter_service.evaluate_relevance(
-            title=news.title,
-            summary=news.summary,
-            full_text=full_text,
-            source=news.source,
-            symbol=news.symbol,
-            model=filter_model,
-        )
+        # Evaluate relevance (set up AI context for LLM call)
+        async with setup_task_ai_context():
+            filter_service = get_news_filter_service(model=filter_model)
+            should_keep = await filter_service.evaluate_relevance(
+                title=news.title,
+                summary=news.summary,
+                full_text=full_text,
+                source=news.source,
+                symbol=news.symbol,
+                model=filter_model,
+            )
 
         if not should_keep:
             # Delete JSON file and mark as deleted
@@ -465,7 +466,7 @@ async def _embed_news_full_content_async(
     rag_service = get_rag_service()
     storage_service = get_news_storage_service()
 
-    async with AsyncSessionLocal() as db:
+    async with get_task_session() as db:
         # Get news record
         query = select(News).where(News.id == uuid.UUID(news_id))
         result = await db.execute(query)
@@ -521,8 +522,9 @@ async def _embed_news_full_content_async(
         if not chunks:
             return {"status": "skipped", "reason": "no_chunks"}
 
-        # Generate embeddings
-        embeddings = await embedding_service.generate_embeddings_batch(chunks)
+        # Generate embeddings (set up AI context for API call)
+        async with setup_task_ai_context():
+            embeddings = await embedding_service.generate_embeddings_batch(chunks)
 
         # Check for valid embeddings
         valid_pairs = [
@@ -656,7 +658,7 @@ async def _cleanup_expired_news_async() -> Dict[str, Any]:
         "errors": 0,
     }
 
-    async with AsyncSessionLocal() as db:
+    async with get_task_session() as db:
         # Find expired news with content files (process in batches)
         news_query = select(News).where(
             and_(

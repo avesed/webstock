@@ -47,15 +47,16 @@ class TechnicalAgent(BaseAgent):
         """Return the agent type."""
         return AgentType.TECHNICAL
 
-    def get_system_prompt(self, market: str) -> str:
+    def get_system_prompt(self, market: str, language: str = "en") -> str:
         """Get the system prompt for technical analysis."""
-        return get_system_prompt(market)
+        return get_system_prompt(market, language)
 
     async def build_user_prompt(
         self,
         symbol: str,
         market: str,
         data: Dict[str, Any],
+        language: str = "en",
     ) -> str:
         """Build the user prompt with technical data."""
         return build_technical_prompt(
@@ -64,6 +65,7 @@ class TechnicalAgent(BaseAgent):
             quote=data.get("quote"),
             indicators=data.get("indicators"),
             history_summary=data.get("history_summary"),
+            language=language,
         )
 
     async def prepare_data(

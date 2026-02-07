@@ -46,15 +46,16 @@ class SentimentAgent(BaseAgent):
         """Return the agent type."""
         return AgentType.SENTIMENT
 
-    def get_system_prompt(self, market: str) -> str:
+    def get_system_prompt(self, market: str, language: str = "en") -> str:
         """Get the system prompt for sentiment analysis."""
-        return get_system_prompt(market)
+        return get_system_prompt(market, language)
 
     async def build_user_prompt(
         self,
         symbol: str,
         market: str,
         data: Dict[str, Any],
+        language: str = "en",
     ) -> str:
         """Build the user prompt with sentiment data."""
         return build_sentiment_prompt(
@@ -64,6 +65,7 @@ class SentimentAgent(BaseAgent):
             history_summary=data.get("history_summary"),
             news=data.get("news"),
             market_context=data.get("market_context"),
+            language=language,
         )
 
     async def prepare_data(

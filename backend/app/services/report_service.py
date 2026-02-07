@@ -322,13 +322,35 @@ class ReportGenerator:
     def __init__(self, db: AsyncSession):
         self.db = db
         self._openai_client: Optional[AsyncOpenAI] = None
+        self._api_key: Optional[str] = None
+        self._base_url: Optional[str] = None
+        self._model: Optional[str] = None
+
+    async def _load_ai_config(self) -> None:
+        """Load AI config from system settings, falling back to env vars."""
+        from app.services.settings_service import get_settings_service
+
+        try:
+            settings_service = get_settings_service()
+            system_settings = await settings_service.get_system_settings(self.db)
+
+            self._api_key = system_settings.openai_api_key or settings.OPENAI_API_KEY
+            self._base_url = system_settings.openai_base_url or settings.OPENAI_API_BASE
+            self._model = system_settings.openai_model or settings.OPENAI_MODEL
+        except Exception as e:
+            logger.warning(f"Failed to load system AI config, using env vars: {e}")
+            self._api_key = settings.OPENAI_API_KEY
+            self._base_url = settings.OPENAI_API_BASE
+            self._model = settings.OPENAI_MODEL
 
     async def _get_openai_client(self) -> AsyncOpenAI:
-        """Get OpenAI client."""
+        """Get OpenAI client using system settings."""
         if self._openai_client is None:
+            if self._api_key is None:
+                await self._load_ai_config()
             self._openai_client = AsyncOpenAI(
-                api_key=settings.OPENAI_API_KEY,
-                base_url=settings.OPENAI_API_BASE,
+                api_key=self._api_key,
+                base_url=self._base_url,
             )
         return self._openai_client
 
@@ -642,8 +664,12 @@ class ReportGenerator:
         portfolio_summary: Optional[PortfolioSummaryForReport],
     ) -> Optional[str]:
         """Generate AI summary of the report."""
-        if not settings.OPENAI_API_KEY:
-            logger.warning("OPENAI_API_KEY not configured, skipping AI summary")
+        # Load AI config if not already loaded
+        if self._api_key is None:
+            await self._load_ai_config()
+
+        if not self._api_key:
+            logger.warning("OpenAI API key not configured, skipping AI summary")
             return None
 
         try:

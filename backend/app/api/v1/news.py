@@ -408,33 +408,16 @@ async def analyze_news(
         get_news_analysis_system_prompt,
     )
     from openai import AsyncOpenAI
-    from sqlalchemy import select
-    from app.models.user_settings import UserSettings
+    from app.services.settings_service import get_settings_service
 
-    # Get user's API configuration from settings (always fetch to avoid lazy load issues)
-    result = await db.execute(
-        select(UserSettings).where(UserSettings.user_id == current_user.id)
-    )
-    user_settings = result.scalar_one_or_none()
+    # Get resolved AI configuration using SettingsService
+    # Priority: user settings (if permitted) > system settings > env variables
+    settings_service = get_settings_service()
+    ai_config = await settings_service.get_user_ai_config(db, current_user.id)
 
-    # Determine API key and base URL (user settings > system config)
-    api_key = None
-    base_url = None
-    model = settings.OPENAI_MODEL or "gpt-4o-mini"
-
-    if user_settings:
-        # First try user's general OpenAI settings
-        api_key = getattr(user_settings, 'openai_api_key', None)
-        base_url = getattr(user_settings, 'openai_base_url', None)
-        user_model = getattr(user_settings, 'openai_model', None)
-        if user_model:
-            model = user_model
-
-    # Fall back to system config if user hasn't configured
-    if not api_key:
-        api_key = settings.OPENAI_API_KEY
-    if not base_url:
-        base_url = settings.OPENAI_API_BASE
+    api_key = ai_config.api_key
+    base_url = ai_config.base_url
+    model = ai_config.model or "gpt-4o-mini"
 
     # Check if we have an API key
     if not api_key:

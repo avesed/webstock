@@ -15,7 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.config import settings
 from app.db.database import get_db
 from app.db.redis import get_redis
-from app.models.user import User, UserRole
+from app.models.user import AccountStatus, User, UserRole
 
 logger = logging.getLogger(__name__)
 
@@ -272,6 +272,16 @@ async def get_current_user(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="Account is temporarily locked",
             )
+
+    # Check account status for pending approval
+    if user.account_status == AccountStatus.PENDING_APPROVAL:
+        logger.warning(
+            f"User {user.id} ({user.email}) attempted access while pending approval"
+        )
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Account pending approval",
+        )
 
     return user
 

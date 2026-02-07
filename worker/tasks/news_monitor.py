@@ -6,9 +6,8 @@ from typing import List, Dict, Any
 
 from worker.celery_app import celery_app
 
-# Import shared database configuration from backend
-# This ensures proper connection pooling and consistent settings
-from app.db.database import engine, AsyncSessionLocal
+# Use Celery-safe database utilities (avoids event loop conflicts)
+from worker.db_utils import get_task_session
 
 logger = logging.getLogger(__name__)
 
@@ -64,7 +63,7 @@ async def _monitor_news_async() -> Dict[str, Any]:
     }
 
     try:
-        async with AsyncSessionLocal() as db:
+        async with get_task_session() as db:
             # Get all unique symbols from all watchlists
             query = select(WatchlistItem.symbol).distinct()
             result = await db.execute(query)
@@ -181,8 +180,7 @@ async def _monitor_news_async() -> Dict[str, Any]:
     except Exception as e:
         logger.exception(f"Error in news monitor: {e}")
         raise
-    # Note: Do not dispose the shared engine here.
-    # The engine is managed by the main application lifecycle.
+    # get_task_session handles connection cleanup automatically
 
     logger.info(
         f"News monitor completed: {stats['symbols_checked']} symbols, "
@@ -324,7 +322,7 @@ async def _analyze_news_async(news_id: str) -> Dict[str, Any]:
     # Use shared database engine and session factory from backend
 
     try:
-        async with AsyncSessionLocal() as db:
+        async with get_task_session() as db:
             # Get news article
             query = select(News).where(News.id == news_id)
             result = await db.execute(query)
@@ -409,8 +407,7 @@ async def _analyze_news_async(news_id: str) -> Dict[str, Any]:
     except Exception as e:
         logger.exception(f"Error analyzing news: {e}")
         raise
-    # Note: Do not dispose the shared engine here.
-    # The engine is managed by the main application lifecycle.
+    # get_task_session handles connection cleanup automatically
 
 
 def _score_article_importance(article: Dict[str, Any]) -> float:

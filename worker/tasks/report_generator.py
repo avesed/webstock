@@ -6,8 +6,8 @@ from typing import Any, Dict, List
 
 from worker.celery_app import celery_app
 
-# Import shared database configuration from backend
-from app.db.database import AsyncSessionLocal
+# Use Celery-safe database utilities (avoids event loop conflicts)
+from worker.db_utils import get_task_session
 
 logger = logging.getLogger(__name__)
 
@@ -55,7 +55,7 @@ async def _check_scheduled_reports_async() -> Dict[str, Any]:
     }
 
     try:
-        async with AsyncSessionLocal() as db:
+        async with get_task_session() as db:
             service = ReportService(db)
             generator = ReportGenerator(db)
 
@@ -164,7 +164,7 @@ async def _generate_report_async(report_id: str) -> Dict[str, Any]:
     logger.info(f"Starting report generation for {report_id}")
 
     try:
-        async with AsyncSessionLocal() as db:
+        async with get_task_session() as db:
             service = ReportService(db)
             generator = ReportGenerator(db)
 
@@ -279,7 +279,7 @@ async def _generate_report_async(report_id: str) -> Dict[str, Any]:
 
         # Try to mark report as failed
         try:
-            async with AsyncSessionLocal() as db:
+            async with get_task_session() as db:
                 from sqlalchemy import update
 
                 await db.execute(
@@ -365,7 +365,7 @@ async def _cleanup_old_reports_async() -> Dict[str, Any]:
     total_deleted = 0
 
     try:
-        async with AsyncSessionLocal() as db:
+        async with get_task_session() as db:
             service = ReportService(db)
 
             # Get all users with reports

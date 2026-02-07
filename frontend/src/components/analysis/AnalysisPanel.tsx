@@ -16,6 +16,7 @@ import { ScrollArea } from '@/components/ui/scroll-area'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { cn } from '@/lib/utils'
 import { getAccessToken } from '@/lib/auth'
+import { useLocale } from '@/hooks/useLocale'
 import type { AnalysisType } from '@/types'
 
 interface AnalysisPanelProps {
@@ -51,6 +52,7 @@ const createInitialSections = (): AnalysisSections => ({
 })
 
 export default function AnalysisPanel({ symbol, className }: AnalysisPanelProps) {
+  const { locale } = useLocale()
   const [status, setStatus] = useState<StreamStatus>('idle')
   const [error, setError] = useState<string | null>(null)
   const [progress, setProgress] = useState<string>('')
@@ -167,9 +169,11 @@ export default function AnalysisPanel({ symbol, className }: AnalysisPanelProps)
 
     try {
       const token = getAccessToken()
+      // Normalize language: 'zh-CN', 'zh-TW' etc. → 'zh', others → 'en'
+      const lang = locale.toLowerCase().startsWith('zh') ? 'zh' : 'en'
       const params = new URLSearchParams({
         types: 'FUNDAMENTAL,TECHNICAL,SENTIMENT',
-        language: 'en',
+        language: lang,
       })
 
       const response = await fetch(`/api/v1/analysis/${symbol}/stream?${params}`, {
@@ -230,7 +234,7 @@ export default function AnalysisPanel({ symbol, className }: AnalysisPanelProps)
       setStatus('error')
       setError(err instanceof Error ? err.message : 'Analysis failed')
     }
-  }, [symbol, handleSSEEvent])
+  }, [symbol, locale, handleSSEEvent])
 
   const cancelAnalysis = useCallback(() => {
     if (abortControllerRef.current) {

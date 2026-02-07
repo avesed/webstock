@@ -14,8 +14,9 @@ interface StockState {
   searchQuery: string
   isSearching: boolean
 
-  // Recent searches
+  // Recent searches (per-user isolated)
   recentSearches: string[]
+  currentUserId: string | null
 }
 
 interface StockActions {
@@ -27,17 +28,24 @@ interface StockActions {
   setIsSearching: (isSearching: boolean) => void
   addRecentSearch: (symbol: string) => void
   clearRecentSearches: () => void
+  // User session management for recent searches isolation
+  loadUserRecentSearches: (userId: string) => void
+  clearUserSession: () => void
 }
 
 type StockStore = StockState & StockActions
 
 const MAX_RECENT_SEARCHES = 10
-const RECENT_SEARCHES_KEY = 'webstock-recent-searches'
+const RECENT_SEARCHES_KEY_PREFIX = 'webstock-recent-searches'
 
-function getStoredRecentSearches(): string[] {
-  if (typeof window === 'undefined') return []
+function getRecentSearchesKey(userId: string): string {
+  return `${RECENT_SEARCHES_KEY_PREFIX}-${userId}`
+}
+
+function getStoredRecentSearches(userId: string | null): string[] {
+  if (typeof window === 'undefined' || userId === null) return []
   try {
-    const stored = localStorage.getItem(RECENT_SEARCHES_KEY)
+    const stored = localStorage.getItem(getRecentSearchesKey(userId))
     if (stored) {
       const parsed: unknown = JSON.parse(stored)
       if (Array.isArray(parsed)) {
@@ -50,9 +58,9 @@ function getStoredRecentSearches(): string[] {
   return []
 }
 
-function saveRecentSearches(searches: string[]): void {
-  if (typeof window === 'undefined') return
-  localStorage.setItem(RECENT_SEARCHES_KEY, JSON.stringify(searches))
+function saveRecentSearches(userId: string | null, searches: string[]): void {
+  if (typeof window === 'undefined' || userId === null) return
+  localStorage.setItem(getRecentSearchesKey(userId), JSON.stringify(searches))
 }
 
 export const useStockStore = create<StockStore>((set, get) => ({
@@ -63,7 +71,8 @@ export const useStockStore = create<StockStore>((set, get) => ({
   chartTimeframe: '1M',
   searchQuery: '',
   isSearching: false,
-  recentSearches: getStoredRecentSearches(),
+  recentSearches: [],
+  currentUserId: null,
 
   // Actions
   setSelectedSymbol: (symbol: string | null) => {
@@ -94,7 +103,7 @@ export const useStockStore = create<StockStore>((set, get) => ({
   },
 
   addRecentSearch: (symbol: string) => {
-    const { recentSearches } = get()
+    const { recentSearches, currentUserId } = get()
     const upperSymbol = symbol.toUpperCase()
 
     // Remove if already exists
@@ -103,12 +112,22 @@ export const useStockStore = create<StockStore>((set, get) => ({
     // Add to front
     const updated = [upperSymbol, ...filtered].slice(0, MAX_RECENT_SEARCHES)
 
-    saveRecentSearches(updated)
+    saveRecentSearches(currentUserId, updated)
     set({ recentSearches: updated })
   },
 
   clearRecentSearches: () => {
-    saveRecentSearches([])
+    const { currentUserId } = get()
+    saveRecentSearches(currentUserId, [])
     set({ recentSearches: [] })
+  },
+
+  loadUserRecentSearches: (userId: string) => {
+    const recentSearches = getStoredRecentSearches(userId)
+    set({ currentUserId: userId, recentSearches })
+  },
+
+  clearUserSession: () => {
+    set({ currentUserId: null, recentSearches: [] })
   },
 }))

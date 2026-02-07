@@ -118,4 +118,34 @@ export const adminApi = {
     const response = await apiClient.get<SystemMonitorStats>('/admin/system/stats')
     return response.data
   },
+
+  // User approval management
+  approveUser: async (userId: number, sendNotification = true): Promise<AdminUser> => {
+    const response = await apiClient.post<AdminUser>(`/admin/users/${userId}/approve`, {
+      send_notification: sendNotification,
+    })
+    return response.data
+  },
+
+  rejectUser: async (
+    userId: number,
+    reason?: string,
+    deleteAccount = false
+  ): Promise<{ message: string }> => {
+    const response = await apiClient.post<{ message: string }>(`/admin/users/${userId}/reject`, {
+      reason,
+      delete_account: deleteAccount,
+    })
+    return response.data
+  },
+
+  // Create a new user (admin only)
+  createUser: async (email: string, password: string, role: UserRole): Promise<AdminUser> => {
+    const response = await apiClient.post<AdminUser>('/admin/users', {
+      email,
+      password,
+      role,
+    })
+    return response.data
+  },
 }

@@ -12,6 +12,7 @@ import { AdminRoute } from '@/components/layout/AdminRoute'
 import DashboardPage from '@/pages/DashboardPage'
 import LoginPage from '@/pages/LoginPage'
 import RegisterPage from '@/pages/RegisterPage'
+import PendingApprovalPage from '@/pages/PendingApprovalPage'
 import StockDetailPage from '@/pages/StockDetailPage'
 import WatchlistPage from '@/pages/WatchlistPage'
 import PortfolioPage from '@/pages/PortfolioPage'
@@ -104,6 +105,14 @@ function App() {
           element={
             <PublicRoute>
               <RegisterPage />
+            </PublicRoute>
+          }
+        />
+        <Route
+          path="/pending-approval"
+          element={
+            <PublicRoute>
+              <PendingApprovalPage />
             </PublicRoute>
           }
         />

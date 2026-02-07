@@ -1,6 +1,6 @@
 import { useState } from 'react'
-import { Link } from 'react-router-dom'
-import { LineChart, Eye, EyeOff, Check, X, Globe } from 'lucide-react'
+import { Link, useNavigate } from 'react-router-dom'
+import { LineChart, Eye, EyeOff, Check, X, Globe, Info } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 
 import { Button } from '@/components/ui/button'
@@ -22,6 +22,7 @@ export default function RegisterPage() {
   const { t } = useTranslation('auth')
   const { t: tCommon } = useTranslation('common')
   const { locale, setLocale } = useLocale()
+  const navigate = useNavigate()
   const { register, isLoading, error, clearError } = useAuthStore()
 
   const [email, setEmail] = useState('')
@@ -29,6 +30,7 @@ export default function RegisterPage() {
   const [confirmPassword, setConfirmPassword] = useState('')
   const [showPassword, setShowPassword] = useState(false)
   const [validationError, setValidationError] = useState('')
+  const [showPendingNotice, setShowPendingNotice] = useState(false)
 
   const passwordValidation = validatePassword(password)
   const passwordsMatch = password === confirmPassword && password.length > 0
@@ -44,6 +46,7 @@ export default function RegisterPage() {
     e.preventDefault()
     setValidationError('')
     clearError()
+    setShowPendingNotice(false)
 
     if (!email || !password || !confirmPassword) {
       setValidationError(t('validation.fillAllFields'))
@@ -65,7 +68,16 @@ export default function RegisterPage() {
       return
     }
 
-    await register(email, password)
+    const result = await register(email, password)
+
+    // If approval is required, show notice and redirect
+    if (result.requiresApproval) {
+      setShowPendingNotice(true)
+      // Navigate to login after a brief delay so user sees the message
+      setTimeout(() => {
+        navigate('/login')
+      }, 3000)
+    }
   }
 
   const languageOptions: { value: Locale; label: string }[] = [
@@ -112,7 +124,15 @@ export default function RegisterPage() {
         </CardHeader>
         <form onSubmit={handleSubmit}>
           <CardContent className="space-y-4">
-            {(error || validationError) && (
+            {/* Success notice for pending approval */}
+            {showPendingNotice && (
+              <div className="rounded-md bg-amber-100 dark:bg-amber-900/30 p-3 text-sm text-amber-800 dark:text-amber-200 flex items-start gap-2">
+                <Info className="h-4 w-4 mt-0.5 flex-shrink-0" />
+                <span>{t('register.pendingNotice')}</span>
+              </div>
+            )}
+
+            {(error || validationError) && !showPendingNotice && (
               <div className="rounded-md bg-destructive/10 p-3 text-sm text-destructive">
                 {error || validationError}
               </div>

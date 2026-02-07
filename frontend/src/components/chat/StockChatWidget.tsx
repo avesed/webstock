@@ -3,6 +3,7 @@ import { MessageSquare, X } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { chatApi } from '@/api'
 import { getErrorMessage } from '@/api/client'
+import { useLocale } from '@/hooks/useLocale'
 import { StockChatPanel } from './StockChatPanel'
 import type { ChatMessage, ChatStreamEvent, ToolCallStatus } from '@/types'
 
@@ -31,6 +32,7 @@ function generateUUID(): string {
  * with the global Zustand chat store used by the /chat page.
  */
 export function StockChatWidget({ symbol }: StockChatWidgetProps) {
+  const { locale } = useLocale()
   const [isOpen, setIsOpen] = useState(false)
   const [conversationId, setConversationId] = useState<string | null>(null)
   const [messages, setMessages] = useState<ChatMessage[]>([])
@@ -304,12 +306,13 @@ export function StockChatWidget({ symbol }: StockChatWidgetProps) {
         conversationId,
         content,
         symbol,
+        locale,
         onEvent,
         onError,
         onDone,
       )
     },
-    [conversationId, isStreaming, symbol],
+    [conversationId, isStreaming, symbol, locale],
   )
 
   // ---------------------------------------------------------------------------

@@ -6,8 +6,8 @@ from typing import Any, Dict, List
 
 from worker.celery_app import celery_app
 
-# Import shared database configuration from backend
-from app.db.database import AsyncSessionLocal
+# Use Celery-safe database utilities (avoids event loop conflicts)
+from worker.db_utils import get_task_session
 
 logger = logging.getLogger(__name__)
 
@@ -151,7 +151,7 @@ async def _monitor_prices_async() -> Dict[str, Any]:
     }
 
     try:
-        async with AsyncSessionLocal() as db:
+        async with get_task_session() as db:
             # Get all unique symbols with active alerts
             symbols = await get_all_active_alert_symbols(db)
 
@@ -246,7 +246,7 @@ async def _cleanup_alerts_async() -> Dict[str, Any]:
     cutoff_date = datetime.now(timezone.utc) - timedelta(days=30)
 
     try:
-        async with AsyncSessionLocal() as db:
+        async with get_task_session() as db:
             # Delete old triggered alerts
             query = delete(PriceAlert).where(
                 PriceAlert.is_triggered == True,
@@ -303,7 +303,7 @@ async def _cleanup_subscriptions_async() -> Dict[str, Any]:
     cutoff_date = datetime.now(timezone.utc) - timedelta(days=90)
 
     try:
-        async with AsyncSessionLocal() as db:
+        async with get_task_session() as db:
             # Delete old inactive subscriptions
             query = delete(PushSubscription).where(
                 PushSubscription.is_active == False,
