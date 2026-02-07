@@ -4,7 +4,7 @@ import logging
 from typing import Any, Dict, List, Optional
 
 from app.agents.base import AgentType, BaseAgent
-from app.agents.prompts.news_prompt import (
+from app.prompts.analysis.news_prompt import (
     build_news_analysis_prompt,
     get_news_analysis_system_prompt,
 )

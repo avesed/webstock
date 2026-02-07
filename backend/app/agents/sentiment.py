@@ -7,7 +7,7 @@ from typing import Any, Dict, List, Optional
 import pandas as pd
 
 from app.agents.base import AgentType, BaseAgent
-from app.agents.prompts.sentiment_prompt import (
+from app.prompts.analysis.sentiment_prompt import (
     build_sentiment_prompt,
     get_system_prompt,
 )

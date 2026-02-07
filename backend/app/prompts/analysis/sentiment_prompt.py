@@ -219,6 +219,7 @@ def build_sentiment_prompt(
     history_summary: Optional[Dict[str, Any]],
     news: Optional[List[Dict[str, Any]]],
     market_context: Optional[Dict[str, Any]],
+    analyst_ratings: Optional[Dict[str, Any]] = None,
     language: str = "en",
 ) -> str:
     """
@@ -231,6 +232,7 @@ def build_sentiment_prompt(
         history_summary: Summary of price history
         news: Recent news articles (if available)
         market_context: Broader market context data
+        analyst_ratings: Analyst recommendations and price targets
         language: Output language ('en' or 'zh')
 
     Returns:
@@ -292,9 +294,30 @@ def build_sentiment_prompt(
 - **52周最低**: ${history_summary.get('low_52w', '暂无')}
 - **距52周高点**: {_format_percent(history_summary.get('pct_from_high'))}
 - **距52周低点**: {_format_percent(history_summary.get('pct_from_low'))}
+- **Beta系数**: {_format_price(history_summary.get('beta')) if history_summary.get('beta') else '暂无'}
+
+### 技术指标
+#### 移动平均线
+- **SMA 20**: ${_format_price(history_summary.get('sma_20'))} ({_format_percent(history_summary.get('price_vs_sma20'))} vs 现价)
+- **SMA 50**: ${_format_price(history_summary.get('sma_50'))} ({_format_percent(history_summary.get('price_vs_sma50'))} vs 现价)
+- **SMA 200**: ${_format_price(history_summary.get('sma_200'))} ({_format_percent(history_summary.get('price_vs_sma200'))} vs 现价)
+- **均线趋势**: {history_summary.get('ma_trend', '暂无')}
+
+#### RSI
+- **RSI (14)**: {_format_rsi(history_summary.get('rsi_14'), language)}
+
+#### MACD
+- **MACD**: {_format_price(history_summary.get('macd'))}
+- **信号线**: {_format_price(history_summary.get('macd_signal'))}
+- **柱状图**: {_format_price(history_summary.get('macd_histogram'))}
+- **MACD趋势**: {_format_macd_trend(history_summary.get('macd_trend'), language)}
 
 ### 成交量分析
-- **20日平均成交量**: {_format_volume(history_summary.get('avg_volume_20d'))}
+- **当日成交量**: {_format_volume(history_summary.get('recent_prices', [{}])[-1].get('volume') if history_summary.get('recent_prices') else None)}
+- **ADTV (10日)**: {_format_volume(history_summary.get('adtv_10d'))}
+- **ADTV (30日)**: {_format_volume(history_summary.get('adtv_30d'))}
+- **ADTV (3月)**: {_format_volume(history_summary.get('adtv_3m'))}
+- **ADTV (90日)**: {_format_volume(history_summary.get('adtv_90d'))}
 - **成交量 vs 均量**: {_format_volume_ratio(history_summary.get('volume_ratio'), language)}
 - **成交量趋势**: {history_summary.get('volume_trend', '暂无')}
 
@@ -302,6 +325,13 @@ def build_sentiment_prompt(
 - **20日波动率**: {_format_percent(history_summary.get('volatility_20d'))}
 - **波动率排名**: {history_summary.get('volatility_rank', '暂无')}
 """
+            # Add recent price series
+            if history_summary.get('recent_prices'):
+                momentum_text += "\n### 近期价格走势\n"
+                momentum_text += "| 日期 | 开盘 | 最高 | 最低 | 收盘 | 成交量 |\n"
+                momentum_text += "|------|------|------|------|------|--------|\n"
+                for p in history_summary['recent_prices']:
+                    momentum_text += f"| {p['date']} | ${p['open']:.2f} | ${p['high']:.2f} | ${p['low']:.2f} | ${p['close']:.2f} | {_format_volume(p['volume'])} |\n"
         else:
             momentum_text = f"""
 ## Price Momentum Analysis
@@ -318,9 +348,30 @@ def build_sentiment_prompt(
 - **52-Week Low**: ${history_summary.get('low_52w', 'N/A')}
 - **Distance from 52W High**: {_format_percent(history_summary.get('pct_from_high'))}
 - **Distance from 52W Low**: {_format_percent(history_summary.get('pct_from_low'))}
+- **Beta**: {_format_price(history_summary.get('beta')) if history_summary.get('beta') else 'N/A'}
+
+### Technical Indicators
+#### Moving Averages
+- **SMA 20**: ${_format_price(history_summary.get('sma_20'))} ({_format_percent(history_summary.get('price_vs_sma20'))} vs current)
+- **SMA 50**: ${_format_price(history_summary.get('sma_50'))} ({_format_percent(history_summary.get('price_vs_sma50'))} vs current)
+- **SMA 200**: ${_format_price(history_summary.get('sma_200'))} ({_format_percent(history_summary.get('price_vs_sma200'))} vs current)
+- **MA Trend**: {history_summary.get('ma_trend', 'N/A')}
+
+#### RSI
+- **RSI (14)**: {_format_rsi(history_summary.get('rsi_14'), language)}
+
+#### MACD
+- **MACD**: {_format_price(history_summary.get('macd'))}
+- **Signal**: {_format_price(history_summary.get('macd_signal'))}
+- **Histogram**: {_format_price(history_summary.get('macd_histogram'))}
+- **MACD Trend**: {_format_macd_trend(history_summary.get('macd_trend'), language)}
 
 ### Volume Analysis
-- **Average Volume (20d)**: {_format_volume(history_summary.get('avg_volume_20d'))}
+- **Today's Volume**: {_format_volume(history_summary.get('recent_prices', [{}])[-1].get('volume') if history_summary.get('recent_prices') else None)}
+- **ADTV (10d)**: {_format_volume(history_summary.get('adtv_10d'))}
+- **ADTV (30d)**: {_format_volume(history_summary.get('adtv_30d'))}
+- **ADTV (3m)**: {_format_volume(history_summary.get('adtv_3m'))}
+- **ADTV (90d)**: {_format_volume(history_summary.get('adtv_90d'))}
 - **Volume vs Average**: {_format_volume_ratio(history_summary.get('volume_ratio'), language)}
 - **Volume Trend**: {history_summary.get('volume_trend', 'N/A')}
 
@@ -328,7 +379,20 @@ def build_sentiment_prompt(
 - **20-Day Volatility**: {_format_percent(history_summary.get('volatility_20d'))}
 - **Volatility Rank**: {history_summary.get('volatility_rank', 'N/A')}
 """
+            # Add recent price series
+            if history_summary.get('recent_prices'):
+                momentum_text += "\n### Recent Price Series\n"
+                momentum_text += "| Date | Open | High | Low | Close | Volume |\n"
+                momentum_text += "|------|------|------|-----|-------|--------|\n"
+                for p in history_summary['recent_prices']:
+                    momentum_text += f"| {p['date']} | ${p['open']:.2f} | ${p['high']:.2f} | ${p['low']:.2f} | ${p['close']:.2f} | {_format_volume(p['volume'])} |\n"
         data_sections.append(momentum_text)
+
+    # Analyst Ratings Section
+    if analyst_ratings:
+        analyst_text = _build_analyst_ratings_section(analyst_ratings, language)
+        if analyst_text:
+            data_sections.append(analyst_text)
 
     # News Section
     if news and len(news) > 0:
@@ -369,35 +433,9 @@ No recent news available for analysis. Sentiment will be assessed primarily base
 
     # Market Context Section
     if market_context:
-        if language == "zh":
-            context_text = f"""
-## 市场背景
-### 大盘情况
-- **指数涨跌**: {_format_percent(market_context.get('index_change'))}
-- **市场趋势**: {market_context.get('market_trend', '暂无')}
-- **板块表现**: {_format_percent(market_context.get('sector_change'))}
-- **板块趋势**: {market_context.get('sector_trend', '暂无')}
-
-### 相对表现
-- **相对大盘**: {_format_percent(market_context.get('vs_market'))}
-- **相对板块**: {_format_percent(market_context.get('vs_sector'))}
-- **相对强度**: {market_context.get('relative_strength', '暂无')}
-"""
-        else:
-            context_text = f"""
-## Market Context
-### Broader Market
-- **Market Index Change**: {_format_percent(market_context.get('index_change'))}
-- **Market Trend**: {market_context.get('market_trend', 'N/A')}
-- **Sector Performance**: {_format_percent(market_context.get('sector_change'))}
-- **Sector Trend**: {market_context.get('sector_trend', 'N/A')}
-
-### Relative Performance
-- **vs Market**: {_format_percent(market_context.get('vs_market'))}
-- **vs Sector**: {_format_percent(market_context.get('vs_sector'))}
-- **Relative Strength**: {market_context.get('relative_strength', 'N/A')}
-"""
-        data_sections.append(context_text)
+        context_text = _build_market_context_section(market_context, market, language)
+        if context_text:
+            data_sections.append(context_text)
 
     # Combine all sections
     data_content = "\n".join(data_sections) if data_sections else ("数据有限。" if language == "zh" else "Limited data available.")
@@ -460,6 +498,161 @@ def get_system_prompt(market: str, language: str = "en") -> str:
     return system_prompt.format(market_context=market_context)
 
 
+def _build_market_context_section(
+    market_context: Dict[str, Any],
+    market: str,
+    language: str
+) -> str:
+    """Build the market context section with real index and northbound data."""
+    sections = []
+
+    if language == "zh":
+        # Major Indices
+        indices_text = "## 市场背景\n### 主要指数\n"
+        indices_added = False
+
+        # S&P 500
+        sp500 = market_context.get("sp500")
+        if sp500 and isinstance(sp500, dict):
+            change = sp500.get("change_pct")
+            indices_text += f"- **标普500**: {sp500.get('latest_close', 'N/A')} ({_format_percent(change)})\n"
+            indices_added = True
+
+        # Hang Seng
+        hang_seng = market_context.get("hang_seng")
+        if hang_seng and isinstance(hang_seng, dict):
+            change = hang_seng.get("change_pct")
+            indices_text += f"- **恒生指数**: {hang_seng.get('latest_close', 'N/A')} ({_format_percent(change)})\n"
+            indices_added = True
+
+        # Shanghai Composite
+        shanghai = market_context.get("shanghai_composite")
+        if shanghai and isinstance(shanghai, dict):
+            change = shanghai.get("change_pct")
+            indices_text += f"- **上证综指**: {shanghai.get('latest_close', 'N/A')} ({_format_percent(change)})\n"
+            indices_added = True
+
+        # Shenzhen Component
+        shenzhen = market_context.get("shenzhen_component")
+        if shenzhen and isinstance(shenzhen, dict):
+            change = shenzhen.get("change_pct")
+            indices_text += f"- **深证成指**: {shenzhen.get('latest_close', 'N/A')} ({_format_percent(change)})\n"
+            indices_added = True
+
+        if indices_added:
+            sections.append(indices_text)
+
+        # Northbound Capital Flow (for A-shares)
+        northbound_summary = market_context.get("northbound_summary")
+        if northbound_summary and isinstance(northbound_summary, dict):
+            nb_text = "### 北向资金\n"
+            nb_text += f"- **最新日期**: {northbound_summary.get('latest_date', '暂无')}\n"
+            nb_text += f"- **当日净买入**: {_format_billion(northbound_summary.get('latest_net_buy'))}亿元\n"
+            nb_text += f"- **近5日净买入**: {_format_billion(northbound_summary.get('last_5d_net_buy'))}亿元\n"
+            nb_text += f"- **累计净买入**: {_format_billion(northbound_summary.get('cumulative_net_buy'))}亿元\n"
+            if northbound_summary.get("data_cutoff_notice"):
+                nb_text += f"- **数据提示**: {northbound_summary.get('data_cutoff_notice')}\n"
+            sections.append(nb_text)
+
+        # Individual Stock Northbound Holding (for A-shares)
+        stock_holding = market_context.get("northbound_stock_holding")
+        if stock_holding and isinstance(stock_holding, dict):
+            latest = stock_holding.get("latest_holding")
+            if latest and isinstance(latest, dict):
+                sh_text = "### 个股北向持仓\n"
+                sh_text += f"- **持股日期**: {latest.get('holding_date', '暂无')}\n"
+                sh_text += f"- **持股数量**: {_format_shares(latest.get('holding_shares'))}股\n"
+                sh_text += f"- **持股市值**: {_format_billion(latest.get('holding_value') / 100000000 if latest.get('holding_value') else None)}亿元\n"
+                sh_text += f"- **占A股比例**: {_format_percent(latest.get('holding_pct'))}\n"
+                if latest.get("change_shares") is not None:
+                    change = latest.get("change_shares")
+                    sh_text += f"- **今日增持**: {'+' if change > 0 else ''}{_format_shares(change)}股\n"
+                if stock_holding.get("data_cutoff_notice"):
+                    sh_text += f"- **数据提示**: {stock_holding.get('data_cutoff_notice')}\n"
+                sections.append(sh_text)
+
+    else:
+        # English version
+        indices_text = "## Market Context\n### Major Indices\n"
+        indices_added = False
+
+        sp500 = market_context.get("sp500")
+        if sp500 and isinstance(sp500, dict):
+            change = sp500.get("change_pct")
+            indices_text += f"- **S&P 500**: {sp500.get('latest_close', 'N/A')} ({_format_percent(change)})\n"
+            indices_added = True
+
+        hang_seng = market_context.get("hang_seng")
+        if hang_seng and isinstance(hang_seng, dict):
+            change = hang_seng.get("change_pct")
+            indices_text += f"- **Hang Seng**: {hang_seng.get('latest_close', 'N/A')} ({_format_percent(change)})\n"
+            indices_added = True
+
+        shanghai = market_context.get("shanghai_composite")
+        if shanghai and isinstance(shanghai, dict):
+            change = shanghai.get("change_pct")
+            indices_text += f"- **Shanghai Composite**: {shanghai.get('latest_close', 'N/A')} ({_format_percent(change)})\n"
+            indices_added = True
+
+        shenzhen = market_context.get("shenzhen_component")
+        if shenzhen and isinstance(shenzhen, dict):
+            change = shenzhen.get("change_pct")
+            indices_text += f"- **Shenzhen Component**: {shenzhen.get('latest_close', 'N/A')} ({_format_percent(change)})\n"
+            indices_added = True
+
+        if indices_added:
+            sections.append(indices_text)
+
+        # Northbound Capital Flow
+        northbound_summary = market_context.get("northbound_summary")
+        if northbound_summary and isinstance(northbound_summary, dict):
+            nb_text = "### Northbound Capital Flow\n"
+            nb_text += f"- **Latest Date**: {northbound_summary.get('latest_date', 'N/A')}\n"
+            nb_text += f"- **Daily Net Buy**: {_format_billion(northbound_summary.get('latest_net_buy'))} billion CNY\n"
+            nb_text += f"- **5-Day Net Buy**: {_format_billion(northbound_summary.get('last_5d_net_buy'))} billion CNY\n"
+            nb_text += f"- **Cumulative Net Buy**: {_format_billion(northbound_summary.get('cumulative_net_buy'))} billion CNY\n"
+            if northbound_summary.get("data_cutoff_notice"):
+                nb_text += f"- **Data Notice**: {northbound_summary.get('data_cutoff_notice')}\n"
+            sections.append(nb_text)
+
+        # Individual Stock Northbound Holding
+        stock_holding = market_context.get("northbound_stock_holding")
+        if stock_holding and isinstance(stock_holding, dict):
+            latest = stock_holding.get("latest_holding")
+            if latest and isinstance(latest, dict):
+                sh_text = "### Stock Northbound Holding\n"
+                sh_text += f"- **Holding Date**: {latest.get('holding_date', 'N/A')}\n"
+                sh_text += f"- **Shares Held**: {_format_shares(latest.get('holding_shares'))}\n"
+                sh_text += f"- **Holding Value**: {_format_billion(latest.get('holding_value') / 100000000 if latest.get('holding_value') else None)} billion CNY\n"
+                sh_text += f"- **% of A-shares**: {_format_percent(latest.get('holding_pct'))}\n"
+                if latest.get("change_shares") is not None:
+                    change = latest.get("change_shares")
+                    sh_text += f"- **Today's Change**: {'+' if change > 0 else ''}{_format_shares(change)} shares\n"
+                if stock_holding.get("data_cutoff_notice"):
+                    sh_text += f"- **Data Notice**: {stock_holding.get('data_cutoff_notice')}\n"
+                sections.append(sh_text)
+
+    return "\n".join(sections) if sections else ""
+
+
+def _format_billion(value: Optional[float]) -> str:
+    """Format a value in billions."""
+    if value is None:
+        return "N/A"
+    return f"{value:.2f}"
+
+
+def _format_shares(value: Optional[float]) -> str:
+    """Format share count for display."""
+    if value is None:
+        return "N/A"
+    if abs(value) >= 1e8:
+        return f"{value / 1e8:.2f}亿"
+    if abs(value) >= 1e4:
+        return f"{value / 1e4:.2f}万"
+    return f"{value:.0f}"
+
+
 def _format_volume(value: Optional[int]) -> str:
     """Format volume for display."""
     if value is None:
@@ -500,3 +693,113 @@ def _format_volume_ratio(ratio: Optional[float], language: str = "en") -> str:
         if ratio < 0.5:
             return f"{ratio:.2f}x (Low)"
         return f"{ratio:.2f}x (Normal)"
+
+
+def _format_price(value: Optional[float]) -> str:
+    """Format a price for display."""
+    if value is None:
+        return "N/A"
+    return f"{value:.2f}"
+
+
+def _format_rsi(value: Optional[float], language: str = "en") -> str:
+    """Format RSI with zone interpretation."""
+    if value is None:
+        return "N/A"
+    if language == "zh":
+        if value >= 70:
+            return f"{value:.1f} (超买)"
+        if value <= 30:
+            return f"{value:.1f} (超卖)"
+        if value >= 60:
+            return f"{value:.1f} (偏强)"
+        if value <= 40:
+            return f"{value:.1f} (偏弱)"
+        return f"{value:.1f} (中性)"
+    else:
+        if value >= 70:
+            return f"{value:.1f} (Overbought)"
+        if value <= 30:
+            return f"{value:.1f} (Oversold)"
+        if value >= 60:
+            return f"{value:.1f} (Strong)"
+        if value <= 40:
+            return f"{value:.1f} (Weak)"
+        return f"{value:.1f} (Neutral)"
+
+
+def _format_macd_trend(trend: Optional[str], language: str = "en") -> str:
+    """Format MACD trend with translation."""
+    if trend is None:
+        return "N/A"
+    if language == "zh":
+        translations = {
+            "Bullish": "看多",
+            "Bearish": "看空",
+            "Neutral": "中性",
+            "Bullish Crossover": "金叉（看多信号）",
+            "Bearish Crossover": "死叉（看空信号）",
+        }
+        return translations.get(trend, trend)
+    return trend
+
+
+def _build_analyst_ratings_section(
+    analyst_ratings: Dict[str, Any],
+    language: str = "en",
+) -> str:
+    """Build the analyst ratings section."""
+    if not analyst_ratings:
+        return ""
+
+    recommendation = analyst_ratings.get("recommendation")
+    target_mean = analyst_ratings.get("target_mean_price")
+    num_analysts = analyst_ratings.get("number_of_analysts")
+    upside = analyst_ratings.get("upside_pct")
+
+    # If no meaningful data, skip
+    if not recommendation and not target_mean:
+        return ""
+
+    if language == "zh":
+        # Translate recommendation
+        rec_map = {
+            "strong_buy": "强烈买入",
+            "buy": "买入",
+            "hold": "持有",
+            "sell": "卖出",
+            "strong_sell": "强烈卖出",
+        }
+        rec_zh = rec_map.get(recommendation, recommendation or "暂无")
+
+        text = f"""
+## 分析师评级
+- **综合评级**: {rec_zh}
+- **分析师数量**: {num_analysts or '暂无'}
+- **目标价（均值）**: ${_format_price(target_mean)}
+- **目标价（最高）**: ${_format_price(analyst_ratings.get('target_high_price'))}
+- **目标价（最低）**: ${_format_price(analyst_ratings.get('target_low_price'))}
+- **潜在涨幅**: {_format_percent(upside) if upside is not None else 'N/A'}
+"""
+    else:
+        # Format recommendation
+        rec_map = {
+            "strong_buy": "Strong Buy",
+            "buy": "Buy",
+            "hold": "Hold",
+            "sell": "Sell",
+            "strong_sell": "Strong Sell",
+        }
+        rec_en = rec_map.get(recommendation, recommendation or "N/A")
+
+        text = f"""
+## Analyst Ratings
+- **Recommendation**: {rec_en}
+- **Number of Analysts**: {num_analysts or 'N/A'}
+- **Target Price (Mean)**: ${_format_price(target_mean)}
+- **Target Price (High)**: ${_format_price(analyst_ratings.get('target_high_price'))}
+- **Target Price (Low)**: ${_format_price(analyst_ratings.get('target_low_price'))}
+- **Upside Potential**: {_format_percent(upside) if upside is not None else 'N/A'}
+"""
+
+    return text

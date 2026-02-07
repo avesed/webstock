@@ -7,7 +7,7 @@ from typing import Any, Dict, List, Optional
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.agents.prompts.sanitizer import sanitize_input, sanitize_symbol
+from app.prompts.analysis.sanitizer import sanitize_input, sanitize_symbol
 
 logger = logging.getLogger(__name__)
 
@@ -138,8 +138,9 @@ CHAT_TOOLS: List[Dict[str, Any]] = [
         "function": {
             "name": "get_news",
             "description": (
-                "Get recent news articles for a stock, including sentiment. "
-                "Use when the user asks about news or events."
+                "Get news for a stock from two sources: (1) realtime API headlines "
+                "with sentiment, (2) embedded full-content articles from knowledge base. "
+                "Use when the user asks about news, events, or wants detailed coverage."
             ),
             "parameters": {
                 "type": "object",
@@ -382,19 +383,67 @@ async def _dispatch_tool(
     elif tool_name == "get_news":
         symbol = sanitize_symbol(arguments.get("symbol"))
         from app.services.news_service import get_news_service
-        service = await get_news_service()
-        articles = await service.get_news_by_symbol(symbol)
-        # Limit to 5 articles, only key fields
+        from app.services.embedding_service import get_embedding_service
+        from app.services.rag_service import get_rag_service
+
+        news_service = await get_news_service()
+        embedding_service = get_embedding_service()
+        rag_service = get_rag_service()
+
+        # Parallel fetch: realtime news + embedding generation
+        realtime_task = news_service.get_news_by_symbol(symbol)
+        embedding_task = embedding_service.generate_embedding(
+            f"latest news about {symbol} stock"
+        )
+
+        articles, query_embedding = await asyncio.gather(
+            realtime_task, embedding_task, return_exceptions=True
+        )
+
+        # Handle exceptions from gather
+        if isinstance(articles, Exception):
+            logger.warning("Failed to fetch realtime news for %s: %s", symbol, articles)
+            articles = []
+        if isinstance(query_embedding, Exception):
+            logger.warning("Failed to generate embedding for %s: %s", symbol, query_embedding)
+            query_embedding = None
+
+        # Build result list
         trimmed = []
-        for a in articles[:5]:
+
+        # Add realtime news (limit to 4 to leave room for RAG)
+        for a in (articles or [])[:4]:
             trimmed.append({
-                "title": (a.get("title") or "")[:200],
+                "title": (a.get("title") or "")[:150],
                 "source": a.get("source"),
                 "published_at": a.get("published_at"),
-                "summary": (a.get("summary") or "")[:200],
+                "summary": (a.get("summary") or "")[:150],
                 "sentiment_score": a.get("sentiment_score"),
+                "type": "realtime",
             })
-        return trimmed or {"info": f"No recent news found for {symbol}"}
+
+        # Query RAG for embedded news full content
+        if query_embedding:
+            try:
+                rag_results = await rag_service.vector_search_only(
+                    db=db,
+                    query_embedding=query_embedding,
+                    symbol=symbol,
+                    source_type="news",
+                    top_k=2,
+                )
+                for r in rag_results:
+                    trimmed.append({
+                        "title": "深度内容",
+                        "source": "knowledge_base",
+                        "text": r.chunk_text[:200],
+                        "score": round(r.score, 3),
+                        "type": "full_content",
+                    })
+            except Exception as e:
+                logger.warning("RAG search failed for %s: %s", symbol, e)
+
+        return trimmed or {"info": f"No news found for {symbol}"}
 
     elif tool_name == "get_portfolio":
         from sqlalchemy import select

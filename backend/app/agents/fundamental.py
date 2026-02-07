@@ -4,7 +4,7 @@ import logging
 from typing import Any, Dict, Optional
 
 from app.agents.base import AgentType, BaseAgent
-from app.agents.prompts.fundamental_prompt import (
+from app.prompts.analysis.fundamental_prompt import (
     build_fundamental_prompt,
     get_system_prompt,
 )

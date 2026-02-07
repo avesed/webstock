@@ -78,6 +78,12 @@ def sanitize_symbol(symbol: Optional[str]) -> str:
     """
     Sanitize stock symbol input.
 
+    Supports various symbol formats:
+    - US stocks: AAPL, MSFT
+    - HK stocks: 0700.HK, 9988.HK
+    - A-shares: 600519.SS, 000001.SZ
+    - Precious metals futures: GC=F (Gold), SI=F (Silver), PL=F, PA=F
+
     Args:
         symbol: The stock symbol to sanitize
 
@@ -90,8 +96,9 @@ def sanitize_symbol(symbol: Optional[str]) -> str:
     # Convert to string and uppercase
     symbol = str(symbol).strip().upper()
 
-    # Remove any characters that aren't alphanumeric, dots, or hyphens
-    symbol = re.sub(r"[^A-Z0-9.\-]", "", symbol)
+    # Remove any characters that aren't alphanumeric, dots, hyphens, or equals
+    # The '=' is needed for futures symbols like GC=F, SI=F
+    symbol = re.sub(r"[^A-Z0-9.\-=]", "", symbol)
 
     # Truncate to max symbol length
     if len(symbol) > MAX_SYMBOL_LENGTH:
@@ -117,7 +124,8 @@ def sanitize_market(market: Optional[str]) -> str:
     market = str(market).strip().lower()
 
     # Only allow known market identifiers
-    valid_markets = {"us", "hk", "sh", "sz"}
+    # Includes 'metal' for precious metals futures (GC=F, SI=F, etc.)
+    valid_markets = {"us", "hk", "sh", "sz", "metal"}
     if market not in valid_markets:
         return "us"
 
