@@ -266,66 +266,88 @@ class AgentOrchestrator:
         total_tokens = 0
         start_time = time.time()
 
-        # Create streaming tasks for each agent
-        async def stream_agent(agent_type: AgentType):
-            """Stream from a single agent and yield formatted events."""
+        # Queue for collecting events from parallel agents
+        event_queue: asyncio.Queue[str] = asyncio.Queue()
+
+        async def stream_agent_to_queue(agent_type: AgentType):
+            """Stream from a single agent and put events into queue."""
             if agent_type not in self._agents:
                 return
 
-            agent = self._agents[agent_type]
-            full_content = ""
-
-            async for chunk in agent.analyze_stream(symbol, market, language):
-                if chunk.error:
-                    yield self._format_sse_event({
-                        "type": "agent_error",
-                        "agent": agent_type.value,
-                        "error": chunk.error,
-                        "timestamp": time.time(),
-                    })
-                    return
-
-                if not chunk.is_complete:
-                    full_content += chunk.content
-                    yield self._format_sse_event({
-                        "type": "agent_chunk",
-                        "agent": agent_type.value,
-                        "content": chunk.content,
-                        "timestamp": time.time(),
-                    })
-                else:
-                    # Agent complete
-                    yield self._format_sse_event({
-                        "type": "agent_complete",
-                        "agent": agent_type.value,
-                        "structured_data": chunk.structured_data,
-                        "timestamp": time.time(),
-                    })
-
-        # Run agents sequentially for cleaner streaming output
-        # (parallel streaming can be complex to manage in SSE)
-        for agent_type in agent_types:
             # Announce agent start
-            yield self._format_sse_event({
+            await event_queue.put(self._format_sse_event({
                 "type": "agent_start",
                 "agent": agent_type.value,
                 "timestamp": time.time(),
-            })
+            }))
 
-            # Stream agent output
             try:
-                async for event in stream_agent(agent_type):
-                    yield event
-                completed.add(agent_type)
+                agent = self._agents[agent_type]
+
+                async for chunk in agent.analyze_stream(symbol, market, language):
+                    if chunk.error:
+                        await event_queue.put(self._format_sse_event({
+                            "type": "agent_error",
+                            "agent": agent_type.value,
+                            "error": chunk.error,
+                            "timestamp": time.time(),
+                        }))
+                        return
+
+                    if not chunk.is_complete:
+                        await event_queue.put(self._format_sse_event({
+                            "type": "agent_chunk",
+                            "agent": agent_type.value,
+                            "content": chunk.content,
+                            "timestamp": time.time(),
+                        }))
+                    else:
+                        # Agent complete
+                        await event_queue.put(self._format_sse_event({
+                            "type": "agent_complete",
+                            "agent": agent_type.value,
+                            "structured_data": chunk.structured_data,
+                            "timestamp": time.time(),
+                        }))
+                        completed.add(agent_type)
+
             except Exception as e:
                 logger.error(f"Error streaming {agent_type.value}: {e}")
-                # Return generic error message to client, detailed error is logged
-                yield self._format_sse_event({
+                await event_queue.put(self._format_sse_event({
                     "type": "agent_error",
                     "agent": agent_type.value,
                     "error": "Analysis failed. Please try again later.",
                     "timestamp": time.time(),
-                })
+                }))
+
+        # Run all agents in parallel
+        tasks = [asyncio.create_task(stream_agent_to_queue(at)) for at in agent_types]
+
+        # Yield events as they arrive until all tasks complete
+        pending_tasks = set(tasks)
+        while pending_tasks:
+            # Wait for either an event or a task to complete
+            done, pending_tasks = await asyncio.wait(
+                pending_tasks,
+                timeout=0.1,  # Check queue every 100ms
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+
+            # Yield all available events from queue
+            while not event_queue.empty():
+                try:
+                    event = event_queue.get_nowait()
+                    yield event
+                except asyncio.QueueEmpty:
+                    break
+
+        # Drain any remaining events after all tasks complete
+        while not event_queue.empty():
+            try:
+                event = event_queue.get_nowait()
+                yield event
+            except asyncio.QueueEmpty:
+                break
 
         # Send completion event
         yield self._format_sse_event({

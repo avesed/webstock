@@ -130,6 +130,14 @@
     "news": "新闻",
     "analysis": "AI 分析",
     "overview": "概览",
+    "traditional": "传统信息",
+    "info": "信息",
+    "aiTab": "AI",
+    "tabs": {
+      "chat": "聊天",
+      "extension": "扩展功能"
+    },
+    "extensionComingSoon": "高级 AI 功能即将推出，敬请期待投资组合优化、风险分析等更多功能。",
     "price": "价格",
     "change": "涨跌",
     "open": "开盘",

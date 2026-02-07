@@ -3,6 +3,7 @@ uvicorn>=0.27.0
 yfinance>=0.2.36
 akshare>=1.12.0
 tushare>=1.2.89
+tiingo>=0.16.0
 finnhub-python>=2.4.0
 pandas>=2.0.0,<3.0.0
 ta>=0.11.0

@@ -130,6 +130,14 @@
     "news": "News",
     "analysis": "AI Analysis",
     "overview": "Overview",
+    "traditional": "Traditional",
+    "info": "Info",
+    "aiTab": "AI",
+    "tabs": {
+      "chat": "Chat",
+      "extension": "Extensions"
+    },
+    "extensionComingSoon": "Advanced AI features coming soon. Stay tuned for portfolio optimization, risk analysis, and more.",
     "price": "Price",
     "change": "Change",
     "open": "Open",

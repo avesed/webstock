@@ -60,6 +60,7 @@ class DataSource(str, Enum):
     YFINANCE = "yfinance"
     AKSHARE = "akshare"
     TUSHARE = "tushare"
+    TIINGO = "tiingo"
 
 
 class HistoryInterval(str, Enum):
@@ -439,7 +440,13 @@ async def run_in_executor(func: Callable, *args, **kwargs) -> Any:
 
 
 class YFinanceProvider:
-    """YFinance data provider for US stocks and fallback."""
+    """YFinance data provider for US stocks and fallback.
+
+    DEPRECATED: This class is deprecated and will be removed in a future version.
+    Use the new providers package instead:
+
+        from app.services.providers import YFinanceProvider
+    """
 
     @staticmethod
     async def get_quote(symbol: str, market: Market) -> Optional[StockQuote]:
@@ -579,8 +586,12 @@ class YFinanceProvider:
                 return None
 
             # If dividendYield is None but payoutRatio is 0, the stock pays no dividends
+            # yfinance returns dividendYield as percentage (0.37 = 0.37%)
+            # Normalize to decimal format (0.0037) for consistency with other metrics
             dividend_yield = info.get("dividendYield")
-            if dividend_yield is None and info.get("payoutRatio") == 0:
+            if dividend_yield is not None:
+                dividend_yield = dividend_yield / 100  # Convert 0.37 -> 0.0037
+            elif info.get("payoutRatio") == 0:
                 dividend_yield = 0.0
 
             dividend_rate = info.get("dividendRate")
@@ -652,7 +663,13 @@ class YFinanceProvider:
 
 
 class AKShareProvider:
-    """AKShare data provider for A-shares and HK stocks."""
+    """AKShare data provider for A-shares and HK stocks.
+
+    DEPRECATED: This class is deprecated and will be removed in a future version.
+    Use the new providers package instead:
+
+        from app.services.providers import AKShareProvider
+    """
 
     @staticmethod
     async def get_quote_cn(symbol: str, market: Market) -> Optional[StockQuote]:
@@ -1145,7 +1162,13 @@ class AKShareProvider:
 
 
 class TushareProvider:
-    """Tushare data provider for A-shares (fallback)."""
+    """Tushare data provider for A-shares (fallback).
+
+    DEPRECATED: This class is deprecated and will be removed in a future version.
+    Use the new providers package instead:
+
+        from app.services.providers import TushareProvider
+    """
 
     _token: Optional[str] = None
 
@@ -1212,20 +1235,31 @@ class StockService:
     """
     Multi-source stock data service.
 
+    Uses ProviderRouter for automatic provider selection and fallback.
+
     Data source strategy:
     - US stocks: yfinance (primary)
     - HK stocks: AKShare (primary), yfinance (fallback)
-    - A-shares: AKShare (primary), Tushare (fallback, requires API key)
+    - A-shares: AKShare (primary), Tushare (fallback), yfinance (fallback)
+    - Precious metals: yfinance only
     """
 
     def __init__(self, aggregator: Optional[DataAggregator] = None):
         self._aggregator = aggregator
+        self._router = None
 
     async def _get_aggregator(self) -> DataAggregator:
         """Get data aggregator, initialize if needed."""
         if self._aggregator is None:
             self._aggregator = await get_data_aggregator()
         return self._aggregator
+
+    async def _get_router(self):
+        """Get provider router, initialize if needed."""
+        if self._router is None:
+            from app.services.providers import get_provider_router
+            self._router = await get_provider_router()
+        return self._router
 
     async def get_quote(
         self,
@@ -1244,31 +1278,10 @@ class StockService:
         """
         market = detect_market(symbol)
         aggregator = await self._get_aggregator()
+        router = await self._get_router()
 
         async def fetch_quote() -> Optional[Dict[str, Any]]:
-            quote: Optional[StockQuote] = None
-
-            if market == Market.US or market == Market.METAL:
-                # US stocks and precious metals: yfinance only
-                quote = await YFinanceProvider.get_quote(symbol, market)
-
-            elif market == Market.HK:
-                # HK: AKShare primary, yfinance fallback
-                quote = await AKShareProvider.get_quote_hk(symbol)
-                if quote is None:
-                    logger.info(f"HK fallback to yfinance for {symbol}")
-                    quote = await YFinanceProvider.get_quote(symbol, market)
-
-            else:
-                # A-shares: AKShare primary, Tushare fallback, yfinance fallback
-                quote = await AKShareProvider.get_quote_cn(symbol, market)
-                if quote is None and TushareProvider.is_available():
-                    logger.info(f"CN fallback to Tushare for {symbol}")
-                    quote = await TushareProvider.get_quote(symbol, market)
-                if quote is None:
-                    logger.info(f"CN fallback to yfinance for {symbol} quote")
-                    quote = await YFinanceProvider.get_quote(symbol, market)
-
+            quote = await router.get_quote(symbol, market)
             return quote.to_dict() if quote else None
 
         return await aggregator.get_data(
@@ -1299,32 +1312,13 @@ class StockService:
         """
         market = detect_market(symbol)
         aggregator = await self._get_aggregator()
+        router = await self._get_router()
 
         # Build params hash for cache key uniqueness
         params_hash = hashlib.md5(f"{period.value}:{interval.value}".encode()).hexdigest()[:8]
 
         async def fetch_history() -> Optional[Dict[str, Any]]:
-            history: Optional[StockHistory] = None
-
-            if market == Market.US or market == Market.METAL:
-                # US stocks and precious metals both use yfinance
-                history = await YFinanceProvider.get_history(symbol, market, period, interval)
-
-            elif market == Market.HK:
-                history = await AKShareProvider.get_history_hk(symbol, period, interval)
-                if history is None:
-                    logger.info(f"HK fallback to yfinance for {symbol} history")
-                    history = await YFinanceProvider.get_history(symbol, market, period, interval)
-
-            else:
-                # CN/A-shares: SH and SZ markets
-                history = await AKShareProvider.get_history_cn(symbol, market, period, interval)
-                if history is None:
-                    logger.info(f"CN fallback to yfinance for {symbol} history")
-                    # yfinance for CN uses different symbol format
-                    yf_symbol = f"{normalize_symbol(symbol, market)}.{'SS' if market == Market.SH else 'SZ'}"
-                    history = await YFinanceProvider.get_history(yf_symbol, market, period, interval)
-
+            history = await router.get_history(symbol, period, interval, market)
             return history.to_dict() if history else None
 
         return await aggregator.get_data(
@@ -1352,10 +1346,9 @@ class StockService:
         """
         market = detect_market(symbol)
         aggregator = await self._get_aggregator()
+        router = await self._get_router()
 
         async def fetch_info() -> Optional[Dict[str, Any]]:
-            info: Optional[StockInfo] = None
-
             # Handle precious metals with static metadata
             if market == Market.METAL:
                 metal_info = PRECIOUS_METALS.get(symbol.upper())
@@ -1379,20 +1372,7 @@ class StockService:
                     }
                 return None
 
-            if market == Market.US:
-                info = await YFinanceProvider.get_info(symbol, market)
-
-            elif market == Market.HK:
-                # HK: Try yfinance first (better English info)
-                info = await YFinanceProvider.get_info(symbol, market)
-
-            else:
-                info = await AKShareProvider.get_info_cn(symbol, market)
-                if info is None:
-                    logger.info(f"CN fallback to yfinance for {symbol} info")
-                    yf_symbol = f"{normalize_symbol(symbol, market)}.{'SS' if market == Market.SH else 'SZ'}"
-                    info = await YFinanceProvider.get_info(yf_symbol, market)
-
+            info = await router.get_info(symbol, market)
             return info.to_dict() if info else None
 
         return await aggregator.get_data(
@@ -1426,23 +1406,10 @@ class StockService:
             return None
 
         aggregator = await self._get_aggregator()
+        router = await self._get_router()
 
         async def fetch_financials() -> Optional[Dict[str, Any]]:
-            financials: Optional[StockFinancials] = None
-
-            if market == Market.US:
-                financials = await YFinanceProvider.get_financials(symbol, market)
-
-            elif market == Market.HK:
-                financials = await YFinanceProvider.get_financials(symbol, market)
-
-            else:
-                financials = await AKShareProvider.get_financials_cn(symbol, market)
-                if financials is None:
-                    logger.info(f"CN fallback to yfinance for {symbol} financials")
-                    yf_symbol = f"{normalize_symbol(symbol, market)}.{'SS' if market == Market.SH else 'SZ'}"
-                    financials = await YFinanceProvider.get_financials(yf_symbol, market)
-
+            financials = await router.get_financials(symbol, market)
             return financials.to_dict() if financials else None
 
         return await aggregator.get_data(
@@ -1474,49 +1441,16 @@ class StockService:
             markets = [Market.US, Market.HK, Market.SH, Market.SZ, Market.METAL]
 
         aggregator = await self._get_aggregator()
+        router = await self._get_router()
 
         # Use cache for search results
         cache_key = hashlib.md5(f"{query}:{','.join(m.value for m in markets)}".encode()).hexdigest()[:12]
 
         async def fetch_search() -> List[Dict[str, Any]]:
-            results: List[SearchResult] = []
-            tasks = []
-
-            # Search precious metals FIRST if METAL market is included
-            # This ensures metals have priority in deduplication
-            if Market.METAL in markets:
-                metal_results = search_metals(query)
-                results.extend(metal_results)
-
-            if Market.US in markets:
-                tasks.append(YFinanceProvider.search(query))
-
-            if Market.HK in markets:
-                tasks.append(AKShareProvider.search_hk(query))
-
-            if Market.SH in markets or Market.SZ in markets:
-                tasks.append(AKShareProvider.search_cn(query))
-
-            all_results = await asyncio.gather(*tasks, return_exceptions=True)
-
-            for result in all_results:
-                if isinstance(result, Exception):
-                    logger.error(f"Search error: {result}")
-                    continue
-                results.extend(result)
-
+            results = await router.search(query, markets)
             # Filter by requested markets
-            results = [r for r in results if r.market in markets]
-
-            # Deduplicate by symbol - metals already added first get priority
-            seen_symbols = set()
-            unique_results = []
-            for r in results:
-                if r.symbol not in seen_symbols:
-                    seen_symbols.add(r.symbol)
-                    unique_results.append(r)
-
-            return [r.to_dict() for r in unique_results[:50]]  # Limit results
+            filtered = [r for r in results if r.market in markets]
+            return [r.to_dict() for r in filtered[:50]]
 
         return await aggregator.get_data(
             symbol=cache_key,

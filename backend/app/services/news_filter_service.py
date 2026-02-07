@@ -5,36 +5,12 @@ from typing import Optional
 
 from app.config import settings
 from app.core.openai_client import get_openai_client
+from app.prompts import NEWS_FILTER_SYSTEM_PROMPT, NEWS_FILTER_USER_PROMPT
 
 logger = logging.getLogger(__name__)
 
 # Default model for news filtering (should be fast and cheap)
 DEFAULT_FILTER_MODEL = "gpt-4o-mini"
-
-# System prompt for news relevance evaluation
-FILTER_SYSTEM_PROMPT = """You are a financial news analyst. Your task is to evaluate whether a news article is relevant and valuable for investors.
-
-Evaluate the news based on these criteria:
-1. Investment relevance: Does it affect stock prices, company performance, or market conditions?
-2. Information quality: Is it factual, substantive news (not just promotional or clickbait)?
-3. Timeliness: Is it recent and actionable information?
-4. Impact potential: Could this news influence investment decisions?
-
-Respond with exactly one word:
-- KEEP: if the news is valuable for investors
-- DELETE: if the news is not relevant, is promotional, or lacks substance"""
-
-# User prompt template
-FILTER_USER_PROMPT = """Evaluate this news article for investment relevance:
-
-Title: {title}
-Summary: {summary}
-Source: {source}
-Symbol: {symbol}
-
-{full_text_section}
-
-Respond with exactly one word: KEEP or DELETE"""
 
 
 class NewsFilterService:
@@ -98,7 +74,7 @@ class NewsFilterService:
                 truncated = full_text[:2000] if len(full_text) > 2000 else full_text
                 full_text_section = f"Full text (truncated):\n{truncated}"
 
-            user_prompt = FILTER_USER_PROMPT.format(
+            user_prompt = NEWS_FILTER_USER_PROMPT.format(
                 title=title,
                 summary=summary or "N/A",
                 source=source or "Unknown",
@@ -111,7 +87,7 @@ class NewsFilterService:
             response = await client.chat.completions.create(
                 model=use_model,
                 messages=[
-                    {"role": "system", "content": FILTER_SYSTEM_PROMPT},
+                    {"role": "system", "content": NEWS_FILTER_SYSTEM_PROMPT},
                     {"role": "user", "content": user_prompt},
                 ],
                 max_tokens=10,  # We only need KEEP or DELETE

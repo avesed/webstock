@@ -12,7 +12,6 @@ import {
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
-import { ScrollArea } from '@/components/ui/scroll-area'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { cn } from '@/lib/utils'
 import { getAccessToken } from '@/lib/auth'
@@ -27,6 +26,7 @@ interface AnalysisPanelProps {
 interface AnalysisSection {
   type: AnalysisType
   content: string
+  isLoading: boolean
   isComplete: boolean
 }
 
@@ -36,19 +36,25 @@ interface AnalysisSections {
   sentiment: AnalysisSection
 }
 
+type AgentName = 'fundamental' | 'technical' | 'sentiment' | 'news'
+
 interface SSEEvent {
-  type: 'heartbeat' | 'start' | 'progress' | 'fundamental' | 'technical' | 'sentiment' | 'complete' | 'error'
+  type: 'heartbeat' | 'start' | 'agent_start' | 'agent_chunk' | 'agent_complete' | 'agent_error' | 'complete' | 'timeout' | 'error'
+  agent?: AgentName
   content?: string
   message?: string
   error?: string
+  structured_data?: Record<string, unknown>
+  symbol?: string
+  agents?: string[]
 }
 
 type StreamStatus = 'idle' | 'connecting' | 'streaming' | 'complete' | 'error'
 
 const createInitialSections = (): AnalysisSections => ({
-  fundamental: { type: 'FUNDAMENTAL', content: '', isComplete: false },
-  technical: { type: 'TECHNICAL', content: '', isComplete: false },
-  sentiment: { type: 'SENTIMENT', content: '', isComplete: false },
+  fundamental: { type: 'FUNDAMENTAL', content: '', isLoading: false, isComplete: false },
+  technical: { type: 'TECHNICAL', content: '', isLoading: false, isComplete: false },
+  sentiment: { type: 'SENTIMENT', content: '', isLoading: false, isComplete: false },
 })
 
 export default function AnalysisPanel({ symbol, className }: AnalysisPanelProps) {
@@ -91,58 +97,86 @@ export default function AnalysisPanel({ symbol, className }: AnalysisPanelProps)
   const handleSSEEvent = useCallback((event: SSEEvent) => {
     switch (event.type) {
       case 'heartbeat':
-        // Ignore heartbeat events
+        // Ignore heartbeat events - they're just keep-alive signals
         break
 
       case 'start':
-        setProgress(event.message ?? 'Starting analysis...')
+        setProgress('Analyzing in parallel...')
         break
 
-      case 'progress':
-        setProgress(event.message ?? 'Processing...')
+      case 'agent_start':
+        // An agent is starting to analyze (parallel execution - don't switch tabs)
+        if (event.agent && event.agent !== 'news') {
+          const agentKey = event.agent as keyof AnalysisSections
+          setSections((prev) => ({
+            ...prev,
+            [agentKey]: {
+              ...prev[agentKey],
+              isLoading: true,
+            },
+          }))
+        }
         break
 
-      case 'fundamental':
-        setSections((prev) => ({
-          ...prev,
-          fundamental: {
-            ...prev.fundamental,
-            content: prev.fundamental.content + (event.content ?? ''),
-          },
-        }))
-        setActiveTab('fundamental')
+      case 'agent_chunk':
+        // Streaming content chunk from an agent
+        if (event.agent && event.agent !== 'news' && event.content) {
+          const agentKey = event.agent as keyof AnalysisSections
+          setSections((prev) => ({
+            ...prev,
+            [agentKey]: {
+              ...prev[agentKey],
+              content: prev[agentKey].content + event.content,
+            },
+          }))
+        }
         break
 
-      case 'technical':
-        setSections((prev) => ({
-          ...prev,
-          fundamental: { ...prev.fundamental, isComplete: true },
-          technical: {
-            ...prev.technical,
-            content: prev.technical.content + (event.content ?? ''),
-          },
-        }))
+      case 'agent_complete':
+        // An agent finished its analysis
+        if (event.agent && event.agent !== 'news') {
+          const agentKey = event.agent as keyof AnalysisSections
+          setSections((prev) => ({
+            ...prev,
+            [agentKey]: {
+              ...prev[agentKey],
+              isLoading: false,
+              isComplete: true,
+            },
+          }))
+        }
         break
 
-      case 'sentiment':
-        setSections((prev) => ({
-          ...prev,
-          technical: { ...prev.technical, isComplete: true },
-          sentiment: {
-            ...prev.sentiment,
-            content: prev.sentiment.content + (event.content ?? ''),
-          },
-        }))
+      case 'agent_error':
+        // An individual agent encountered an error
+        if (event.agent && event.agent !== 'news') {
+          const agentKey = event.agent as keyof AnalysisSections
+          setSections((prev) => ({
+            ...prev,
+            [agentKey]: {
+              ...prev[agentKey],
+              isLoading: false,
+              isComplete: true,
+              content: prev[agentKey].content || `Error: ${event.error ?? 'Analysis failed'}`,
+            },
+          }))
+        }
         break
 
       case 'complete':
+        // All agents have completed
         setProgress('')
         setSections((prev) => ({
-          fundamental: { ...prev.fundamental, isComplete: true },
-          technical: { ...prev.technical, isComplete: true },
-          sentiment: { ...prev.sentiment, isComplete: true },
+          fundamental: { ...prev.fundamental, isLoading: false, isComplete: true },
+          technical: { ...prev.technical, isLoading: false, isComplete: true },
+          sentiment: { ...prev.sentiment, isLoading: false, isComplete: true },
         }))
         setStatus('complete')
+        break
+
+      case 'timeout':
+        setError('Analysis timeout. Please try again.')
+        setStatus('error')
         break
 
       case 'error':
@@ -259,19 +293,37 @@ export default function AnalysisPanel({ symbol, className }: AnalysisPanelProps)
     }
   }
 
+  /**
+   * Filter out JSON code blocks from analysis content.
+   * The LLM outputs structured JSON at the end for machine parsing,
+   * which should not be displayed to users.
+   */
+  const filterJsonBlocks = (content: string): string => {
+    // Remove ```json ... ``` blocks (including partial/streaming blocks)
+    let filtered = content.replace(/```json[\s\S]*?```/g, '')
+    // Also remove unclosed ```json blocks (during streaming)
+    filtered = filtered.replace(/```json[\s\S]*$/g, '')
+    // Remove any trailing "结构化机器可解析数据" or similar headers before JSON
+    filtered = filtered.replace(/\n*(?:结构化机器可解析数据|structured data|After your Markdown analysis)[：:.]?\s*$/gi, '')
+    return filtered.trim()
+  }
+
   const renderAnalysisContent = (content: string, isComplete: boolean) => {
     if (!content) {
       return (
-        <div className="flex h-[200px] items-center justify-center text-muted-foreground">
+        <div className="flex min-h-[120px] items-center justify-center text-muted-foreground py-8">
           <p>Click "Analyze" to generate AI analysis</p>
         </div>
       )
     }
 
+    // Filter out JSON blocks before rendering
+    const displayContent = filterJsonBlocks(content)
+
     return (
       <div className="space-y-4">
         <div className="prose prose-sm dark:prose-invert max-w-none">
-          {content.split('\n').map((line, index) => {
+          {displayContent.split('\n').map((line, index) => {
             if (!line.trim()) return <br key={index} />
 
             // Handle headers
@@ -420,7 +472,10 @@ export default function AnalysisPanel({ symbol, className }: AnalysisPanelProps)
               >
                 <tab.icon className="h-3.5 w-3.5" />
                 <span className="hidden sm:inline">{tab.label}</span>
-                {sections[tab.id].isComplete && (
+                {sections[tab.id].isLoading && (
+                  <Loader2 className="h-3 w-3 animate-spin text-primary" />
+                )}
+                {sections[tab.id].isComplete && !sections[tab.id].isLoading && (
                   <CheckCircle2 className="h-3 w-3 text-stock-up" />
                 )}
               </TabsTrigger>
@@ -429,12 +484,12 @@ export default function AnalysisPanel({ symbol, className }: AnalysisPanelProps)
 
           {tabConfigs.map((tab) => (
             <TabsContent key={tab.id} value={tab.id} className="mt-4">
-              <ScrollArea className="h-[350px] pr-4">
+              <div className="pr-4">
                 {renderAnalysisContent(
                   sections[tab.id].content,
                   sections[tab.id].isComplete
                 )}
-              </ScrollArea>
+              </div>
             </TabsContent>
           ))}
         </Tabs>

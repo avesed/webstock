@@ -2,7 +2,7 @@
 
 from typing import Any, Dict, Optional
 
-from app.agents.prompts.sanitizer import (
+from app.prompts.analysis.sanitizer import (
     sanitize_dict_values,
     sanitize_input,
     sanitize_market,
@@ -192,10 +192,6 @@ def build_fundamental_prompt(
     financials: Optional[Dict[str, Any]],
     quote: Optional[Dict[str, Any]],
     language: str = "en",
-    institutional_holders: Optional[Dict[str, Any]] = None,
-    fund_holdings: Optional[Dict[str, Any]] = None,
-    northbound_holding: Optional[Dict[str, Any]] = None,
-    sector_industry: Optional[Dict[str, Any]] = None,
 ) -> str:
     """
     Build the fundamental analysis prompt with stock data.
@@ -207,10 +203,6 @@ def build_fundamental_prompt(
         financials: Financial metrics
         quote: Current quote data
         language: Output language ('en' or 'zh')
-        institutional_holders: US institutional holders (yfinance)
-        fund_holdings: A-share fund holdings (AKShare)
-        northbound_holding: A-share northbound holding (AKShare)
-        sector_industry: Sector/industry info
 
     Returns:
         Formatted prompt string
@@ -291,7 +283,7 @@ def build_fundamental_prompt(
 - **每股股息**: ${_format_number(financials.get('dividend_rate'))}
 
 ### 资产负债表
-- **负债权益比 (D/E)**: {_format_ratio(financials.get('debt_to_equity'))}
+- **资产负债率**: {_format_ratio(financials.get('debt_to_equity'))}
 """
         else:
             financials_text = f"""
@@ -338,30 +330,6 @@ def build_fundamental_prompt(
 - **Previous Close**: ${quote.get('previous_close', 'N/A')}
 """
         data_sections.append(quote_text)
-
-    # Institutional Holdings Section (US stocks)
-    if institutional_holders and institutional_holders.get("holders"):
-        holdings_section = _build_institutional_section(institutional_holders, language)
-        if holdings_section:
-            data_sections.append(holdings_section)
-
-    # Fund Holdings Section (A-share stocks)
-    if fund_holdings and fund_holdings.get("holdings"):
-        fund_section = _build_fund_holdings_section(fund_holdings, language)
-        if fund_section:
-            data_sections.append(fund_section)
-
-    # Northbound Holding Section (A-share stocks)
-    if northbound_holding and northbound_holding.get("latest_holding"):
-        nb_section = _build_northbound_section(northbound_holding, language)
-        if nb_section:
-            data_sections.append(nb_section)
-
-    # Sector/Industry Section
-    if sector_industry:
-        sector_section = _build_sector_section(sector_industry, language)
-        if sector_section:
-            data_sections.append(sector_section)
 
     # Combine all sections
     data_content = "\n".join(data_sections) if data_sections else ("数据有限。" if language == "zh" else "Limited data available.")
@@ -422,207 +390,6 @@ def get_system_prompt(market: str, language: str = "en") -> str:
     return system_prompt.format(market_context=market_context)
 
 
-def _build_institutional_section(
-    data: Dict[str, Any],
-    language: str
-) -> str:
-    """Build institutional holders section for US stocks."""
-    holders = data.get("holders", [])
-    if not holders:
-        return ""
-
-    # Show top 5 holders
-    top_holders = holders[:5]
-
-    if language == "zh":
-        text = """
-## 机构持仓
-### 主要机构持有人
-"""
-        for i, h in enumerate(top_holders, 1):
-            text += f"- **{i}. {h.get('holder', '未知')}**: "
-            text += f"{_format_percent_value(h.get('pct_held'))} 持股比例, "
-            text += f"{_format_number(h.get('shares'))} 股\n"
-
-        total_pct = data.get("total_institutional_pct")
-        if total_pct:
-            text += f"\n**机构总持股比例**: {_format_percent_value(total_pct)}\n"
-        if data.get("data_as_of"):
-            text += f"**数据截止日期**: {data.get('data_as_of')}\n"
-    else:
-        text = """
-## Institutional Holdings
-### Top Institutional Holders
-"""
-        for i, h in enumerate(top_holders, 1):
-            text += f"- **{i}. {h.get('holder', 'Unknown')}**: "
-            text += f"{_format_percent_value(h.get('pct_held'))} ownership, "
-            text += f"{_format_number(h.get('shares'))} shares\n"
-
-        total_pct = data.get("total_institutional_pct")
-        if total_pct:
-            text += f"\n**Total Institutional Ownership**: {_format_percent_value(total_pct)}\n"
-        if data.get("data_as_of"):
-            text += f"**Data As Of**: {data.get('data_as_of')}\n"
-
-    return text
-
-
-def _build_fund_holdings_section(
-    data: Dict[str, Any],
-    language: str
-) -> str:
-    """Build fund holdings section for A-share stocks."""
-    holdings = data.get("holdings")
-    if not holdings:
-        return ""
-
-    if language == "zh":
-        text = f"""
-## 基金持仓（{data.get('quarter', '最新季度')}）
-- **持仓机构数量**: {holdings.get('institution_count', '暂无')}
-- **机构数变化**: {_format_change(holdings.get('institution_count_change'))}
-- **持股比例**: {_format_percent_value(holdings.get('holding_pct'))}
-- **持股比例变化**: {_format_change_pct(holdings.get('holding_pct_change'))}
-- **占流通股比例**: {_format_percent_value(holdings.get('float_pct'))}
-- **占流通股比例变化**: {_format_change_pct(holdings.get('float_pct_change'))}
-"""
-    else:
-        text = f"""
-## Fund Holdings ({data.get('quarter', 'Latest Quarter')})
-- **Number of Institutions**: {holdings.get('institution_count', 'N/A')}
-- **Institution Count Change**: {_format_change(holdings.get('institution_count_change'))}
-- **Holding Percentage**: {_format_percent_value(holdings.get('holding_pct'))}
-- **Holding % Change**: {_format_change_pct(holdings.get('holding_pct_change'))}
-- **Float Percentage**: {_format_percent_value(holdings.get('float_pct'))}
-- **Float % Change**: {_format_change_pct(holdings.get('float_pct_change'))}
-"""
-    return text
-
-
-def _build_northbound_section(
-    data: Dict[str, Any],
-    language: str
-) -> str:
-    """Build northbound holding section for A-share stocks."""
-    latest = data.get("latest_holding")
-    if not latest:
-        return ""
-
-    if language == "zh":
-        text = f"""
-## 北向资金持仓
-- **持股日期**: {latest.get('holding_date', '暂无')}
-- **持股数量**: {_format_shares(latest.get('holding_shares'))}
-- **持股市值**: {_format_cny(latest.get('holding_value'))}
-- **占A股比例**: {_format_percent_value(latest.get('holding_pct'))}
-"""
-        if latest.get("change_shares") is not None:
-            change = latest.get("change_shares")
-            text += f"- **今日增持**: {'+' if change > 0 else ''}{_format_shares(change)}\n"
-        if latest.get("change_value") is not None:
-            change = latest.get("change_value")
-            text += f"- **今日增持资金**: {'+' if change > 0 else ''}{_format_cny(change)}\n"
-        if data.get("data_cutoff_notice"):
-            text += f"\n**提示**: {data.get('data_cutoff_notice')}\n"
-    else:
-        text = f"""
-## Northbound Holdings (Stock Connect)
-- **Holding Date**: {latest.get('holding_date', 'N/A')}
-- **Shares Held**: {_format_shares(latest.get('holding_shares'))}
-- **Holding Value**: {_format_cny(latest.get('holding_value'))}
-- **% of A-shares**: {_format_percent_value(latest.get('holding_pct'))}
-"""
-        if latest.get("change_shares") is not None:
-            change = latest.get("change_shares")
-            text += f"- **Today's Share Change**: {'+' if change > 0 else ''}{_format_shares(change)}\n"
-        if latest.get("change_value") is not None:
-            change = latest.get("change_value")
-            text += f"- **Today's Value Change**: {'+' if change > 0 else ''}{_format_cny(change)}\n"
-        if data.get("data_cutoff_notice"):
-            text += f"\n**Notice**: {data.get('data_cutoff_notice')}\n"
-
-    return text
-
-
-def _build_sector_section(
-    data: Dict[str, Any],
-    language: str
-) -> str:
-    """Build sector/industry section."""
-    # Handle both yfinance format and AKShare format
-    sector = data.get("sector") or data.get("industry")
-    industry = data.get("industry")
-
-    if not sector and not industry:
-        return ""
-
-    if language == "zh":
-        text = """
-## 行业分类
-"""
-        if sector:
-            text += f"- **行业大类**: {sector}\n"
-        if industry and industry != sector:
-            text += f"- **细分行业**: {industry}\n"
-    else:
-        text = """
-## Sector & Industry
-"""
-        if sector:
-            text += f"- **Sector**: {sector}\n"
-        if industry and industry != sector:
-            text += f"- **Industry**: {industry}\n"
-
-    return text
-
-
-def _format_percent_value(value: Optional[float]) -> str:
-    """Format a percentage value (handles both 0.15 and 15.0 formats)."""
-    if value is None:
-        return "N/A"
-    # If value is less than 1, assume it's a decimal (0.15 = 15%)
-    if abs(value) < 1:
-        return f"{value * 100:.2f}%"
-    return f"{value:.2f}%"
-
-
-def _format_change(value: Optional[int]) -> str:
-    """Format a change value with sign."""
-    if value is None:
-        return "N/A"
-    return f"{'+' if value > 0 else ''}{value}"
-
-
-def _format_change_pct(value: Optional[float]) -> str:
-    """Format a percentage change with sign."""
-    if value is None:
-        return "N/A"
-    return f"{'+' if value > 0 else ''}{value:.2f}%"
-
-
-def _format_shares(value: Optional[float]) -> str:
-    """Format share count for display."""
-    if value is None:
-        return "N/A"
-    if abs(value) >= 1e8:
-        return f"{value / 1e8:.2f}亿股"
-    if abs(value) >= 1e4:
-        return f"{value / 1e4:.2f}万股"
-    return f"{value:.0f}股"
-
-
-def _format_cny(value: Optional[float]) -> str:
-    """Format CNY value for display."""
-    if value is None:
-        return "N/A"
-    if abs(value) >= 1e8:
-        return f"¥{value / 1e8:.2f}亿"
-    if abs(value) >= 1e4:
-        return f"¥{value / 1e4:.2f}万"
-    return f"¥{value:.2f}"
-
-
 def _format_number(value: Optional[float]) -> str:
     """Format a number for display."""
     if value is None:
@@ -646,14 +413,10 @@ def _format_ratio(value: Optional[float]) -> str:
 
 
 def _format_percent(value: Optional[float]) -> str:
-    """
-    Format a percentage for display.
-
-    Assumes input is in decimal format (0.15 = 15%, 1.52 = 152%).
-    This is consistent with yfinance's profitMargins, returnOnEquity, etc.
-    Note: dividendYield is normalized to decimal in stock_service.py.
-    """
+    """Format a percentage for display."""
     if value is None:
         return "N/A"
-    # Always multiply by 100 since input is decimal format
-    return f"{value * 100:.2f}%"
+    # Handle both decimal (0.15) and percentage (15.0) formats
+    if abs(value) < 1:
+        return f"{value * 100:.2f}%"
+    return f"{value:.2f}%"

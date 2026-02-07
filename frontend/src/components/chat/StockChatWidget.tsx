@@ -5,6 +5,11 @@ import { chatApi } from '@/api'
 import { getErrorMessage } from '@/api/client'
 import { useLocale } from '@/hooks/useLocale'
 import { StockChatPanel } from './StockChatPanel'
+import {
+  useIsInStockChatProvider,
+  useStockChatState,
+  useStockChatActions,
+} from '@/components/stock'
 import type { ChatMessage, ChatStreamEvent, ToolCallStatus } from '@/types'
 
 interface StockChatWidgetProps {
@@ -28,10 +33,126 @@ function generateUUID(): string {
 /**
  * Floating chat widget for stock-specific conversations.
  *
- * Manages its own local state and calls chatApi directly, avoiding conflicts
- * with the global Zustand chat store used by the /chat page.
+ * When inside StockChatProvider (on StockDetailPage), syncs with AI Tab chat.
+ * When outside (standalone), manages its own local state.
  */
 export function StockChatWidget({ symbol }: StockChatWidgetProps) {
+  const isInProvider = useIsInStockChatProvider()
+
+  if (isInProvider) {
+    return <StockChatWidgetWithContext symbol={symbol} />
+  }
+
+  return <StockChatWidgetStandalone symbol={symbol} />
+}
+
+/**
+ * Widget implementation that consumes shared Context state.
+ * Used when rendered inside StockChatProvider.
+ */
+function StockChatWidgetWithContext({ symbol }: StockChatWidgetProps) {
+  const [isOpen, setIsOpen] = useState(false)
+  const buttonRef = useRef<HTMLButtonElement>(null)
+  const panelRef = useRef<HTMLDivElement>(null)
+
+  // Consume shared state from Context
+  const {
+    messages,
+    isStreaming,
+    streamingContent,
+    ragSources,
+    activeToolCalls,
+    error,
+    isLoading,
+  } = useStockChatState()
+
+  const { sendMessage, cancelStream, clearError } = useStockChatActions()
+
+  // Toggle widget
+  const handleToggle = useCallback(() => {
+    setIsOpen((prev) => !prev)
+  }, [])
+
+  // Close panel
+  const handleClose = useCallback(() => {
+    setIsOpen(false)
+    buttonRef.current?.focus()
+  }, [])
+
+  // Focus management
+  useEffect(() => {
+    if (isOpen && panelRef.current) {
+      panelRef.current.focus()
+    }
+  }, [isOpen])
+
+  useEffect(() => {
+    if (!isOpen) return
+
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        handleClose()
+      }
+    }
+
+    document.addEventListener('keydown', handleKeyDown)
+    return () => document.removeEventListener('keydown', handleKeyDown)
+  }, [isOpen, handleClose])
+
+  return (
+    <>
+      {/* Panel */}
+      {isOpen && (
+        <div
+          ref={panelRef}
+          tabIndex={-1}
+          className="fixed bottom-24 right-6 z-40 flex w-96 max-w-[calc(100vw-2rem)] flex-col overflow-hidden outline-none animate-in slide-in-from-bottom-4 fade-in duration-200"
+          style={{ height: '500px', maxHeight: 'calc(100dvh - 10rem)' }}
+        >
+          <StockChatPanel
+            symbol={symbol}
+            messages={messages}
+            isStreaming={isStreaming}
+            streamingContent={streamingContent}
+            ragSources={ragSources}
+            activeToolCalls={activeToolCalls}
+            error={error}
+            isLoading={isLoading}
+            onSend={sendMessage}
+            onCancel={cancelStream}
+            onClose={handleClose}
+            onClearError={clearError}
+          />
+        </div>
+      )}
+
+      {/* Floating button */}
+      <button
+        ref={buttonRef}
+        type="button"
+        onClick={handleToggle}
+        className={cn(
+          'fixed bottom-6 right-6 z-40 flex h-14 w-14 items-center justify-center rounded-full shadow-lg transition-all duration-200 hover:scale-105 hover:shadow-xl',
+          'bg-primary text-primary-foreground',
+        )}
+        aria-label={isOpen ? 'Close chat' : 'Open chat'}
+        aria-expanded={isOpen}
+      >
+        {isOpen ? (
+          <X className="h-6 w-6" />
+        ) : (
+          <MessageSquare className="h-6 w-6" />
+        )}
+      </button>
+    </>
+  )
+}
+
+/**
+ * Standalone widget implementation with local state.
+ * Used when rendered outside StockChatProvider (backward compatibility).
+ */
+function StockChatWidgetStandalone({ symbol }: StockChatWidgetProps) {
   const { locale } = useLocale()
   const [isOpen, setIsOpen] = useState(false)
   const [conversationId, setConversationId] = useState<string | null>(null)
@@ -45,7 +166,7 @@ export function StockChatWidget({ symbol }: StockChatWidgetProps) {
 
   const abortControllerRef = useRef<AbortController | null>(null)
   const navigationRef = useRef(0)
-  const streamFinalizedRef = useRef(false) // guards message_end + onDone race
+  const streamFinalizedRef = useRef(false)
   const buttonRef = useRef<HTMLButtonElement>(null)
   const panelRef = useRef<HTMLDivElement>(null)
 
@@ -74,8 +195,7 @@ export function StockChatWidget({ symbol }: StockChatWidgetProps) {
     })
   }, [])
 
-  /** Abort the current stream. The aborted controller is kept until replaced
-   *  so that post-abort onError callbacks can check signal.aborted. */
+  /** Abort the current stream. */
   const abortStream = useCallback(() => {
     abortControllerRef.current?.abort()
   }, [])
@@ -87,7 +207,6 @@ export function StockChatWidget({ symbol }: StockChatWidgetProps) {
   const resolveConversation = useCallback(async () => {
     const version = ++navigationRef.current
 
-    // Abort any active stream
     abortStream()
 
     setIsLoading(true)
@@ -99,7 +218,6 @@ export function StockChatWidget({ symbol }: StockChatWidgetProps) {
     setIsStreaming(false)
 
     try {
-      // Load conversations and find one for this symbol
       const result = await chatApi.listConversations(50)
       if (navigationRef.current !== version) {
         console.warn(LOG_PREFIX, 'Stale conversation resolution discarded for', symbol)
@@ -117,7 +235,6 @@ export function StockChatWidget({ symbol }: StockChatWidgetProps) {
       let convId: string
       if (existing) {
         convId = existing.id
-        // Load existing messages
         const msgs = await chatApi.getMessages(existing.id)
         if (navigationRef.current !== version) {
           console.warn(LOG_PREFIX, 'Stale message load discarded for', symbol)
@@ -125,7 +242,6 @@ export function StockChatWidget({ symbol }: StockChatWidgetProps) {
         }
         setMessages(msgs)
       } else {
-        // Create new conversation
         const newConv = await chatApi.createConversation(
           `${symbol} Chat`,
           symbol,
@@ -167,10 +283,8 @@ export function StockChatWidget({ symbol }: StockChatWidgetProps) {
       }
       if (isStreaming) return
 
-      // Reset finalization guard
       streamFinalizedRef.current = false
 
-      // Optimistically add user message
       const userMessage: ChatMessage = {
         id: `temp-${generateUUID()}`,
         conversationId,
@@ -229,7 +343,7 @@ export function StockChatWidget({ symbol }: StockChatWidgetProps) {
             }
             break
           case 'message_end': {
-            if (streamFinalizedRef.current) break // already finalized
+            if (streamFinalizedRef.current) break
             streamFinalizedRef.current = true
 
             setStreamingContent((prev) => {
@@ -267,7 +381,6 @@ export function StockChatWidget({ symbol }: StockChatWidgetProps) {
       }
 
       const onError = (err: unknown) => {
-        // Suppress errors from intentional abort
         if (abortControllerRef.current?.signal.aborted) return
         console.error(LOG_PREFIX, 'Stream error:', err)
         setError(getErrorMessage(err))
@@ -276,8 +389,7 @@ export function StockChatWidget({ symbol }: StockChatWidgetProps) {
       }
 
       const onDone = () => {
-        // Finalize if streaming wasn't ended by message_end
-        if (streamFinalizedRef.current) return // already handled
+        if (streamFinalizedRef.current) return
         streamFinalizedRef.current = true
 
         console.warn(LOG_PREFIX, 'Stream ended without message_end event')
@@ -320,7 +432,6 @@ export function StockChatWidget({ symbol }: StockChatWidgetProps) {
   // ---------------------------------------------------------------------------
 
   const handleCancel = useCallback(() => {
-    // Commit any partial streaming content before aborting
     if (conversationId) {
       commitPartialStream(conversationId)
     }
@@ -334,7 +445,6 @@ export function StockChatWidget({ symbol }: StockChatWidgetProps) {
   // ---------------------------------------------------------------------------
 
   const handleClose = useCallback(() => {
-    // Abort active stream and commit partial content
     if (isStreaming && conversationId) {
       commitPartialStream(conversationId)
     }
