@@ -39,6 +39,7 @@ interface SSEEvent {
     | 'agent_complete'
     | 'analysis_phase_complete'
     | 'synthesis_start'
+    | 'synthesis_pending'
     | 'synthesis_chunk'
     | 'clarification_needed'
     | 'clarification_start'
@@ -153,6 +154,14 @@ export default function AnalysisPanel({ symbol, className }: AnalysisPanelProps)
       case 'synthesis_start':
         setStatus('synthesizing')
         setProgress('Generating synthesis...')
+        break
+
+      case 'synthesis_pending':
+        // Synthesis is deferred until after clarification
+        // Show the pending message but don't add to synthesis content
+        if (event.message) {
+          setProgress(event.message)
+        }
         break
 
       case 'synthesis_chunk':

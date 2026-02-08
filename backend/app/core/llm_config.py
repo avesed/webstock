@@ -74,7 +74,7 @@ class LLMConfig:
 DEFAULT_ANALYSIS_CONFIG = LLMConfig(
     model="gpt-4o-mini",  # Default, can be overridden to local model
     temperature=0.3,  # Lower temperature for more deterministic analysis
-    max_tokens=2000,
+    # No max_tokens limit - let model use its default maximum
 )
 
 DEFAULT_SYNTHESIS_CONFIG = LLMConfig(
@@ -113,7 +113,6 @@ def get_analysis_config() -> LLMConfig:
             api_key=api_key or "not-required",  # Some local servers don't need keys
             base_url=base_url,
             temperature=0.3,
-            max_tokens=2000,
         )
 
     # Fall back to cloud model using existing settings
@@ -122,7 +121,7 @@ def get_analysis_config() -> LLMConfig:
         api_key=settings.OPENAI_API_KEY,
         base_url=settings.OPENAI_API_BASE,
         temperature=0.3,
-        max_tokens=settings.OPENAI_MAX_TOKENS or 2000,
+        max_tokens=settings.OPENAI_MAX_TOKENS,  # Only set if user explicitly configured
     )
 
 
@@ -204,7 +203,10 @@ def get_analysis_model() -> "ChatOpenAI":
     ChatOpenAI = _get_chat_openai_class()
     config = get_analysis_config()
     logger.debug(f"Creating analysis model: {config.model}")
-    return ChatOpenAI(**config.to_langchain_kwargs())
+    kwargs = config.to_langchain_kwargs()
+    # Analysis models output structured JSON
+    kwargs["model_kwargs"] = {"response_format": {"type": "json_object"}}
+    return ChatOpenAI(**kwargs)
 
 
 def get_synthesis_model() -> "ChatOpenAI":
@@ -331,6 +333,7 @@ async def get_analysis_model_from_settings() -> "ChatOpenAI":
 
         if config.use_local_models and config.local_llm_base_url:
             # Use local model via OpenAI-compatible API
+            # Note: response_format may not be supported by all local models
             logger.info(
                 f"Using local analysis model: {config.analysis_model} at {config.local_llm_base_url}"
             )
@@ -339,15 +342,15 @@ async def get_analysis_model_from_settings() -> "ChatOpenAI":
                 api_key="not-needed",  # Local servers typically don't require an API key
                 model=config.analysis_model,
                 temperature=0.3,  # Lower temperature for stable analysis
-                max_tokens=2000,
+                model_kwargs={"response_format": {"type": "json_object"}},
             )
         else:
-            # Use cloud model
+            # Use cloud model with JSON mode enabled
             logger.info(f"Using cloud analysis model: {config.analysis_model}")
             kwargs: dict[str, Any] = {
                 "model": config.analysis_model,
                 "temperature": 0.3,
-                "max_tokens": 2000,
+                "model_kwargs": {"response_format": {"type": "json_object"}},
             }
             if config.openai_api_key:
                 kwargs["api_key"] = config.openai_api_key

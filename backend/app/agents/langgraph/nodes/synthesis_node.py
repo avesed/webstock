@@ -256,6 +256,7 @@ async def synthesize_node(state: AnalysisState) -> Dict[str, Any]:
 
     # 2. Detect issues (only in first round)
     clarification_requests = []
+    needs_clarification = False
     if current_round == 0:
         conflicts = detect_conflicts(results)
         low_confidence = detect_low_confidence_results(
@@ -271,9 +272,25 @@ async def synthesize_node(state: AnalysisState) -> Dict[str, Any]:
                 missing_data,
                 language,
             )
+            needs_clarification = len(clarification_requests) > 0
             logger.info(
                 f"Generated {len(clarification_requests)} clarification requests"
             )
+
+    # If clarification is needed in round 0, skip synthesis and wait for clarification
+    # This prevents showing incomplete synthesis to user before clarification
+    if needs_clarification and current_round == 0:
+        logger.info(f"Deferring synthesis for {symbol} until after clarification")
+        placeholder_msg = (
+            "正在进行深度分析，请稍候..." if language == "zh"
+            else "Performing deeper analysis, please wait..."
+        )
+        return {
+            "synthesis_output": "",  # Empty - will be filled after clarification
+            "clarification_requests": clarification_requests,
+            "clarification_round": current_round + 1,
+            "stream_chunks": [placeholder_msg],
+        }
 
     # 3. Load synthesis instructions
     try:

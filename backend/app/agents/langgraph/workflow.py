@@ -257,10 +257,21 @@ async def stream_analysis(
                 elif event_name == "synthesize":
                     synthesis_output = output.get("synthesis_output", "")
                     clarification_requests = output.get("clarification_requests", [])
+                    stream_chunks = output.get("stream_chunks", [])
 
-                    # Yield synthesis chunks
-                    if synthesis_output:
-                        # Split into chunks for streaming effect
+                    # If we have clarification requests but no synthesis output,
+                    # this means we're deferring synthesis until after clarification
+                    if clarification_requests and not synthesis_output:
+                        # Send placeholder message from stream_chunks
+                        for chunk in stream_chunks:
+                            yield {
+                                "type": "synthesis_pending",
+                                "data": {
+                                    "message": chunk,
+                                }
+                            }
+                    elif synthesis_output:
+                        # Yield synthesis chunks (normal case or after clarification)
                         chunk_size = 100
                         for i in range(0, len(synthesis_output), chunk_size):
                             chunk = synthesis_output[i:i+chunk_size]
