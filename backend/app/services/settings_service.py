@@ -15,6 +15,29 @@ logger = logging.getLogger(__name__)
 
 
 @dataclass
+class LangGraphConfig:
+    """
+    Configuration for LangGraph workflow.
+
+    Contains settings for the layered LLM architecture:
+    - OpenAI-compatible local model settings (vLLM, Ollama, LMStudio, etc.)
+    - Analysis and synthesis model configurations
+    - Clarification behavior settings
+    """
+
+    local_llm_base_url: Optional[str]
+    analysis_model: str
+    synthesis_model: str
+    use_local_models: bool
+    max_clarification_rounds: int
+    clarification_confidence_threshold: float
+
+    # API keys for cloud models (fallback when not using local)
+    openai_api_key: Optional[str]
+    openai_base_url: Optional[str]
+
+
+@dataclass
 class ResolvedAIConfig:
     """
     Resolved AI configuration with priority: user > system > env.
@@ -229,6 +252,52 @@ class SettingsService:
         )
 
         return can_customize
+
+    async def get_langgraph_config(self, db: AsyncSession) -> LangGraphConfig:
+        """
+        Get LangGraph workflow configuration.
+
+        Returns configuration for the layered LLM architecture including:
+        - vLLM/local model settings
+        - Analysis and synthesis model configurations
+        - Clarification behavior settings
+        - Fallback API keys for cloud models
+
+        Args:
+            db: Async database session
+
+        Returns:
+            LangGraphConfig with the workflow configuration
+        """
+        system = await self.get_system_settings(db)
+
+        # Get API key/base URL with fallback to environment
+        openai_api_key = system.openai_api_key or app_settings.OPENAI_API_KEY
+        openai_base_url = system.openai_base_url or app_settings.OPENAI_API_BASE
+
+        # Get model configurations with fallbacks
+        analysis_model = system.analysis_model or "gpt-4o-mini"
+        synthesis_model = system.synthesis_model or "gpt-4o"
+
+        config = LangGraphConfig(
+            local_llm_base_url=system.local_llm_base_url,
+            analysis_model=analysis_model,
+            synthesis_model=synthesis_model,
+            use_local_models=system.use_local_models,
+            max_clarification_rounds=system.max_clarification_rounds,
+            clarification_confidence_threshold=system.clarification_confidence_threshold,
+            openai_api_key=openai_api_key,
+            openai_base_url=openai_base_url,
+        )
+
+        logger.debug(
+            "LangGraph config: use_local=%s, analysis_model=%s, synthesis_model=%s",
+            config.use_local_models,
+            config.analysis_model,
+            config.synthesis_model,
+        )
+
+        return config
 
 
 # Singleton instance

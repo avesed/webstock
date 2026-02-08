@@ -23,6 +23,7 @@ from app.schemas.admin import (
     ApproveUserRequest,
     CreateUserRequest,
     FeaturesConfig,
+    LangGraphConfig,
     LlmConfig,
     NewsConfig,
     RejectUserRequest,
@@ -582,6 +583,13 @@ async def get_system_settings(
         polygon_api_key_set=bool(settings.polygon_api_key),
         allow_user_custom_api_keys=settings.allow_user_custom_api_keys,
         require_registration_approval=settings.require_registration_approval,
+        # LangGraph settings
+        local_llm_base_url=settings.local_llm_base_url,
+        analysis_model=settings.analysis_model or "gpt-4o-mini",
+        synthesis_model=settings.synthesis_model or "gpt-4o",
+        use_local_models=settings.use_local_models,
+        max_clarification_rounds=settings.max_clarification_rounds,
+        clarification_confidence_threshold=settings.clarification_confidence_threshold,
         updated_at=settings.updated_at,
         updated_by=settings.updated_by,
     )
@@ -632,6 +640,20 @@ async def update_system_settings(
     if data.allow_user_custom_api_keys is not None:
         settings.allow_user_custom_api_keys = data.allow_user_custom_api_keys
 
+    # LangGraph settings
+    if data.local_llm_base_url is not None:
+        settings.local_llm_base_url = data.local_llm_base_url or None
+    if data.analysis_model is not None:
+        settings.analysis_model = data.analysis_model or None
+    if data.synthesis_model is not None:
+        settings.synthesis_model = data.synthesis_model or None
+    if data.use_local_models is not None:
+        settings.use_local_models = data.use_local_models
+    if data.max_clarification_rounds is not None:
+        settings.max_clarification_rounds = data.max_clarification_rounds
+    if data.clarification_confidence_threshold is not None:
+        settings.clarification_confidence_threshold = data.clarification_confidence_threshold
+
     # Handle require_registration_approval setting
     # When turning OFF approval requirement, batch-promote all pending users
     if data.require_registration_approval is not None:
@@ -681,6 +703,13 @@ async def update_system_settings(
         polygon_api_key_set=bool(settings.polygon_api_key),
         allow_user_custom_api_keys=settings.allow_user_custom_api_keys,
         require_registration_approval=settings.require_registration_approval,
+        # LangGraph settings
+        local_llm_base_url=settings.local_llm_base_url,
+        analysis_model=settings.analysis_model or "gpt-4o-mini",
+        synthesis_model=settings.synthesis_model or "gpt-4o",
+        use_local_models=settings.use_local_models,
+        max_clarification_rounds=settings.max_clarification_rounds,
+        clarification_confidence_threshold=settings.clarification_confidence_threshold,
         updated_at=settings.updated_at,
         updated_by=settings.updated_by,
     )
@@ -807,6 +836,14 @@ async def get_system_config(
             enable_stock_analysis=settings.enable_stock_analysis,
             require_registration_approval=settings.require_registration_approval,
         ),
+        langgraph=LangGraphConfig(
+            local_llm_base_url=settings.local_llm_base_url,
+            analysis_model=settings.analysis_model or "gpt-4o-mini",
+            synthesis_model=settings.synthesis_model or "gpt-4o",
+            use_local_models=settings.use_local_models,
+            max_clarification_rounds=settings.max_clarification_rounds,
+            clarification_confidence_threshold=settings.clarification_confidence_threshold,
+        ),
     )
 
 
@@ -867,6 +904,21 @@ async def update_system_config(
             settings.enable_stock_analysis = data.features.enable_stock_analysis
         if data.features.require_registration_approval is not None:
             settings.require_registration_approval = data.features.require_registration_approval
+
+    # Update LangGraph settings
+    if data.langgraph:
+        if data.langgraph.local_llm_base_url is not None:
+            settings.local_llm_base_url = data.langgraph.local_llm_base_url or None
+        if data.langgraph.analysis_model:
+            settings.analysis_model = data.langgraph.analysis_model
+        if data.langgraph.synthesis_model:
+            settings.synthesis_model = data.langgraph.synthesis_model
+        if data.langgraph.use_local_models is not None:
+            settings.use_local_models = data.langgraph.use_local_models
+        if data.langgraph.max_clarification_rounds is not None:
+            settings.max_clarification_rounds = data.langgraph.max_clarification_rounds
+        if data.langgraph.clarification_confidence_threshold is not None:
+            settings.clarification_confidence_threshold = data.langgraph.clarification_confidence_threshold
 
     settings.updated_at = datetime.now(timezone.utc)
     settings.updated_by = admin.id

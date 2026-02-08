@@ -54,8 +54,8 @@
   },
   "settings": {
     "saved": "Settings saved successfully",
-    "llmTitle": "LLM Configuration",
-    "llmDescription": "Configure the default language model settings for AI features",
+    "llmTitle": "AI Model Configuration",
+    "llmDescription": "Configure OpenAI-compatible API endpoint and model settings",
     "apiKey": "API Key",
     "apiKeyPlaceholder": "Enter your OpenAI API key",
     "apiKeySet": "•••••••• (Set)",
@@ -92,7 +92,20 @@
     "enableStockAnalysisDescription": "Enable AI-powered stock analysis features",
     "requireApproval": "Require Registration Approval",
     "requireApprovalDescription": "New users must be approved by an admin before they can log in",
-    "disableApprovalWarning": "Disabling this will auto-approve all pending users"
+    "disableApprovalWarning": "Disabling this will auto-approve all pending users",
+    "langgraphTitle": "LangGraph Multi-Agent Analysis",
+    "langgraphDescription": "Configure models and parameters for multi-agent stock analysis workflow",
+    "useLocalModels": "Use Local Models",
+    "useLocalModelsDescription": "Use OpenAI-compatible local model services (vLLM, Ollama, LMStudio, etc.)",
+    "localLlmBaseUrl": "Local Model API URL",
+    "localLlmBaseUrlHint": "OpenAI-compatible endpoint, e.g. http://localhost:8000/v1",
+    "analysisModel": "Analysis Model",
+    "analysisModelHint": "Model for analysis agents, smaller models recommended to reduce costs",
+    "synthesisModel": "Synthesis Model",
+    "synthesisModelHint": "Model for synthesis and user interaction, stronger models recommended",
+    "maxClarificationRounds": "Max Clarification Rounds",
+    "clarificationThreshold": "Clarification Threshold",
+    "clarificationThresholdHint": "Clarification may trigger when confidence is below this value (0.0-1.0)"
   },
   "monitor": {
     "userStats": "User Statistics",

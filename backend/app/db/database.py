@@ -1,6 +1,7 @@
 """PostgreSQL async database connection using SQLAlchemy."""
 
 import logging
+from contextlib import asynccontextmanager
 from typing import AsyncGenerator
 
 from sqlalchemy.ext.asyncio import (
@@ -54,6 +55,30 @@ async def get_db() -> AsyncGenerator[AsyncSession, None]:
 
     Note: This does NOT auto-commit. Callers must explicitly commit
     their transactions when needed. Rollback is automatic on exceptions.
+    """
+    async with AsyncSessionLocal() as session:
+        try:
+            yield session
+        except Exception as e:
+            logger.warning(f"Database session rollback due to exception: {e}")
+            await session.rollback()
+            raise
+
+
+@asynccontextmanager
+async def get_async_session() -> AsyncGenerator[AsyncSession, None]:
+    """
+    Context manager to get async database session.
+
+    This is useful for non-FastAPI contexts (e.g., services, background tasks)
+    where dependency injection is not available.
+
+    Usage:
+        async with get_async_session() as session:
+            result = await session.execute(query)
+
+    Note: This does NOT auto-commit. Callers must explicitly commit
+    their transactions when needed.
     """
     async with AsyncSessionLocal() as session:
         try:

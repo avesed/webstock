@@ -78,6 +78,16 @@ class SystemSettingsResponse(CamelModel):
     # Registration approval settings
     require_registration_approval: bool = False
 
+    # OpenAI Compatible / Local Model Configuration
+    local_llm_base_url: Optional[str] = None
+    analysis_model: str = "gpt-4o-mini"
+    synthesis_model: str = "gpt-4o"
+    use_local_models: bool = False
+
+    # Clarification Settings
+    max_clarification_rounds: int = 2
+    clarification_confidence_threshold: float = 0.6
+
     # Audit fields
     updated_at: datetime
     updated_by: Optional[int] = None
@@ -107,6 +117,16 @@ class UpdateSystemSettingsRequest(CamelModel):
 
     # Registration approval settings
     require_registration_approval: Optional[bool] = None
+
+    # OpenAI Compatible / Local Model Configuration
+    local_llm_base_url: Optional[str] = Field(None, max_length=500)
+    analysis_model: Optional[str] = Field(None, max_length=100)
+    synthesis_model: Optional[str] = Field(None, max_length=100)
+    use_local_models: Optional[bool] = None
+
+    # Clarification Settings
+    max_clarification_rounds: Optional[int] = Field(None, ge=0, le=5)
+    clarification_confidence_threshold: Optional[float] = Field(None, ge=0.0, le=1.0)
 
 
 # ============== System Statistics Schemas ==============
@@ -143,6 +163,20 @@ class LlmConfig(CamelModel):
     temperature: Optional[float] = None  # None means use model default
 
 
+class LangGraphConfig(CamelModel):
+    """LangGraph layered architecture configuration."""
+
+    # OpenAI Compatible / Local Model Configuration
+    local_llm_base_url: Optional[str] = None
+    analysis_model: str = "gpt-4o-mini"
+    synthesis_model: str = "gpt-4o"
+    use_local_models: bool = False
+
+    # Clarification Settings
+    max_clarification_rounds: int = 2
+    clarification_confidence_threshold: float = 0.6
+
+
 class NewsConfig(CamelModel):
     """News processing configuration."""
 
@@ -172,6 +206,7 @@ class SystemConfigResponse(CamelModel):
     llm: LlmConfig
     news: NewsConfig
     features: FeaturesConfig
+    langgraph: LangGraphConfig
 
 
 class UpdateSystemConfigRequest(CamelModel):
@@ -180,6 +215,7 @@ class UpdateSystemConfigRequest(CamelModel):
     llm: Optional[LlmConfig] = None
     news: Optional[NewsConfig] = None
     features: Optional[FeaturesConfig] = None
+    langgraph: Optional[LangGraphConfig] = None
 
 
 # ============== System Monitor Stats Schemas ==============

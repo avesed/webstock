@@ -3,7 +3,6 @@ import { useTranslation } from 'react-i18next'
 import { Loader2 } from 'lucide-react'
 import { Tabs, TabsContent } from '@/components/ui/tabs'
 import { SecondaryTabsList, SecondaryTabsTrigger } from '@/components/ui/nested-tabs'
-import { AITabChat } from './AITabChat'
 import { AITabExtension } from './AITabExtension'
 import type { AISubTab } from '@/hooks/useTabNavigation'
 
@@ -18,7 +17,7 @@ interface AITabProps {
 
 /**
  * AI features tab container.
- * Contains Analysis, Chat, and Extension sub-tabs.
+ * Contains Analysis and Extension sub-tabs.
  * Uses lazy loading for AnalysisPanel to optimize initial bundle size.
  */
 export function AITab({ symbol, subTab, onSubTabChange }: AITabProps) {
@@ -33,9 +32,6 @@ export function AITab({ symbol, subTab, onSubTabChange }: AITabProps) {
         <SecondaryTabsTrigger value="analysis">
           {t('stock.analysis')}
         </SecondaryTabsTrigger>
-        <SecondaryTabsTrigger value="chat">
-          {t('stock.tabs.chat', 'Chat')}
-        </SecondaryTabsTrigger>
         <SecondaryTabsTrigger value="extension">
           {t('stock.tabs.extension', 'Extensions')}
         </SecondaryTabsTrigger>
@@ -45,10 +41,6 @@ export function AITab({ symbol, subTab, onSubTabChange }: AITabProps) {
         <Suspense fallback={<AnalysisFallback />}>
           <AnalysisPanel symbol={symbol} />
         </Suspense>
-      </TabsContent>
-
-      <TabsContent value="chat" className="mt-4">
-        <AITabChat />
       </TabsContent>
 
       <TabsContent value="extension" className="mt-4">

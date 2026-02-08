@@ -28,6 +28,7 @@ from app.services.news_storage_service import (
 )
 from app.services.portfolio_service import PortfolioService
 from app.services.settings_service import (
+    LangGraphConfig,
     ResolvedAIConfig,
     SettingsService,
     get_settings_service,
@@ -78,6 +79,7 @@ __all__ = [
     # Portfolio
     "PortfolioService",
     # Settings
+    "LangGraphConfig",
     "ResolvedAIConfig",
     "SettingsService",
     "get_settings_service",

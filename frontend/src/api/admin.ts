@@ -14,6 +14,69 @@ import type {
   UserRole,
 } from '@/types'
 
+// Backend API format (has separate langgraph section)
+interface BackendSystemConfig {
+  llm: {
+    apiKey: string | null
+    baseUrl: string
+    model: string
+    maxTokens: number | null
+    temperature: number | null
+  }
+  news: SystemConfig['news']
+  features: SystemConfig['features']
+  langgraph: {
+    localLlmBaseUrl: string | null
+    analysisModel: string
+    synthesisModel: string
+    useLocalModels: boolean
+    maxClarificationRounds: number
+    clarificationConfidenceThreshold: number
+  }
+}
+
+// Transform backend format to frontend format (merge langgraph into llm)
+function transformConfigFromBackend(backend: BackendSystemConfig): SystemConfig {
+  return {
+    llm: {
+      apiKey: backend.llm.apiKey,
+      baseUrl: backend.llm.baseUrl,
+      // Merge langgraph settings into llm
+      useLocalModels: backend.langgraph.useLocalModels,
+      localLlmBaseUrl: backend.langgraph.localLlmBaseUrl,
+      analysisModel: backend.langgraph.analysisModel,
+      synthesisModel: backend.langgraph.synthesisModel,
+      maxClarificationRounds: backend.langgraph.maxClarificationRounds,
+      clarificationConfidenceThreshold: backend.langgraph.clarificationConfidenceThreshold,
+    },
+    news: backend.news,
+    features: backend.features,
+  }
+}
+
+// Transform frontend format to backend format (split llm back to llm + langgraph)
+function transformConfigToBackend(frontend: SystemConfig): BackendSystemConfig {
+  return {
+    llm: {
+      apiKey: frontend.llm.apiKey,
+      baseUrl: frontend.llm.baseUrl,
+      model: frontend.llm.analysisModel, // Use analysis model as default
+      maxTokens: null, // Not used by LangGraph anymore
+      temperature: null, // Not used by LangGraph anymore
+    },
+    news: frontend.news,
+    features: frontend.features,
+    langgraph: {
+      localLlmBaseUrl: frontend.llm.localLlmBaseUrl,
+      analysisModel: frontend.llm.analysisModel,
+      synthesisModel: frontend.llm.synthesisModel,
+      useLocalModels: frontend.llm.useLocalModels,
+      maxClarificationRounds: frontend.llm.maxClarificationRounds,
+      clarificationConfidenceThreshold: frontend.llm.clarificationConfidenceThreshold,
+    },
+  }
+}
+
 export const adminApi = {
   // User management (simple list)
   listUsers: async (params?: {
@@ -97,14 +160,27 @@ export const adminApi = {
   },
 
   // System configuration (detailed)
+  // Note: Backend uses separate langgraph section, frontend merges it into llm
   getSystemConfig: async (): Promise<SystemConfig> => {
-    const response = await apiClient.get<SystemConfig>('/admin/system/config')
-    return response.data
+    const response = await apiClient.get<BackendSystemConfig>('/admin/system/config')
+    return transformConfigFromBackend(response.data)
   },
 
-  updateSystemConfig: async (config: Partial<SystemConfig>): Promise<SystemConfig> => {
-    const response = await apiClient.put<SystemConfig>('/admin/system/config', config)
-    return response.data
+  updateSystemConfig: async (config: Partial<SystemConfig> | SystemConfig): Promise<SystemConfig> => {
+    // Handle partial updates (e.g., only features section)
+    // Only transform if llm section is provided (full update from SystemSettings)
+    let backendPayload: unknown
+
+    if ('llm' in config && config.llm) {
+      // Full config update - transform llm to llm + langgraph
+      backendPayload = transformConfigToBackend(config as SystemConfig)
+    } else {
+      // Partial update (e.g., just features or news) - pass through as-is
+      backendPayload = config
+    }
+
+    const response = await apiClient.put<BackendSystemConfig>('/admin/system/config', backendPayload)
+    return transformConfigFromBackend(response.data)
   },
 
   // System statistics (simple)

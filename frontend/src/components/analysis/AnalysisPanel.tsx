@@ -1,10 +1,12 @@
 import { useState, useCallback, useRef, useEffect } from 'react'
 import DOMPurify from 'dompurify'
+import type { LucideIcon } from 'lucide-react'
 import {
   Brain,
   TrendingUp,
   BarChart3,
   MessageSquare,
+  Newspaper,
   Loader2,
   AlertCircle,
   RefreshCw,
@@ -12,49 +14,56 @@ import {
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
-import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { cn } from '@/lib/utils'
 import { getAccessToken } from '@/lib/auth'
 import { useLocale } from '@/hooks/useLocale'
-import type { AnalysisType } from '@/types'
 
 interface AnalysisPanelProps {
   symbol: string
   className?: string
 }
 
-interface AnalysisSection {
-  type: AnalysisType
-  content: string
-  isLoading: boolean
-  isComplete: boolean
+interface AgentStatus {
+  name: string
+  icon: LucideIcon
+  status: 'idle' | 'running' | 'complete' | 'error'
+  latencyMs?: number
 }
-
-interface AnalysisSections {
-  fundamental: AnalysisSection
-  technical: AnalysisSection
-  sentiment: AnalysisSection
-}
-
-type AgentName = 'fundamental' | 'technical' | 'sentiment' | 'news'
 
 interface SSEEvent {
-  type: 'heartbeat' | 'start' | 'agent_start' | 'agent_chunk' | 'agent_complete' | 'agent_error' | 'complete' | 'timeout' | 'error'
-  agent?: AgentName
+  type:
+    | 'heartbeat'
+    | 'start'
+    | 'analysis_phase_start'
+    | 'agent_start'
+    | 'agent_complete'
+    | 'analysis_phase_complete'
+    | 'synthesis_start'
+    | 'synthesis_chunk'
+    | 'clarification_needed'
+    | 'clarification_start'
+    | 'clarification_complete'
+    | 'complete'
+    | 'timeout'
+    | 'error'
+  agent?: string
   content?: string
   message?: string
   error?: string
-  structured_data?: Record<string, unknown>
-  symbol?: string
-  agents?: string[]
+  success?: boolean
+  latency_ms?: number
+  synthesis_output?: string
+  agents_completed?: number
+  timestamp?: number
 }
 
-type StreamStatus = 'idle' | 'connecting' | 'streaming' | 'complete' | 'error'
+type StreamStatus = 'idle' | 'connecting' | 'analyzing' | 'synthesizing' | 'complete' | 'error'
 
-const createInitialSections = (): AnalysisSections => ({
-  fundamental: { type: 'FUNDAMENTAL', content: '', isLoading: false, isComplete: false },
-  technical: { type: 'TECHNICAL', content: '', isLoading: false, isComplete: false },
-  sentiment: { type: 'SENTIMENT', content: '', isLoading: false, isComplete: false },
+const createInitialAgentStatus = (): Record<string, AgentStatus> => ({
+  fundamental: { name: 'Fundamental', icon: BarChart3, status: 'idle' },
+  technical: { name: 'Technical', icon: TrendingUp, status: 'idle' },
+  sentiment: { name: 'Sentiment', icon: MessageSquare, status: 'idle' },
+  news: { name: 'News', icon: Newspaper, status: 'idle' },
 })
 
 export default function AnalysisPanel({ symbol, className }: AnalysisPanelProps) {
@@ -62,15 +71,10 @@ export default function AnalysisPanel({ symbol, className }: AnalysisPanelProps)
   const [status, setStatus] = useState<StreamStatus>('idle')
   const [error, setError] = useState<string | null>(null)
   const [progress, setProgress] = useState<string>('')
-  const [sections, setSections] = useState<AnalysisSections>(createInitialSections)
-  const [activeTab, setActiveTab] = useState<string>('fundamental')
+  const [agents, setAgents] = useState<Record<string, AgentStatus>>(createInitialAgentStatus)
+  const [synthesisContent, setSynthesisContent] = useState<string>('')
+  const [clarificationRound, setClarificationRound] = useState<number>(0)
   const abortControllerRef = useRef<AbortController | null>(null)
-  const statusRef = useRef<StreamStatus>('idle')
-
-  // Keep status ref in sync
-  useEffect(() => {
-    statusRef.current = status
-  }, [status])
 
   // Clean up on unmount
   useEffect(() => {
@@ -81,9 +85,8 @@ export default function AnalysisPanel({ symbol, className }: AnalysisPanelProps)
     }
   }, [])
 
-  // Reset state and abort in-flight requests when symbol changes
+  // Reset state when symbol changes
   useEffect(() => {
-    // Abort any in-flight analysis request when symbol changes
     if (abortControllerRef.current) {
       abortControllerRef.current.abort()
       abortControllerRef.current = null
@@ -91,87 +94,93 @@ export default function AnalysisPanel({ symbol, className }: AnalysisPanelProps)
     setStatus('idle')
     setError(null)
     setProgress('')
-    setSections(createInitialSections())
+    setAgents(createInitialAgentStatus())
+    setSynthesisContent('')
+    setClarificationRound(0)
   }, [symbol])
 
   const handleSSEEvent = useCallback((event: SSEEvent) => {
     switch (event.type) {
       case 'heartbeat':
-        // Ignore heartbeat events - they're just keep-alive signals
+        // Ignore heartbeat events
         break
 
       case 'start':
-        setProgress('Analyzing in parallel...')
+      case 'analysis_phase_start':
+        setStatus('analyzing')
+        setProgress('Analyzing with AI agents...')
         break
 
       case 'agent_start':
-        // An agent is starting to analyze (parallel execution - don't switch tabs)
-        if (event.agent && event.agent !== 'news') {
-          const agentKey = event.agent as keyof AnalysisSections
-          setSections((prev) => ({
-            ...prev,
-            [agentKey]: {
-              ...prev[agentKey],
-              isLoading: true,
-            },
-          }))
-        }
-        break
-
-      case 'agent_chunk':
-        // Streaming content chunk from an agent
-        if (event.agent && event.agent !== 'news' && event.content) {
-          const agentKey = event.agent as keyof AnalysisSections
-          setSections((prev) => ({
-            ...prev,
-            [agentKey]: {
-              ...prev[agentKey],
-              content: prev[agentKey].content + event.content,
-            },
-          }))
+        if (event.agent && event.agent in agents) {
+          const agentKey = event.agent as keyof typeof agents
+          setAgents((prev) => {
+            const current = prev[agentKey]
+            if (!current) return prev
+            const updated: AgentStatus = {
+              name: current.name,
+              icon: current.icon,
+              status: 'running',
+            }
+            return { ...prev, [agentKey]: updated }
+          })
         }
         break
 
       case 'agent_complete':
-        // An agent finished its analysis
-        if (event.agent && event.agent !== 'news') {
-          const agentKey = event.agent as keyof AnalysisSections
-          setSections((prev) => ({
-            ...prev,
-            [agentKey]: {
-              ...prev[agentKey],
-              isLoading: false,
-              isComplete: true,
-            },
-          }))
+        if (event.agent && event.agent in agents) {
+          const agentKey = event.agent as keyof typeof agents
+          setAgents((prev) => {
+            const current = prev[agentKey]
+            if (!current) return prev
+            const updated: AgentStatus = {
+              name: current.name,
+              icon: current.icon,
+              status: event.success ? 'complete' : 'error',
+            }
+            if (typeof event.latency_ms === 'number') {
+              updated.latencyMs = event.latency_ms
+            }
+            return { ...prev, [agentKey]: updated }
+          })
         }
         break
 
-      case 'agent_error':
-        // An individual agent encountered an error
-        if (event.agent && event.agent !== 'news') {
-          const agentKey = event.agent as keyof AnalysisSections
-          setSections((prev) => ({
-            ...prev,
-            [agentKey]: {
-              ...prev[agentKey],
-              isLoading: false,
-              isComplete: true,
-              content: prev[agentKey].content || `Error: ${event.error ?? 'Analysis failed'}`,
-            },
-          }))
+      case 'analysis_phase_complete':
+        setProgress('Synthesizing results...')
+        break
+
+      case 'synthesis_start':
+        setStatus('synthesizing')
+        setProgress('Generating synthesis...')
+        break
+
+      case 'synthesis_chunk':
+        if (event.content) {
+          setSynthesisContent((prev) => prev + event.content)
         }
+        break
+
+      case 'clarification_needed':
+        setClarificationRound((prev) => prev + 1)
+        setProgress('Clarifying analysis...')
+        break
+
+      case 'clarification_start':
+        setProgress('Running clarification round...')
+        break
+
+      case 'clarification_complete':
+        setProgress('Clarification complete, refining synthesis...')
         break
 
       case 'complete':
-        // All agents have completed
-        setProgress('')
-        setSections((prev) => ({
-          fundamental: { ...prev.fundamental, isLoading: false, isComplete: true },
-          technical: { ...prev.technical, isLoading: false, isComplete: true },
-          sentiment: { ...prev.sentiment, isLoading: false, isComplete: true },
-        }))
         setStatus('complete')
+        setProgress('')
+        // Use final synthesis_output if provided
+        if (event.synthesis_output) {
+          setSynthesisContent(event.synthesis_output)
+        }
         break
 
       case 'timeout':
@@ -180,7 +189,7 @@ export default function AnalysisPanel({ symbol, className }: AnalysisPanelProps)
         break
 
       case 'error':
-        setError(event.error ?? 'An error occurred during analysis')
+        setError(event.error ?? event.message ?? 'An error occurred during analysis')
         setStatus('error')
         break
     }
@@ -196,21 +205,19 @@ export default function AnalysisPanel({ symbol, className }: AnalysisPanelProps)
     setStatus('connecting')
     setError(null)
     setProgress('Initializing analysis...')
-    setSections(createInitialSections())
+    setAgents(createInitialAgentStatus())
+    setSynthesisContent('')
+    setClarificationRound(0)
 
     const abortController = new AbortController()
     abortControllerRef.current = abortController
 
     try {
       const token = getAccessToken()
-      // Normalize language: 'zh-CN', 'zh-TW' etc. → 'zh', others → 'en'
       const lang = locale.toLowerCase().startsWith('zh') ? 'zh' : 'en'
-      const params = new URLSearchParams({
-        types: 'FUNDAMENTAL,TECHNICAL,SENTIMENT',
-        language: lang,
-      })
 
-      const response = await fetch(`/api/v1/analysis/${symbol}/stream?${params}`, {
+      // Use v2 endpoint (LangGraph)
+      const response = await fetch(`/api/v1/analysis/${symbol}/stream/v2?language=${lang}`, {
         method: 'GET',
         headers: {
           Accept: 'text/event-stream',
@@ -229,7 +236,7 @@ export default function AnalysisPanel({ symbol, className }: AnalysisPanelProps)
         throw new Error('Failed to get response reader')
       }
 
-      setStatus('streaming')
+      setStatus('analyzing')
       const decoder = new TextDecoder()
       let buffer = ''
 
@@ -259,16 +266,18 @@ export default function AnalysisPanel({ symbol, className }: AnalysisPanelProps)
         }
       }
 
-      setStatus('complete')
+      // Ensure completion status is set
+      if (status !== 'error') {
+        setStatus('complete')
+      }
     } catch (err) {
       if (err instanceof Error && err.name === 'AbortError') {
-        // User cancelled, don't show error
         return
       }
       setStatus('error')
       setError(err instanceof Error ? err.message : 'Analysis failed')
     }
-  }, [symbol, locale, handleSSEEvent])
+  }, [symbol, locale, handleSSEEvent, status])
 
   const cancelAnalysis = useCallback(() => {
     if (abortControllerRef.current) {
@@ -282,7 +291,8 @@ export default function AnalysisPanel({ symbol, className }: AnalysisPanelProps)
   const getStatusIcon = () => {
     switch (status) {
       case 'connecting':
-      case 'streaming':
+      case 'analyzing':
+      case 'synthesizing':
         return <Loader2 className="h-4 w-4 animate-spin" />
       case 'complete':
         return <CheckCircle2 className="h-4 w-4 text-stock-up" />
@@ -293,32 +303,46 @@ export default function AnalysisPanel({ symbol, className }: AnalysisPanelProps)
     }
   }
 
+  const getAgentStatusIcon = (agentStatus: AgentStatus['status']) => {
+    switch (agentStatus) {
+      case 'running':
+        return <Loader2 className="h-3 w-3 animate-spin text-primary" />
+      case 'complete':
+        return <CheckCircle2 className="h-3 w-3 text-stock-up" />
+      case 'error':
+        return <AlertCircle className="h-3 w-3 text-destructive" />
+      default:
+        return null
+    }
+  }
+
   /**
-   * Filter out JSON code blocks from analysis content.
-   * The LLM outputs structured JSON at the end for machine parsing,
-   * which should not be displayed to users.
+   * Filter out JSON code blocks from synthesis content.
+   * The LLM outputs structured JSON at the end for machine parsing.
    */
   const filterJsonBlocks = (content: string): string => {
-    // Remove ```json ... ``` blocks (including partial/streaming blocks)
     let filtered = content.replace(/```json[\s\S]*?```/g, '')
-    // Also remove unclosed ```json blocks (during streaming)
     filtered = filtered.replace(/```json[\s\S]*$/g, '')
-    // Remove any trailing "结构化机器可解析数据" or similar headers before JSON
-    filtered = filtered.replace(/\n*(?:结构化机器可解析数据|structured data|After your Markdown analysis)[：:.]?\s*$/gi, '')
+    filtered = filtered.replace(
+      /\n*(?:结构化机器可解析数据|structured data|After your Markdown analysis)[：:.]?\s*$/gi,
+      ''
+    )
     return filtered.trim()
   }
 
-  const renderAnalysisContent = (content: string, isComplete: boolean) => {
-    if (!content) {
-      return (
-        <div className="flex min-h-[120px] items-center justify-center text-muted-foreground py-8">
-          <p>Click "Analyze" to generate AI analysis</p>
-        </div>
-      )
+  const renderSynthesisContent = () => {
+    if (!synthesisContent) {
+      if (status === 'idle') {
+        return (
+          <div className="flex min-h-[200px] items-center justify-center text-muted-foreground py-8">
+            <p>Click "Analyze" to generate AI-powered comprehensive analysis</p>
+          </div>
+        )
+      }
+      return null
     }
 
-    // Filter out JSON blocks before rendering
-    const displayContent = filterJsonBlocks(content)
+    const displayContent = filterJsonBlocks(synthesisContent)
 
     return (
       <div className="space-y-4">
@@ -359,10 +383,7 @@ export default function AnalysisPanel({ symbol, className }: AnalysisPanelProps)
             }
 
             // Handle bold text with XSS sanitization
-            const formattedLine = line.replace(
-              /\*\*(.*?)\*\*/g,
-              '<strong>$1</strong>'
-            )
+            const formattedLine = line.replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
             const sanitizedLine = DOMPurify.sanitize(formattedLine, {
               ALLOWED_TAGS: ['strong', 'em', 'b', 'i'],
               ALLOWED_ATTR: [],
@@ -377,7 +398,7 @@ export default function AnalysisPanel({ symbol, className }: AnalysisPanelProps)
             )
           })}
         </div>
-        {!isComplete && (status === 'streaming' || status === 'connecting') && (
+        {(status === 'analyzing' || status === 'synthesizing') && (
           <div className="flex items-center gap-2 text-muted-foreground">
             <Loader2 className="h-3 w-3 animate-spin" />
             <span className="text-xs">Generating...</span>
@@ -387,28 +408,7 @@ export default function AnalysisPanel({ symbol, className }: AnalysisPanelProps)
     )
   }
 
-  const tabConfigs = [
-    {
-      id: 'fundamental' as const,
-      label: 'Fundamental',
-      icon: BarChart3,
-      description: 'Financial health and valuation analysis',
-    },
-    {
-      id: 'technical' as const,
-      label: 'Technical',
-      icon: TrendingUp,
-      description: 'Price trends and chart patterns',
-    },
-    {
-      id: 'sentiment' as const,
-      label: 'Sentiment',
-      icon: MessageSquare,
-      description: 'Market sentiment and news analysis',
-    },
-  ]
-
-  const isStreaming = status === 'streaming' || status === 'connecting'
+  const isStreaming = status === 'connecting' || status === 'analyzing' || status === 'synthesizing'
 
   return (
     <Card className={cn('flex flex-col', className)}>
@@ -424,11 +424,7 @@ export default function AnalysisPanel({ symbol, className }: AnalysisPanelProps)
                 Cancel
               </Button>
             ) : (
-              <Button
-                size="sm"
-                onClick={startAnalysis}
-                disabled={isStreaming}
-              >
+              <Button size="sm" onClick={startAnalysis} disabled={isStreaming}>
                 {status === 'complete' ? (
                   <>
                     <RefreshCw className="mr-2 h-4 w-4" />
@@ -446,7 +442,38 @@ export default function AnalysisPanel({ symbol, className }: AnalysisPanelProps)
         </div>
         <CardDescription>
           {symbol} - Comprehensive AI-powered stock analysis
+          {clarificationRound > 0 && (
+            <span className="ml-2 inline-flex items-center rounded-md border px-2 py-0.5 text-xs font-medium">
+              +{clarificationRound} clarification
+            </span>
+          )}
         </CardDescription>
+
+        {/* Agent Status Indicators */}
+        {status !== 'idle' && (
+          <div className="flex flex-wrap gap-2 mt-3">
+            {Object.entries(agents).map(([key, agent]) => (
+              <div
+                key={key}
+                className={cn(
+                  'flex items-center gap-1.5 px-2 py-1 rounded-md text-xs',
+                  agent.status === 'idle' && 'bg-muted text-muted-foreground',
+                  agent.status === 'running' && 'bg-primary/10 text-primary',
+                  agent.status === 'complete' && 'bg-stock-up/10 text-stock-up',
+                  agent.status === 'error' && 'bg-destructive/10 text-destructive'
+                )}
+              >
+                <agent.icon className="h-3 w-3" />
+                <span>{agent.name}</span>
+                {getAgentStatusIcon(agent.status)}
+                {agent.latencyMs && agent.status === 'complete' && (
+                  <span className="text-muted-foreground">({(agent.latencyMs / 1000).toFixed(1)}s)</span>
+                )}
+              </div>
+            ))}
+          </div>
+        )}
+
         {progress && (
           <div className="flex items-center gap-2 text-sm text-muted-foreground mt-2">
             <Loader2 className="h-3 w-3 animate-spin" />
@@ -462,37 +489,7 @@ export default function AnalysisPanel({ symbol, className }: AnalysisPanelProps)
       </CardHeader>
 
       <CardContent className="flex-1 pt-0">
-        <Tabs value={activeTab} onValueChange={setActiveTab} className="h-full">
-          <TabsList className="grid w-full grid-cols-3">
-            {tabConfigs.map((tab) => (
-              <TabsTrigger
-                key={tab.id}
-                value={tab.id}
-                className="flex items-center gap-1.5"
-              >
-                <tab.icon className="h-3.5 w-3.5" />
-                <span className="hidden sm:inline">{tab.label}</span>
-                {sections[tab.id].isLoading && (
-                  <Loader2 className="h-3 w-3 animate-spin text-primary" />
-                )}
-                {sections[tab.id].isComplete && !sections[tab.id].isLoading && (
-                  <CheckCircle2 className="h-3 w-3 text-stock-up" />
-                )}
-              </TabsTrigger>
-            ))}
-          </TabsList>
-
-          {tabConfigs.map((tab) => (
-            <TabsContent key={tab.id} value={tab.id} className="mt-4">
-              <div className="pr-4">
-                {renderAnalysisContent(
-                  sections[tab.id].content,
-                  sections[tab.id].isComplete
-                )}
-              </div>
-            </TabsContent>
-          ))}
-        </Tabs>
+        <div className="pr-4">{renderSynthesisContent()}</div>
       </CardContent>
     </Card>
   )

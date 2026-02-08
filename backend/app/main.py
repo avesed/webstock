@@ -7,7 +7,6 @@ from typing import AsyncGenerator
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.agents import cleanup_orchestrator
 from app.api.v1.router import api_router
 from app.config import settings
 from app.db.database import AsyncSessionLocal, close_db, init_db
@@ -95,10 +94,6 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     logger.info("Shutting down...")
 
     # Cleanup services in reverse order of dependency
-    logger.debug("Cleaning up agent orchestrator...")
-    await cleanup_orchestrator()
-    logger.debug("Agent orchestrator cleanup complete")
-
     logger.debug("Cleaning up stock service...")
     await cleanup_stock_service()
     logger.debug("Stock service cleanup complete")

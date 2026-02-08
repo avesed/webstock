@@ -23,9 +23,13 @@ const DEFAULT_CONFIG: SystemConfig = {
   llm: {
     apiKey: null,
     baseUrl: 'https://api.openai.com/v1',
-    model: 'gpt-4o-mini',
-    maxTokens: null,  // null = use model default
-    temperature: null,  // null = use model default
+    // LangGraph model settings (merged)
+    useLocalModels: false,
+    localLlmBaseUrl: null,
+    analysisModel: 'gpt-4o-mini',
+    synthesisModel: 'gpt-4o',
+    maxClarificationRounds: 2,
+    clarificationConfidenceThreshold: 0.6,
   },
   news: {
     defaultSource: 'scraper',
@@ -163,83 +167,134 @@ export function SystemSettings() {
   return (
     <TooltipProvider>
       <div className="space-y-6">
-        {/* LLM Configuration */}
+        {/* AI Model Configuration (LLM + LangGraph merged) */}
         <Card>
           <CardHeader>
             <CardTitle>{t('settings.llmTitle')}</CardTitle>
             <CardDescription>{t('settings.llmDescription')}</CardDescription>
           </CardHeader>
           <CardContent className="space-y-4">
-            <div className="space-y-2">
-              <Label htmlFor="llm-api-key">{t('settings.apiKey')}</Label>
-              <div className="relative">
-                <Input
-                  id="llm-api-key"
-                  type={showApiKey ? 'text' : 'password'}
-                  value={formData.llm.apiKey === '***' ? '' : (formData.llm.apiKey || '')}
-                  onChange={(e) => handleChange('llm', 'apiKey', e.target.value || null)}
-                  placeholder={formData.llm.apiKey === '***' ? t('settings.apiKeySet') : t('settings.apiKeyPlaceholder')}
-                />
-                <Button
-                  variant="ghost"
-                  size="icon"
-                  className="absolute right-2 top-1/2 -translate-y-1/2 h-6 w-6"
-                  onClick={() => setShowApiKey(!showApiKey)}
-                >
-                  {showApiKey ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
-                </Button>
+            {/* Local Model Toggle - at the top for clarity */}
+            <div className="flex items-center justify-between">
+              <div className="space-y-0.5">
+                <Label>{t('settings.useLocalModels')}</Label>
+                <p className="text-sm text-muted-foreground">{t('settings.useLocalModelsDescription')}</p>
               </div>
-              {formData.llm.apiKey === '***' && (
-                <p className="text-xs text-muted-foreground">{t('settings.apiKeySetHint')}</p>
-              )}
-            </div>
-
-            <div className="space-y-2">
-              <Label htmlFor="llm-base-url">{t('settings.baseUrl')}</Label>
-              <Input
-                id="llm-base-url"
-                value={formData.llm.baseUrl}
-                onChange={(e) => handleChange('llm', 'baseUrl', e.target.value)}
-                placeholder="https://api.openai.com/v1"
+              <ToggleSwitch
+                checked={formData.llm.useLocalModels}
+                onCheckedChange={(checked) => handleChange('llm', 'useLocalModels', checked)}
               />
             </div>
 
-            <div className="grid gap-4 sm:grid-cols-3">
+            <Separator />
+
+            {/* API Settings - conditional based on local/cloud mode */}
+            {formData.llm.useLocalModels ? (
+              /* Local Model Settings */
               <div className="space-y-2">
-                <Label htmlFor="llm-model">{t('settings.model')}</Label>
+                <Label htmlFor="llm-local-base-url">{t('settings.localLlmBaseUrl')}</Label>
                 <Input
-                  id="llm-model"
-                  value={formData.llm.model}
-                  onChange={(e) => handleChange('llm', 'model', e.target.value)}
+                  id="llm-local-base-url"
+                  value={formData.llm.localLlmBaseUrl || ''}
+                  onChange={(e) => handleChange('llm', 'localLlmBaseUrl', e.target.value || null)}
+                  placeholder="http://localhost:8000/v1"
+                />
+                <p className="text-xs text-muted-foreground">{t('settings.localLlmBaseUrlHint')}</p>
+              </div>
+            ) : (
+              /* Cloud API Settings */
+              <>
+                <div className="space-y-2">
+                  <Label htmlFor="llm-api-key">{t('settings.apiKey')}</Label>
+                  <div className="relative">
+                    <Input
+                      id="llm-api-key"
+                      type={showApiKey ? 'text' : 'password'}
+                      value={formData.llm.apiKey === '***' ? '' : (formData.llm.apiKey || '')}
+                      onChange={(e) => handleChange('llm', 'apiKey', e.target.value || null)}
+                      placeholder={formData.llm.apiKey === '***' ? t('settings.apiKeySet') : t('settings.apiKeyPlaceholder')}
+                    />
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      className="absolute right-2 top-1/2 -translate-y-1/2 h-6 w-6"
+                      onClick={() => setShowApiKey(!showApiKey)}
+                    >
+                      {showApiKey ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+                    </Button>
+                  </div>
+                  {formData.llm.apiKey === '***' && (
+                    <p className="text-xs text-muted-foreground">{t('settings.apiKeySetHint')}</p>
+                  )}
+                </div>
+
+                <div className="space-y-2">
+                  <Label htmlFor="llm-base-url">{t('settings.baseUrl')}</Label>
+                  <Input
+                    id="llm-base-url"
+                    value={formData.llm.baseUrl}
+                    onChange={(e) => handleChange('llm', 'baseUrl', e.target.value)}
+                    placeholder="https://api.openai.com/v1"
+                  />
+                </div>
+              </>
+            )}
+
+            <Separator />
+
+            {/* Model Selection */}
+            <div className="grid gap-4 sm:grid-cols-2">
+              <div className="space-y-2">
+                <Label htmlFor="llm-analysis-model">{t('settings.analysisModel')}</Label>
+                <Input
+                  id="llm-analysis-model"
+                  value={formData.llm.analysisModel}
+                  onChange={(e) => handleChange('llm', 'analysisModel', e.target.value)}
                   placeholder="gpt-4o-mini"
                 />
+                <p className="text-xs text-muted-foreground">{t('settings.analysisModelHint')}</p>
               </div>
 
               <div className="space-y-2">
-                <Label htmlFor="llm-max-tokens">{t('settings.maxTokens')}</Label>
+                <Label htmlFor="llm-synthesis-model">{t('settings.synthesisModel')}</Label>
                 <Input
-                  id="llm-max-tokens"
-                  type="number"
-                  min={1}
-                  max={128000}
-                  placeholder={t('settings.useModelDefault')}
-                  value={formData.llm.maxTokens ?? ''}
-                  onChange={(e) => handleChange('llm', 'maxTokens', e.target.value === '' ? null : parseInt(e.target.value))}
+                  id="llm-synthesis-model"
+                  value={formData.llm.synthesisModel}
+                  onChange={(e) => handleChange('llm', 'synthesisModel', e.target.value)}
+                  placeholder="gpt-4o"
                 />
+                <p className="text-xs text-muted-foreground">{t('settings.synthesisModelHint')}</p>
               </div>
+            </div>
 
+            <Separator />
+
+            {/* Advanced Settings */}
+            <div className="grid gap-4 sm:grid-cols-2">
               <div className="space-y-2">
-                <Label htmlFor="llm-temperature">{t('settings.temperature')}</Label>
+                <Label htmlFor="llm-max-rounds">{t('settings.maxClarificationRounds')}</Label>
                 <Input
-                  id="llm-temperature"
+                  id="llm-max-rounds"
                   type="number"
                   min={0}
-                  max={2}
-                  step={0.1}
-                  placeholder={t('settings.useModelDefault')}
-                  value={formData.llm.temperature ?? ''}
-                  onChange={(e) => handleChange('llm', 'temperature', e.target.value === '' ? null : parseFloat(e.target.value))}
+                  max={5}
+                  value={formData.llm.maxClarificationRounds}
+                  onChange={(e) => handleChange('llm', 'maxClarificationRounds', parseInt(e.target.value) || 0)}
                 />
+              </div>
+
+              <div className="space-y-2">
+                <Label htmlFor="llm-confidence">{t('settings.clarificationThreshold')}</Label>
+                <Input
+                  id="llm-confidence"
+                  type="number"
+                  min={0}
+                  max={1}
+                  step={0.1}
+                  value={formData.llm.clarificationConfidenceThreshold}
+                  onChange={(e) => handleChange('llm', 'clarificationConfidenceThreshold', parseFloat(e.target.value) || 0.6)}
+                />
+                <p className="text-xs text-muted-foreground">{t('settings.clarificationThresholdHint')}</p>
               </div>
             </div>
           </CardContent>

@@ -6,6 +6,36 @@ from app.schemas.analysis import (
     FullAnalysisResponse,
     SingleAnalysisResponse,
 )
+from app.schemas.agent_analysis import (
+    # Enums
+    AnalysisConfidence,
+    ActionRecommendation,
+    ValuationAssessment,
+    TrendDirection,
+    SentimentLevel,
+    ClarificationType,
+    # Clarification
+    ClarificationOption,
+    ClarificationRequest,
+    # Shared
+    KeyInsight,
+    # Agent-specific results
+    FundamentalMetrics,
+    FundamentalAnalysisResult,
+    TechnicalIndicators,
+    SupportResistanceLevel,
+    TechnicalAnalysisResult,
+    SentimentSource,
+    SentimentAnalysisResult,
+    NewsItem,
+    NewsAnalysisResult,
+    # Unified result
+    AgentAnalysisResult,
+    # Synthesis
+    SynthesisInput,
+    InvestmentRecommendation,
+    SynthesisResult,
+)
 from app.schemas.stock import (
     StockQuoteResponse,
     StockHistoryResponse,
@@ -107,12 +137,35 @@ __all__ = [
     "WatchlistDetailResponse",
     "WatchlistItemCreate",
     "WatchlistItemResponse",
-    # Analysis schemas
+    # Analysis schemas (legacy)
     "AgentTypeEnum",
     "AgentResultResponse",
     "FullAnalysisResponse",
     "SingleAnalysisResponse",
     "AnalysisErrorResponse",
+    # Agent analysis schemas (LangGraph)
+    "AnalysisConfidence",
+    "ActionRecommendation",
+    "ValuationAssessment",
+    "TrendDirection",
+    "SentimentLevel",
+    "ClarificationType",
+    "ClarificationOption",
+    "ClarificationRequest",
+    "KeyInsight",
+    "FundamentalMetrics",
+    "FundamentalAnalysisResult",
+    "TechnicalIndicators",
+    "SupportResistanceLevel",
+    "TechnicalAnalysisResult",
+    "SentimentSource",
+    "SentimentAnalysisResult",
+    "NewsItem",
+    "NewsAnalysisResult",
+    "AgentAnalysisResult",
+    "SynthesisInput",
+    "InvestmentRecommendation",
+    "SynthesisResult",
     # News schemas
     "NewsResponse",
     "NewsCreate",

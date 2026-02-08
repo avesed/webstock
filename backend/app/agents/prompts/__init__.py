@@ -27,6 +27,10 @@ from app.prompts.analysis import (
     sanitize_news_article,
     sanitize_symbol,
 )
+from app.prompts.analysis.news_prompt import (
+    build_news_analysis_prompt,
+    get_news_analysis_system_prompt,
+)
 
 __all__ = [
     "build_fundamental_prompt",
@@ -37,6 +41,9 @@ __all__ = [
     "get_sentiment_system_prompt",
     "build_news_prompt",
     "get_news_system_prompt",
+    # News analysis (original names)
+    "build_news_analysis_prompt",
+    "get_news_analysis_system_prompt",
     # Sanitization utilities
     "sanitize_input",
     "sanitize_symbol",

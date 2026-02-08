@@ -17,7 +17,7 @@ class OpenAIClientManager:
 
     Provides a shared global client for default config and creates
     per-request clients when users have custom API keys/base URLs.
-    Used by BaseAgent, ChatService, and EmbeddingService.
+    Used by ChatService and EmbeddingService.
     """
 
     def __init__(self) -> None:
@@ -129,3 +129,52 @@ def get_openai_temperature() -> Optional[float]:
 def get_openai_system_prompt() -> Optional[str]:
     """Convenience function to get custom system prompt."""
     return _manager.get_system_prompt()
+
+
+async def get_synthesis_model_config() -> tuple[AsyncOpenAI, str]:
+    """
+    Get OpenAI client and model configured for synthesis layer.
+
+    This function returns the client and model name for the synthesis layer,
+    which is used by the chat service. The synthesis layer typically uses
+    a more capable model (e.g., gpt-4o) for user interactions.
+
+    Returns:
+        Tuple of (AsyncOpenAI client, model name)
+
+    Raises:
+        ValueError: If no API key is configured
+    """
+    from app.services.settings_service import get_settings_service
+    from app.db.database import get_async_session
+
+    try:
+        async with get_async_session() as db:
+            service = get_settings_service()
+            config = await service.get_langgraph_config(db)
+
+            if config.use_local_models and config.local_llm_base_url:
+                # Use local model via OpenAI-compatible API
+                logger.info(
+                    "Chat using local synthesis model: %s at %s",
+                    config.synthesis_model,
+                    config.local_llm_base_url,
+                )
+                client = AsyncOpenAI(
+                    api_key="not-needed",
+                    base_url=config.local_llm_base_url,
+                )
+                return client, config.synthesis_model
+            else:
+                # Use cloud model
+                api_key = config.openai_api_key
+                base_url = config.openai_base_url
+                if not api_key:
+                    raise ValueError("OPENAI_API_KEY is not configured")
+                logger.info("Chat using cloud synthesis model: %s", config.synthesis_model)
+                client = AsyncOpenAI(api_key=api_key, base_url=base_url)
+                return client, config.synthesis_model
+    except Exception as e:
+        logger.warning("Failed to get synthesis config from database: %s, using default", e)
+        # Fall back to default client and model
+        return _manager.get_client(), _manager.get_model()

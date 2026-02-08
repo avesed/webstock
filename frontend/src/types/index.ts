@@ -498,9 +498,13 @@ export interface SystemConfig {
   llm: {
     apiKey: string | null
     baseUrl: string
-    model: string
-    maxTokens: number | null  // null = use model default
-    temperature: number | null  // null = use model default
+    // LangGraph model settings (merged)
+    useLocalModels: boolean  // Whether to use local models
+    localLlmBaseUrl: string | null  // OpenAI compatible endpoint (vLLM, Ollama, LMStudio, etc.)
+    analysisModel: string  // Analysis layer model
+    synthesisModel: string  // Synthesis layer model
+    maxClarificationRounds: number  // Max clarification rounds (0-5)
+    clarificationConfidenceThreshold: number  // Confidence threshold (0.0-1.0)
   }
   news: {
     defaultSource: NewsContentSource

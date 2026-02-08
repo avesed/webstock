@@ -144,6 +144,50 @@ class SystemSettings(Base):
         comment="是否启用股票分析功能",
     )
 
+    # === OpenAI Compatible / Local Model Configuration ===
+    local_llm_base_url: Mapped[Optional[str]] = mapped_column(
+        String(500),
+        nullable=True,
+        default=None,
+        comment="OpenAI 兼容端点地址（支持 vLLM, Ollama, LMStudio 等）",
+    )
+
+    analysis_model: Mapped[Optional[str]] = mapped_column(
+        String(100),
+        nullable=True,
+        default="gpt-4o-mini",
+        comment="分析层模型（支持本地模型如 Qwen2.5-14B-Instruct）",
+    )
+
+    synthesis_model: Mapped[Optional[str]] = mapped_column(
+        String(100),
+        nullable=True,
+        default="gpt-4o",
+        comment="综合层模型（用于最终综合分析和用户交互）",
+    )
+
+    use_local_models: Mapped[bool] = mapped_column(
+        Boolean,
+        nullable=False,
+        default=False,
+        comment="是否使用 OpenAI 兼容的本地模型进行分析",
+    )
+
+    # === Clarification Settings ===
+    max_clarification_rounds: Mapped[int] = mapped_column(
+        Integer,
+        nullable=False,
+        default=2,
+        comment="最大追问轮次（综合层向分析层追问的最大次数）",
+    )
+
+    clarification_confidence_threshold: Mapped[float] = mapped_column(
+        Float,
+        nullable=False,
+        default=0.6,
+        comment="触发追问的置信度阈值（低于此值时可能触发追问）",
+    )
+
     # === Audit Fields ===
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),

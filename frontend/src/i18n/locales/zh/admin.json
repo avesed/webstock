@@ -54,8 +54,8 @@
   },
   "settings": {
     "saved": "设置已保存",
-    "llmTitle": "LLM 配置",
-    "llmDescription": "配置 AI 功能的默认语言模型设置",
+    "llmTitle": "AI 模型配置",
+    "llmDescription": "配置 OpenAI 兼容的 API 端点和模型设置",
     "apiKey": "API Key",
     "apiKeyPlaceholder": "输入您的 OpenAI API Key",
     "apiKeySet": "••••••••（已设置）",
@@ -92,7 +92,20 @@
     "enableStockAnalysisDescription": "启用 AI 驱动的股票分析功能",
     "requireApproval": "要求新用户审批",
     "requireApprovalDescription": "新用户注册后需要管理员审批才能使用",
-    "disableApprovalWarning": "关闭此选项后，所有待审批用户将自动批准"
+    "disableApprovalWarning": "关闭此选项后，所有待审批用户将自动批准",
+    "langgraphTitle": "LangGraph 多代理分析",
+    "langgraphDescription": "配置多代理股票分析工作流的模型和参数",
+    "useLocalModels": "使用本地模型",
+    "useLocalModelsDescription": "使用 OpenAI 兼容的本地模型服务（vLLM、Ollama、LMStudio 等）",
+    "localLlmBaseUrl": "本地模型 API 地址",
+    "localLlmBaseUrlHint": "OpenAI 兼容端点，例如 http://localhost:8000/v1",
+    "analysisModel": "分析层模型",
+    "analysisModelHint": "用于各分析代理的模型，建议使用较小模型以降低成本",
+    "synthesisModel": "综合层模型",
+    "synthesisModelHint": "用于综合分析和用户交互的模型，建议使用更强模型",
+    "maxClarificationRounds": "最大追问轮次",
+    "clarificationThreshold": "追问触发阈值",
+    "clarificationThresholdHint": "置信度低于此值时可能触发追问（0.0-1.0）"
   },
   "monitor": {
     "userStats": "用户统计",

@@ -23,11 +23,10 @@ from app.db.database import AsyncSessionLocal
 
 from app.config import settings
 from app.core.openai_client import (
-    get_openai_client,
-    get_openai_model,
     get_openai_max_tokens,
     get_openai_temperature,
     get_openai_system_prompt,
+    get_synthesis_model_config,
 )
 from app.core.token_bucket import get_chat_rate_limiter, get_user_chat_rate_limiter
 from app.models.chat import ChatMessage, Conversation
@@ -317,9 +316,8 @@ class ChatService:
                 "messageId": assistant_message_id,
             })
 
-            # 8. Tool call loop
-            client = get_openai_client()
-            model = get_openai_model()
+            # 8. Tool call loop (using synthesis model from LangGraph config)
+            client, model = await get_synthesis_model_config()
             full_content: list[str] = []
             total_completion_tokens = 0
             all_tool_calls_meta: list[dict] = []

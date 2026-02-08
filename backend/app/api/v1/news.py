@@ -403,7 +403,7 @@ async def analyze_news(
 
     Returns sentiment score, impact prediction, and key points.
     """
-    from app.agents.prompts.news_prompt import (
+    from app.prompts.analysis.news_prompt import (
         build_news_analysis_prompt,
         get_news_analysis_system_prompt,
     )
