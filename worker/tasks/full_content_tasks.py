@@ -12,7 +12,7 @@ import asyncio
 import logging
 import uuid
 from datetime import datetime, timedelta, timezone
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, TypeVar
 
 from worker.celery_app import celery_app
 
@@ -20,6 +20,35 @@ from worker.celery_app import celery_app
 from worker.db_utils import get_task_session, setup_task_ai_context
 
 logger = logging.getLogger(__name__)
+
+T = TypeVar("T")
+
+
+def run_async_task(coro_func: Callable[..., T], *args, **kwargs) -> T:
+    """
+    Run an async function in a new event loop, properly cleaning up afterwards.
+
+    This helper ensures all singleton async clients are reset after each task
+    to avoid "Event loop is closed" errors when tasks reuse singleton clients
+    that were bound to different (now closed) event loops.
+    """
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    try:
+        return loop.run_until_complete(coro_func(*args, **kwargs))
+    finally:
+        loop.close()
+        # Reset all singleton clients that may have bound to this event loop
+        try:
+            from app.core.openai_client import reset_openai_client
+            reset_openai_client()
+        except Exception:
+            pass
+        try:
+            from app.db.redis import reset_redis
+            reset_redis()
+        except Exception:
+            pass
 
 
 @celery_app.task(bind=True, max_retries=3)
@@ -30,6 +59,7 @@ def fetch_news_content(
     market: str,
     symbol: str,
     user_id: Optional[int] = None,
+    use_two_phase: bool = False,
 ):
     """
     Fetch full content for a single news article.
@@ -38,7 +68,7 @@ def fetch_news_content(
     1. Use FullContentService to scrape article content
     2. Save content to JSON file using NewsStorageService
     3. Update News record with file path and status
-    4. Dispatch evaluate_news_relevance task
+    4. Dispatch evaluate_news_relevance (legacy) or deep_filter_news (two-phase)
 
     Args:
         news_id: UUID of the news article
@@ -46,17 +76,12 @@ def fetch_news_content(
         market: Market identifier (US, HK, SH, SZ)
         symbol: Stock symbol
         user_id: Optional user ID for personalized settings
+        use_two_phase: Whether to use two-phase filtering (dispatch deep_filter_news)
     """
     try:
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        try:
-            result = loop.run_until_complete(
-                _fetch_news_content_async(news_id, url, market, symbol, user_id)
-            )
-            return result
-        finally:
-            loop.close()
+        return run_async_task(
+            _fetch_news_content_async, news_id, url, market, symbol, user_id, use_two_phase
+        )
     except Exception as e:
         logger.exception("fetch_news_content failed for news_id=%s: %s", news_id, e)
         # Retry with exponential backoff
@@ -69,6 +94,7 @@ async def _fetch_news_content_async(
     market: str,
     symbol: str,
     user_id: Optional[int] = None,
+    use_two_phase: bool = False,
 ) -> Dict[str, Any]:
     """Async implementation of fetch_news_content."""
     from sqlalchemy import select
@@ -211,8 +237,15 @@ async def _fetch_news_content_async(
             content_status,
         )
 
-        # Dispatch evaluation task
-        evaluate_news_relevance.delay(news_id, user_id)
+        # Dispatch evaluation task based on mode
+        if use_two_phase:
+            # Two-phase mode: use deep filter for entity extraction + filtering
+            deep_filter_news.delay(news_id, user_id)
+            logger.debug("Dispatched deep_filter_news for news_id=%s", news_id)
+        else:
+            # Legacy mode: use single-stage relevance evaluation
+            evaluate_news_relevance.delay(news_id, user_id)
+            logger.debug("Dispatched evaluate_news_relevance for news_id=%s", news_id)
 
         return {
             "status": "success",
@@ -220,6 +253,7 @@ async def _fetch_news_content_async(
             "word_count": fetch_result.word_count,
             "content_status": content_status,
             "file_path": file_path,
+            "use_two_phase": use_two_phase,
         }
 
 
@@ -234,13 +268,7 @@ def fetch_batch_content(self, news_items: List[Dict[str, Any]]):
         news_items: List of dicts with keys: news_id, url, market, symbol, user_id
     """
     try:
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        try:
-            result = loop.run_until_complete(_fetch_batch_content_async(news_items))
-            return result
-        finally:
-            loop.close()
+        return run_async_task(_fetch_batch_content_async, news_items)
     except Exception as e:
         logger.exception("fetch_batch_content failed: %s", e)
         raise self.retry(exc=e, countdown=60 * (2 ** self.request.retries))
@@ -253,10 +281,21 @@ async def _fetch_batch_content_async(
     if not news_items:
         return {"status": "skipped", "reason": "empty_batch"}
 
+    # Check if two-phase filtering is enabled
+    from sqlalchemy import select
+    from app.models.system_settings import SystemSettings
+
+    use_two_phase = False
+    async with get_task_session() as db:
+        result = await db.execute(select(SystemSettings).where(SystemSettings.id == 1))
+        system_settings = result.scalar_one_or_none()
+        if system_settings:
+            use_two_phase = system_settings.use_two_phase_filter
+
     # Limit batch size
     batch = news_items[:20]
 
-    logger.info("Starting batch fetch for %d news items", len(batch))
+    logger.info("Starting batch fetch for %d news items (two_phase=%s)", len(batch), use_two_phase)
 
     # Create tasks for parallel execution
     tasks = []
@@ -267,6 +306,7 @@ async def _fetch_batch_content_async(
             market=item.get("market", "US"),
             symbol=item.get("symbol", "UNKNOWN"),
             user_id=item.get("user_id"),
+            use_two_phase=use_two_phase,
         )
         tasks.append(task)
 
@@ -317,15 +357,7 @@ def evaluate_news_relevance(self, news_id: str, user_id: Optional[int] = None):
         user_id: Optional user ID for personalized settings
     """
     try:
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        try:
-            result = loop.run_until_complete(
-                _evaluate_news_relevance_async(news_id, user_id)
-            )
-            return result
-        finally:
-            loop.close()
+        return run_async_task(_evaluate_news_relevance_async, news_id, user_id)
     except Exception as e:
         logger.exception("evaluate_news_relevance failed for news_id=%s: %s", news_id, e)
         raise self.retry(exc=e, countdown=30 * (2 ** self.request.retries))
@@ -418,6 +450,158 @@ async def _evaluate_news_relevance_async(
         }
 
 
+@celery_app.task(bind=True, max_retries=2)
+def deep_filter_news(self, news_id: str, user_id: Optional[int] = None):
+    """
+    Deep filter task for two-phase news filtering.
+
+    Replaces evaluate_news_relevance when two-phase mode is enabled.
+    Uses TwoPhaseFilterService to:
+    1. Analyze full text with LLM
+    2. Extract entities, tags, sentiment, investment summary
+    3. Make KEEP/DELETE decision
+    4. Update news record with extracted data
+    5. Dispatch embedding for KEEP articles
+
+    Args:
+        news_id: UUID of the news article
+        user_id: Optional user ID for personalized settings
+    """
+    try:
+        return run_async_task(_deep_filter_news_async, news_id, user_id)
+    except Exception as e:
+        logger.exception("deep_filter_news failed for news_id=%s: %s", news_id, e)
+        raise self.retry(exc=e, countdown=30 * (2 ** self.request.retries))
+
+
+async def _deep_filter_news_async(
+    news_id: str,
+    user_id: Optional[int] = None,
+) -> Dict[str, Any]:
+    """Async implementation of deep_filter_news."""
+    from sqlalchemy import select
+
+    from app.models.news import News, ContentStatus, FilterStatus
+    from app.services.two_phase_filter_service import get_two_phase_filter_service
+    from app.services.filter_stats_service import get_filter_stats_service
+    from app.services.news_storage_service import get_news_storage_service
+
+    logger.info("Deep filtering news_id=%s", news_id)
+
+    async with get_task_session() as db:
+        # Get news record
+        query = select(News).where(News.id == uuid.UUID(news_id))
+        result = await db.execute(query)
+        news = result.scalar_one_or_none()
+
+        if not news:
+            logger.warning("News record not found: %s", news_id)
+            return {"status": "error", "reason": "not_found"}
+
+        # Skip if no content file
+        if not news.content_file_path:
+            logger.info("No content file for news_id=%s, skipping deep filter", news_id)
+            # Still dispatch embedding for title/summary
+            embed_news_full_content.delay(news_id, user_id)
+            return {"status": "skipped", "reason": "no_content_file"}
+
+        # Read full content from JSON file
+        storage_service = get_news_storage_service()
+        content_data = storage_service.read_content(news.content_file_path)
+
+        full_text = None
+        if content_data:
+            full_text = content_data.get("full_text")
+
+        # Get services
+        filter_service = get_two_phase_filter_service()
+        stats_service = get_filter_stats_service()
+
+        # Run deep filter with AI context
+        async with setup_task_ai_context():
+            deep_result = await filter_service.deep_filter_article(
+                db=db,
+                title=news.title or "",
+                full_text=full_text or news.summary or "",
+                source=news.source or "",
+                url=news.url,
+            )
+
+        if deep_result["decision"] == "delete":
+            # Delete JSON file and mark as deleted
+            logger.info("Deep filter: deleting irrelevant news_id=%s", news_id)
+
+            if news.content_file_path:
+                storage_service.delete_content(news.content_file_path)
+
+            news.content_status = ContentStatus.DELETED.value
+            news.content_file_path = None
+            news.filter_status = FilterStatus.FINE_DELETE.value
+            await db.commit()
+
+            # Track stats
+            await stats_service.increment("fine_delete")
+
+            return {
+                "status": "deleted",
+                "news_id": news_id,
+                "reason": "deep_filter_delete",
+            }
+
+        # Article is kept - update with extracted data
+        logger.info("Deep filter: keeping news_id=%s", news_id)
+
+        # Update entities
+        entities = deep_result.get("entities", [])
+        news.related_entities = entities if entities else None
+
+        # Calculate RAG helper fields from entities
+        if entities:
+            news.has_stock_entities = any(e["type"] == "stock" for e in entities)
+            news.has_macro_entities = any(e["type"] == "macro" for e in entities)
+            news.max_entity_score = max((e["score"] for e in entities), default=None)
+
+            # Determine primary entity (prefer stock)
+            stock_entities = [e for e in entities if e["type"] == "stock"]
+            if stock_entities:
+                news.primary_entity = stock_entities[0]["entity"]
+                news.primary_entity_type = "stock"
+            elif entities:
+                news.primary_entity = entities[0]["entity"]
+                news.primary_entity_type = entities[0]["type"]
+
+        # Update tags and summary
+        news.industry_tags = deep_result.get("industry_tags", [])
+        news.event_tags = deep_result.get("event_tags", [])
+        news.sentiment_tag = deep_result.get("sentiment", "neutral")
+        news.investment_summary = deep_result.get("investment_summary", "")
+
+        # Update filter status
+        news.filter_status = FilterStatus.FINE_KEEP.value
+
+        await db.commit()
+
+        # Track stats
+        await stats_service.increment("fine_keep")
+
+        # Dispatch embedding task
+        embed_news_full_content.delay(news_id, user_id)
+        logger.info(
+            "Deep filter kept news_id=%s: entities=%d, sentiment=%s",
+            news_id,
+            len(entities),
+            news.sentiment_tag,
+        )
+
+        return {
+            "status": "kept",
+            "news_id": news_id,
+            "entities_count": len(entities),
+            "sentiment": news.sentiment_tag,
+            "has_summary": bool(news.investment_summary),
+        }
+
+
 @celery_app.task(bind=True, max_retries=3)
 def embed_news_full_content(self, news_id: str, user_id: Optional[int] = None):
     """
@@ -431,15 +615,7 @@ def embed_news_full_content(self, news_id: str, user_id: Optional[int] = None):
         user_id: Optional user ID for personalized settings
     """
     try:
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        try:
-            result = loop.run_until_complete(
-                _embed_news_full_content_async(news_id, user_id)
-            )
-            return result
-        finally:
-            loop.close()
+        return run_async_task(_embed_news_full_content_async, news_id, user_id)
     except Exception as e:
         logger.exception("embed_news_full_content failed for news_id=%s: %s", news_id, e)
         raise self.retry(exc=e, countdown=30 * (2 ** self.request.retries))
@@ -459,12 +635,14 @@ async def _embed_news_full_content_async(
     from app.services.news_storage_service import get_news_storage_service
     from app.services.embedding_service import get_embedding_service
     from app.services.rag_service import get_rag_service
+    from app.services.filter_stats_service import get_filter_stats_service
 
     logger.info("Embedding news_id=%s", news_id)
 
     embedding_service = get_embedding_service()
     rag_service = get_rag_service()
     storage_service = get_news_storage_service()
+    stats_service = get_filter_stats_service()
 
     async with get_task_session() as db:
         # Get news record
@@ -535,6 +713,11 @@ async def _embed_news_full_content_async(
 
         if not valid_pairs:
             logger.error("All embeddings failed for news_id=%s", news_id)
+            # Update status to EMBEDDING_FAILED
+            news.content_status = ContentStatus.EMBEDDING_FAILED.value
+            await db.commit()
+            # Track stats
+            await stats_service.increment("embedding_error")
             return {
                 "status": "error",
                 "reason": "all_embeddings_failed",
@@ -571,6 +754,9 @@ async def _embed_news_full_content_async(
             # Update news status
             news.content_status = ContentStatus.EMBEDDED.value
             await db.commit()
+
+            # Track stats
+            await stats_service.increment("embedding_success")
 
         finally:
             try:
@@ -616,13 +802,7 @@ def cleanup_expired_news():
     3. Update news records
     """
     try:
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        try:
-            result = loop.run_until_complete(_cleanup_expired_news_async())
-            return result
-        finally:
-            loop.close()
+        return run_async_task(_cleanup_expired_news_async)
     except Exception as e:
         logger.exception("cleanup_expired_news failed: %s", e)
         raise

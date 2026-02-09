@@ -8,10 +8,10 @@ import logging
 import random
 import re
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from enum import Enum
-from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional
+from typing import TYPE_CHECKING, Any, Callable, Dict, List, Literal, Optional, TypedDict
 
 from app.config import settings
 
@@ -101,6 +101,15 @@ class Market(str, Enum):
     HK = "HK"
     SH = "SH"
     SZ = "SZ"
+    METAL = "METAL"
+
+
+class RelatedEntity(TypedDict):
+    """Related entity extracted from news (stock/index/macro factor)."""
+
+    entity: str  # Entity identifier (ticker, index name, or macro factor)
+    type: Literal["stock", "index", "macro"]  # Entity type
+    score: float  # Relevance score 0.0-1.0
 
 
 @dataclass
@@ -117,9 +126,10 @@ class NewsArticle:
     market: str
     sentiment_score: Optional[float] = None
     ai_analysis: Optional[str] = None
+    related_entities: Optional[List[RelatedEntity]] = field(default=None)
 
     def to_dict(self) -> Dict[str, Any]:
-        return {
+        result = {
             "id": self.id,
             "symbol": self.symbol,
             "title": self.title,
@@ -131,11 +141,18 @@ class NewsArticle:
             "sentimentScore": self.sentiment_score,
             "aiAnalysis": self.ai_analysis,
         }
+        if self.related_entities is not None:
+            result["relatedEntities"] = self.related_entities
+        return result
 
 
 def detect_market(symbol: str) -> str:
     """Detect market from symbol format."""
+    import re
     symbol = symbol.upper()
+    # Check precious metals first (GC=F, SI=F, PL=F, PA=F)
+    if re.match(r"^(GC|SI|PL|PA)=F$", symbol):
+        return Market.METAL.value
     if symbol.endswith(".HK"):
         return Market.HK.value
     elif symbol.endswith(".SS"):
@@ -149,6 +166,142 @@ def detect_market(symbol: str) -> str:
 def generate_news_id(url: str) -> str:
     """Generate deterministic ID from URL."""
     return hashlib.md5(url.encode()).hexdigest()
+
+
+async def extract_related_entities(
+    db,  # AsyncSession
+    articles: List[Dict[str, Any]],
+    batch_size: int = 10,
+) -> Dict[str, List[RelatedEntity]]:
+    """
+    Batch extract related entities (stocks/indices/macro factors) from news articles.
+
+    Uses the system's news_filter_model configuration for LLM extraction.
+
+    Args:
+        db: Database session for accessing system settings
+        articles: List of news articles, each with 'url', 'headline', 'summary'
+        batch_size: Number of articles to process per LLM call
+
+    Returns:
+        Mapping of URL to list of RelatedEntity with scores
+    """
+    from openai import AsyncOpenAI
+
+    from app.config import settings as app_settings
+    from app.services.settings_service import SettingsService
+
+    # Get system settings for LLM configuration
+    settings_service = SettingsService()
+    system_settings = await settings_service.get_system_settings(db)
+
+    # Use news-specific LLM configuration
+    if system_settings.news_use_llm_config:
+        api_key = (
+            system_settings.news_openai_api_key
+            or system_settings.openai_api_key
+            or app_settings.OPENAI_API_KEY
+        )
+        base_url = (
+            system_settings.news_openai_base_url
+            or system_settings.openai_base_url
+            or app_settings.OPENAI_API_BASE
+        )
+    else:
+        api_key = system_settings.openai_api_key or app_settings.OPENAI_API_KEY
+        base_url = system_settings.openai_base_url or app_settings.OPENAI_API_BASE
+
+    model = system_settings.news_filter_model or "gpt-4o-mini"
+
+    if not api_key:
+        logger.warning("No OpenAI API key configured, skipping entity extraction")
+        return {a.get("url", ""): [] for a in articles}
+
+    client = AsyncOpenAI(api_key=api_key, base_url=base_url)
+    results: Dict[str, List[RelatedEntity]] = {}
+
+    # Process in batches to reduce API calls
+    for i in range(0, len(articles), batch_size):
+        batch = articles[i : i + batch_size]
+
+        news_text = "\n\n".join(
+            [
+                f"[{j+1}] {a.get('headline', '')}\n{a.get('summary', '')}"
+                for j, a in enumerate(batch)
+            ]
+        )
+
+        prompt = f"""分析以下新闻，提取相关的金融实体及影响评分。
+
+实体类型:
+- stock: 个股代码 (AAPL, TSLA, NVDA, 0700.HK, 600519.SS 等)
+- index: 大盘指数 (SP500, NASDAQ, DOW, 上证, 恒指, 纳指 等)
+- macro: 宏观/地缘因素 (Fed利率, 通胀, 中美关系, 石油价格, 就业数据 等)
+
+评分标准 (0.0-1.0):
+- 0.9-1.0: 新闻主要讨论此实体
+- 0.6-0.8: 高度相关（直接影响）
+- 0.3-0.5: 有一定关联（间接影响）
+- 0.1-0.2: 仅顺带提及
+
+返回 JSON 格式:
+{{"1": [{{"entity": "AAPL", "type": "stock", "score": 0.95}}, {{"entity": "Fed利率", "type": "macro", "score": 0.7}}], "2": [{{"entity": "SP500", "type": "index", "score": 0.85}}]}}
+
+注意:
+- 每条新闻最多提取 6 个实体
+- 没有相关实体返回空数组
+- 优先提取高相关性实体
+
+新闻:
+{news_text}"""
+
+        try:
+            response = await client.chat.completions.create(
+                model=model,
+                messages=[{"role": "user", "content": prompt}],
+                temperature=0,
+                max_tokens=1500,
+            )
+
+            content = response.choices[0].message.content or ""
+            start = content.find("{")
+            end = content.rfind("}") + 1
+
+            if start >= 0 and end > start:
+                parsed = json.loads(content[start:end])
+                for j, a in enumerate(batch):
+                    entities = parsed.get(str(j + 1), [])
+                    validated: List[RelatedEntity] = []
+                    for e in entities:
+                        if isinstance(e, dict) and all(
+                            k in e for k in ["entity", "type", "score"]
+                        ):
+                            if e["type"] in ("stock", "index", "macro"):
+                                validated.append(
+                                    {
+                                        "entity": str(e["entity"]),
+                                        "type": e["type"],
+                                        "score": max(0.0, min(1.0, float(e["score"]))),
+                                    }
+                                )
+                    # Sort by score descending
+                    validated.sort(key=lambda x: x["score"], reverse=True)
+                    results[a.get("url", "")] = validated
+            else:
+                # No valid JSON found
+                for a in batch:
+                    results[a.get("url", "")] = []
+
+        except json.JSONDecodeError as e:
+            logger.warning("Failed to parse LLM response as JSON: %s", e)
+            for a in batch:
+                results[a.get("url", "")] = []
+        except Exception as e:
+            logger.warning("LLM entity extraction failed: %s", e)
+            for a in batch:
+                results[a.get("url", "")] = []
+
+    return results
 
 
 class FinnhubProvider:
@@ -310,6 +463,69 @@ class FinnhubProvider:
             else:
                 logger.error(f"Finnhub general news error: {e}")
             return []
+
+    @staticmethod
+    async def get_market_news_with_entities(
+        db,  # AsyncSession
+        category: str = "general",
+        api_key: Optional[str] = None,
+    ) -> List[NewsArticle]:
+        """
+        Fetch market news from Finnhub and extract related entities using LLM.
+
+        This method combines Finnhub's general market news with LLM-based entity
+        extraction to identify related stocks, indices, and macro factors.
+
+        Args:
+            db: Database session for accessing system settings
+            category: News category (general, forex, crypto, merger)
+            api_key: Optional user-provided Finnhub API key
+
+        Returns:
+            List of NewsArticle objects with related_entities populated
+        """
+        # 1. Fetch raw news from Finnhub
+        raw_news = await FinnhubProvider.get_general_news(category, api_key)
+
+        if not raw_news:
+            logger.info("No news articles fetched from Finnhub general news")
+            return []
+
+        # 2. Prepare articles data for entity extraction
+        articles_data = [
+            {
+                "url": article.url,
+                "headline": article.title,
+                "summary": article.summary or "",
+            }
+            for article in raw_news
+        ]
+
+        # 3. Batch extract related entities using LLM
+        entities_map = await extract_related_entities(db, articles_data)
+
+        # 4. Update articles with extracted entities and determine primary symbol
+        for article in raw_news:
+            entities = entities_map.get(article.url, [])
+            article.related_entities = entities
+
+            # Set primary symbol: prefer highest-scored stock entity
+            stock_entities = [e for e in entities if e["type"] == "stock"]
+            if stock_entities:
+                # Use the stock with highest score as primary symbol
+                article.symbol = stock_entities[0]["entity"]
+            elif entities:
+                # No stock entities, use first entity (could be index/macro)
+                article.symbol = entities[0]["entity"]
+            # else: keep default "MARKET" symbol from get_general_news
+
+        entities_count = sum(1 for a in raw_news if a.related_entities)
+        logger.info(
+            f"Processed {len(raw_news)} market news articles, "
+            f"{entities_count} with extracted entities"
+        )
+
+        return raw_news
 
 
 class YFinanceProvider:
@@ -491,14 +707,16 @@ class AKShareProvider:
             articles = []
             for item in news_data[:30]:
                 try:
-                    # Parse date - Eastmoney format varies
+                    # Parse date - Eastmoney format varies (timestamps are CST/UTC+8)
                     pub_str = str(item.get("发布时间", "") or item.get("时间", ""))
+                    cst = timezone(timedelta(hours=8))
                     try:
                         if len(pub_str) > 10:
                             published = datetime.strptime(pub_str, "%Y-%m-%d %H:%M:%S")
                         else:
                             published = datetime.strptime(pub_str, "%Y-%m-%d")
-                        published = published.replace(tzinfo=timezone.utc)
+                        # Mark as CST then convert to UTC
+                        published = published.replace(tzinfo=cst).astimezone(timezone.utc)
                     except Exception:
                         published = datetime.now(timezone.utc)
 
@@ -594,12 +812,14 @@ class AKShareProvider:
             for item in news_data[:20]:
                 try:
                     pub_str = str(item.get("发布时间", "") or item.get("date", ""))
+                    cst = timezone(timedelta(hours=8))
                     try:
                         if len(pub_str) > 10:
                             published = datetime.strptime(pub_str[:19], "%Y-%m-%d %H:%M:%S")
                         else:
                             published = datetime.strptime(pub_str[:10], "%Y-%m-%d")
-                        published = published.replace(tzinfo=timezone.utc)
+                        # Mark as CST then convert to UTC
+                        published = published.replace(tzinfo=cst).astimezone(timezone.utc)
                     except Exception:
                         published = datetime.now(timezone.utc)
 
@@ -737,6 +957,10 @@ class NewsService:
                 if not articles:
                     logger.info(f"YFinance returned no news for {symbol}, falling back to Finnhub")
                     articles = await FinnhubProvider.get_news(symbol, api_key=finnhub_key)
+
+        elif market == Market.METAL.value:
+            # Precious metals: YFinance Ticker API (GC=F, SI=F, etc.)
+            articles = await YFinanceProvider.get_news_by_ticker(symbol, news_count=20)
 
         elif market == Market.HK.value:
             # HK stocks: YFinance Ticker API (returns ticker-specific news), Finnhub fallback

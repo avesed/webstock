@@ -27,6 +27,7 @@ from app.services.stock_service import (
     HistoryPeriod as ServicePeriod,
     Market,
     get_stock_service,
+    is_precious_metal,
 )
 from app.utils.symbol_validation import validate_symbol
 
@@ -36,6 +37,27 @@ router = APIRouter(prefix="/stocks", tags=["Stocks"])
 
 # Rate limiting: 100 requests per minute for stock queries
 STOCK_RATE_LIMIT = rate_limit(max_requests=100, window_seconds=60, key_prefix="stock_api")
+
+
+def _futures_market_closed_or_404(symbol: str) -> HTTPException:
+    """Return appropriate error for futures with no history data."""
+    from datetime import datetime, timezone as tz
+    now = datetime.now(tz.utc)
+    wd, hr = now.weekday(), now.hour
+    is_closed = (
+        wd == 5  # Saturday
+        or (wd == 6 and hr < 23)  # Sunday before 23:00 UTC (6pm ET)
+        or (wd == 4 and hr >= 22)  # Friday after 22:00 UTC (5pm ET)
+    )
+    if is_closed:
+        return HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Futures market closed. {symbol} trades Sun 6PM–Fri 5PM ET.",
+        )
+    return HTTPException(
+        status_code=status.HTTP_404_NOT_FOUND,
+        detail=f"No historical data available for symbol: {symbol}",
+    )
 
 
 # =============================================================================
@@ -129,6 +151,8 @@ async def get_stock_history_query(
         )
 
         if history is None:
+            if is_precious_metal(symbol):
+                raise _futures_market_closed_or_404(symbol)
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail=f"No historical data available for symbol: {symbol}",
@@ -341,6 +365,8 @@ async def get_stock_history(
         )
 
         if history is None:
+            if is_precious_metal(symbol):
+                raise _futures_market_closed_or_404(symbol)
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail=f"No historical data available for symbol: {symbol}",

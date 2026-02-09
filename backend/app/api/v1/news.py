@@ -40,6 +40,27 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/news", tags=["News"])
 
+
+def _news_to_response(article: News) -> NewsResponse:
+    """Convert a News DB model to NewsResponse schema."""
+    return NewsResponse(
+        id=str(article.id),
+        symbol=article.symbol,
+        title=article.title,
+        summary=article.investment_summary or article.summary,
+        source=article.source,
+        url=article.url,
+        published_at=article.published_at,
+        market=article.market,
+        sentiment_score=article.sentiment_score,
+        sentiment_tag=article.sentiment_tag,
+        ai_analysis=article.ai_analysis,
+        related_entities=article.related_entities,
+        industry_tags=article.industry_tags,
+        event_tags=article.event_tags,
+        created_at=article.created_at,
+    )
+
 # Rate limiting configurations for different endpoints
 # Symbol news: 100 requests per minute
 SYMBOL_NEWS_RATE_LIMIT = rate_limit(max_requests=100, window_seconds=60, key_prefix="news_symbol")
@@ -51,6 +72,74 @@ ANALYZE_RATE_LIMIT = rate_limit(max_requests=10, window_seconds=60, key_prefix="
 ALERTS_RATE_LIMIT = rate_limit(max_requests=60, window_seconds=60, key_prefix="news_alerts")
 # Full content: 30 requests per minute
 CONTENT_RATE_LIMIT = rate_limit(max_requests=30, window_seconds=60, key_prefix="news_content")
+
+
+@router.get(
+    "/market",
+    response_model=NewsFeedResponse,
+    summary="Get market news from database",
+    description="Get news articles stored and filtered by the news monitor pipeline.",
+)
+async def get_market_news(
+    page: int = Query(1, ge=1, description="Page number"),
+    page_size: int = Query(20, ge=1, le=100, description="Items per page"),
+    market: Optional[str] = Query(
+        None,
+        description="Filter by market (US, HK, SH, SZ, MARKET)",
+    ),
+    filter_status: Optional[str] = Query(
+        None,
+        description="Filter by status (keep, useful, uncertain)",
+    ),
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+    _rate_limit: None = Depends(FEED_RATE_LIMIT),
+):
+    """
+    Get market news from the database (populated by news_monitor pipeline).
+
+    Returns articles that have been fetched, filtered, and stored by the
+    automatic news monitoring system. Unlike /feed and /trending which
+    call external APIs in real-time, this endpoint reads from the local database.
+    """
+    from sqlalchemy import desc
+
+    # Base query: only show articles that have been processed (fetched/embedded)
+    query = select(News).where(
+        News.content_status.in_(["fetched", "embedded", "partial"]),
+    )
+
+    # Optional market filter
+    if market:
+        query = query.where(News.market == market)
+
+    # Optional filter_status filter
+    if filter_status:
+        query = query.where(News.filter_status == filter_status)
+
+    # Count total
+    count_query = select(func.count()).select_from(query.subquery())
+    total_result = await db.execute(count_query)
+    total = total_result.scalar() or 0
+
+    # Paginate, ordered by published_at desc
+    query = query.order_by(desc(News.published_at))
+    query = query.offset((page - 1) * page_size).limit(page_size)
+    result = await db.execute(query)
+    articles = result.scalars().all()
+
+    # Convert to response format
+    news_list = []
+    for article in articles:
+        news_list.append(_news_to_response(article))
+
+    return NewsFeedResponse(
+        news=news_list,
+        total=total,
+        page=page,
+        page_size=page_size,
+        has_more=(page * page_size) < total,
+    )
 
 
 @router.get(
@@ -107,17 +196,25 @@ async def get_news_feed(
     """
     Get personalized news feed based on user's watchlist stocks.
 
+    Reads from the database (populated by the news monitoring pipeline).
+    Matches articles where:
+    - symbol matches a watchlist stock, OR
+    - related_entities contains a watchlist stock ticker (for MARKET news)
+
     - **page**: Page number (1-indexed)
     - **page_size**: Number of items per page (max 100)
     """
+    from sqlalchemy import desc, or_, cast, literal
+    from sqlalchemy.dialects.postgresql import JSONB
+
     # Get all symbols from user's watchlists
-    query = (
+    symbol_query = (
         select(WatchlistItem.symbol)
         .join(Watchlist)
         .where(Watchlist.user_id == current_user.id)
         .distinct()
     )
-    result = await db.execute(query)
+    result = await db.execute(symbol_query)
     symbols = [row[0] for row in result.fetchall()]
 
     if not symbols:
@@ -129,28 +226,45 @@ async def get_news_feed(
             has_more=False,
         )
 
-    # Load user with settings
-    from sqlalchemy.orm import selectinload
-    user_result = await db.execute(
-        select(User).where(User.id == current_user.id).options(selectinload(User.settings))
-    )
-    user = user_result.scalar_one_or_none()
-    
-    # Get news for these symbols
-    news_service = await get_news_service()
-    feed_data = await news_service.get_news_feed(
-        symbols=symbols,
-        page=page,
-        page_size=page_size,
-        user=user,
+    # Build condition to match related_entities containing any watchlist symbol
+    # Both sides of @> must be JSONB, so cast the column and the literal value
+    entities_jsonb = cast(News.related_entities, JSONB)
+    entity_conditions = []
+    for sym in symbols:
+        pattern = cast(literal(f'[{{"entity": "{sym}"}}]'), JSONB)
+        entity_conditions.append(entities_jsonb.op("@>")(pattern))
+
+    # Match by: direct symbol match OR related_entities contains a watchlist symbol
+    query = select(News).where(
+        News.content_status.in_(["fetched", "embedded", "partial"]),
+        or_(
+            News.symbol.in_(symbols),
+            *entity_conditions,
+        ),
     )
 
+    # Count total
+    count_query = select(func.count()).select_from(query.subquery())
+    total_result = await db.execute(count_query)
+    total = total_result.scalar() or 0
+
+    # Paginate, ordered by published_at desc
+    query = query.order_by(desc(News.published_at))
+    query = query.offset((page - 1) * page_size).limit(page_size)
+    result = await db.execute(query)
+    articles = result.scalars().all()
+
+    # Convert to response format
+    news_list = []
+    for article in articles:
+        news_list.append(_news_to_response(article))
+
     return NewsFeedResponse(
-        news=[NewsResponse(**n) for n in feed_data["news"]],
-        total=feed_data["total"],
-        page=feed_data["page"],
-        page_size=feed_data["page_size"],
-        has_more=feed_data["has_more"],
+        news=news_list,
+        total=total,
+        page=page,
+        page_size=page_size,
+        has_more=(page * page_size) < total,
     )
 
 

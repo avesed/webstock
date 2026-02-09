@@ -1,8 +1,8 @@
 import { useTranslation } from 'react-i18next'
-import { Users, Settings, Activity } from 'lucide-react'
+import { Users, Settings, Activity, Filter } from 'lucide-react'
 
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
-import { UserManagement, SystemSettings, SystemMonitor } from '@/components/admin'
+import { UserManagement, SystemSettings, SystemMonitor, FilterStats } from '@/components/admin'
 
 export default function AdminDashboardPage() {
   const { t } = useTranslation('admin')
@@ -28,6 +28,10 @@ export default function AdminDashboardPage() {
             <Activity className="h-4 w-4" />
             {t('tabs.monitor')}
           </TabsTrigger>
+          <TabsTrigger value="filter" className="flex items-center gap-2">
+            <Filter className="h-4 w-4" />
+            {t('tabs.filter')}
+          </TabsTrigger>
         </TabsList>
 
         <TabsContent value="users" className="flex-1 overflow-y-auto mt-4 pr-2">
@@ -40,6 +44,10 @@ export default function AdminDashboardPage() {
 
         <TabsContent value="monitor" className="flex-1 overflow-y-auto mt-4 pr-2">
           <SystemMonitor />
+        </TabsContent>
+
+        <TabsContent value="filter" className="flex-1 overflow-y-auto mt-4 pr-2">
+          <FilterStats />
         </TabsContent>
       </Tabs>
     </div>

@@ -4,7 +4,8 @@
   "tabs": {
     "users": "用户管理",
     "settings": "系统设置",
-    "monitor": "系统监控"
+    "monitor": "系统监控",
+    "filter": "筛选统计"
   },
   "users": {
     "title": "用户管理",
@@ -79,6 +80,8 @@
     "useLlmConfigDescription": "使用上方 LLM 配置中的 API 设置，关闭后可单独配置",
     "newsApiUrl": "新闻处理 API 地址",
     "newsApiKey": "新闻处理 API Key",
+    "finnhubApiKey": "Finnhub API Key",
+    "finnhubApiKeyHint": "用于获取全球市场新闻，免费获取：finnhub.io",
     "featuresTitle": "功能开关",
     "featuresDescription": "启用或禁用系统功能",
     "allowUserApiKeys": "允许用户自定义 API Key",
@@ -93,6 +96,8 @@
     "requireApproval": "要求新用户审批",
     "requireApprovalDescription": "新用户注册后需要管理员审批才能使用",
     "disableApprovalWarning": "关闭此选项后，所有待审批用户将自动批准",
+    "useTwoPhaseFilter": "两阶段新闻筛选",
+    "useTwoPhaseFilterDescription": "启用两阶段新闻筛选（初筛 + 精筛），提高质量并优化成本",
     "langgraphTitle": "LangGraph 多代理分析",
     "langgraphDescription": "配置多代理股票分析工作流的模型和参数",
     "useLocalModels": "使用本地模型",
@@ -133,5 +138,38 @@
     "errorRate": "错误率",
     "rateLimitHits": "限流次数",
     "autoRefresh": "数据每30秒自动刷新"
+  },
+  "filter": {
+    "title": "新闻筛选统计",
+    "description": "查看两阶段新闻筛选的效果和成本",
+    "period": "统计周期",
+    "days": "天",
+    "initialFilter": "初筛",
+    "deepFilter": "精筛",
+    "totalTokens": "总 Token",
+    "estimatedCost": "预估成本",
+    "useful": "有价值",
+    "uncertain": "不确定",
+    "skip": "跳过",
+    "keep": "保留",
+    "delete": "删除",
+    "passRate": "通过率",
+    "inputTokens": "输入 Token",
+    "outputTokens": "输出 Token",
+    "totalCount": "总计",
+    "errors": "错误统计",
+    "filterError": "筛选错误",
+    "embeddingError": "向量化错误",
+    "noData": "暂无筛选数据",
+    "noDataHint": "启用两阶段筛选后，统计数据将在此显示",
+    "alertHighSkipRate": "初筛跳过率过高",
+    "alertHighDeleteRate": "精筛删除率过高",
+    "alertHighFilterError": "筛选错误率过高",
+    "alertHighEmbeddingError": "向量化错误率过高",
+    "triggerMonitor": "手动运行新闻监控",
+    "running": "运行中...",
+    "taskTriggered": "任务已启动",
+    "nextRun": "下次执行",
+    "lastRun": "上次执行"
   }
 }

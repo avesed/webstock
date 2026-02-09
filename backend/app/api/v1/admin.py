@@ -22,7 +22,9 @@ from app.schemas.admin import (
     ApiStats,
     ApproveUserRequest,
     CreateUserRequest,
+    DailyFilterStatsResponse,
     FeaturesConfig,
+    FilterStatsResponse,
     LangGraphConfig,
     LlmConfig,
     NewsConfig,
@@ -828,6 +830,7 @@ async def get_system_config(
             use_llm_config=settings.news_use_llm_config,
             openai_base_url=settings.news_openai_base_url,
             openai_api_key="***" if settings.news_openai_api_key else None,
+            finnhub_api_key="***" if settings.finnhub_api_key else None,
         ),
         features=FeaturesConfig(
             allow_user_api_keys=settings.allow_user_custom_api_keys,
@@ -835,6 +838,7 @@ async def get_system_config(
             enable_news_analysis=settings.enable_news_analysis,
             enable_stock_analysis=settings.enable_stock_analysis,
             require_registration_approval=settings.require_registration_approval,
+            use_two_phase_filter=settings.use_two_phase_filter,
         ),
         langgraph=LangGraphConfig(
             local_llm_base_url=settings.local_llm_base_url,
@@ -893,6 +897,9 @@ async def update_system_config(
         # Handle openai_api_key - only update if not masked
         if data.news.openai_api_key and data.news.openai_api_key != "***":
             settings.news_openai_api_key = data.news.openai_api_key or None
+        # Handle finnhub_api_key - only update if not masked
+        if data.news.finnhub_api_key and data.news.finnhub_api_key != "***":
+            settings.finnhub_api_key = data.news.finnhub_api_key or None
 
     # Update feature flags
     if data.features:
@@ -904,6 +911,8 @@ async def update_system_config(
             settings.enable_stock_analysis = data.features.enable_stock_analysis
         if data.features.require_registration_approval is not None:
             settings.require_registration_approval = data.features.require_registration_approval
+        if data.features.use_two_phase_filter is not None:
+            settings.use_two_phase_filter = data.features.use_two_phase_filter
 
     # Update LangGraph settings
     if data.langgraph:
@@ -1005,3 +1014,151 @@ async def get_system_monitor_stats(
             rate_limit_hits=0,
         ),
     )
+
+
+# ============== News Filter Statistics Endpoints ==============
+
+
+@router.get(
+    "/news/filter-stats",
+    response_model=FilterStatsResponse,
+    summary="Get news filter statistics",
+    description="Get comprehensive statistics for two-phase news filtering including pass rates and token usage.",
+    dependencies=[Depends(rate_limit(max_requests=30, window_seconds=60))],
+)
+async def get_news_filter_stats(
+    admin: User = Depends(require_admin),
+    days: int = Query(7, ge=1, le=30, description="Number of days to aggregate"),
+) -> FilterStatsResponse:
+    """
+    Get comprehensive news filter statistics.
+
+    Returns:
+    - counts: Initial filter (useful/uncertain/skip) and deep filter (keep/delete) counts
+    - rates: Pass/skip/delete rates as percentages
+    - tokens: Token usage with input/output breakdown and cost estimates
+    - alerts: Any threshold violations
+    """
+    logger.info(f"Admin {admin.id} ({admin.email}) viewing news filter stats for {days} days")
+
+    from app.services.filter_stats_service import get_filter_stats_service
+
+    stats_service = get_filter_stats_service()
+    stats = await stats_service.get_comprehensive_stats(days)
+
+    return FilterStatsResponse(**stats)
+
+
+@router.get(
+    "/news/filter-stats/daily",
+    response_model=DailyFilterStatsResponse,
+    summary="Get daily filter statistics",
+    description="Get day-by-day filter statistics for charting.",
+    dependencies=[Depends(rate_limit(max_requests=30, window_seconds=60))],
+)
+async def get_daily_filter_stats(
+    admin: User = Depends(require_admin),
+    days: int = Query(7, ge=1, le=30, description="Number of days to retrieve"),
+) -> DailyFilterStatsResponse:
+    """
+    Get daily filter statistics for time-series charts.
+
+    Returns dict mapping date (YYYYMMDD) to daily stats.
+    """
+    logger.info(f"Admin {admin.id} ({admin.email}) viewing daily filter stats for {days} days")
+
+    from app.services.filter_stats_service import get_filter_stats_service
+
+    stats_service = get_filter_stats_service()
+    daily_stats = await stats_service.get_stats_range(days)
+
+    # Convert to list format with dates for easier frontend consumption
+    result = []
+    for date, stats in sorted(daily_stats.items(), reverse=True):
+        result.append({
+            "date": date,
+            "initial_useful": stats.get("initial_useful", 0),
+            "initial_uncertain": stats.get("initial_uncertain", 0),
+            "initial_skip": stats.get("initial_skip", 0),
+            "fine_keep": stats.get("fine_keep", 0),
+            "fine_delete": stats.get("fine_delete", 0),
+            "filter_error": stats.get("filter_error", 0),
+            "embedding_success": stats.get("embedding_success", 0),
+            "embedding_error": stats.get("embedding_error", 0),
+            "initial_input_tokens": stats.get("initial_input_tokens", 0),
+            "initial_output_tokens": stats.get("initial_output_tokens", 0),
+            "deep_input_tokens": stats.get("deep_input_tokens", 0),
+            "deep_output_tokens": stats.get("deep_output_tokens", 0),
+        })
+
+    return DailyFilterStatsResponse(days=days, data=result)
+
+
+@router.post(
+    "/news/trigger-monitor",
+    summary="Trigger news monitor task",
+    description="Manually trigger the news monitoring pipeline (fetch + filter + process).",
+)
+async def trigger_news_monitor(
+    admin: User = Depends(require_admin),
+):
+    """Manually trigger the news monitor Celery task."""
+    logger.info(f"Admin {admin.id} ({admin.email}) manually triggering news monitor")
+
+    from worker.tasks.news_monitor import monitor_news
+    task = monitor_news.delay()
+
+    return {"message": "News monitor task triggered", "task_id": str(task.id)}
+
+
+@router.get(
+    "/news/monitor-status",
+    summary="Get news monitor status",
+    description="Get current news monitor execution status, progress, and schedule info.",
+)
+async def get_monitor_status(
+    admin: User = Depends(require_admin),
+):
+    """Get news monitor task progress and schedule status."""
+    import json
+    from datetime import timedelta
+
+    redis = await get_redis()
+
+    # Get current status
+    status = await redis.get("news:monitor:status")
+    status = status if status else "idle"
+
+    # Get progress (if running)
+    progress = None
+    progress_raw = await redis.get("news:monitor:progress")
+    if progress_raw:
+        try:
+            progress = json.loads(progress_raw)
+        except Exception:
+            pass
+
+    # Get last run info
+    last_run = None
+    last_run_raw = await redis.get("news:monitor:last_run")
+    if last_run_raw:
+        try:
+            last_run = json.loads(last_run_raw)
+        except Exception:
+            pass
+
+    # Calculate next run time (every 15 minutes from last run)
+    next_run_at = None
+    if last_run and last_run.get("finished_at"):
+        try:
+            finished = datetime.fromisoformat(last_run["finished_at"])
+            next_run_at = (finished + timedelta(minutes=15)).isoformat()
+        except Exception:
+            pass
+
+    return {
+        "status": status,
+        "progress": progress,
+        "last_run": last_run,
+        "next_run_at": next_run_at,
+    }

@@ -310,6 +310,12 @@ export interface Report {
 // News types
 export type NewsSentiment = 'POSITIVE' | 'NEGATIVE' | 'NEUTRAL'
 
+export interface NewsRelatedEntity {
+  entity: string
+  type: 'stock' | 'index' | 'macro'
+  score: number
+}
+
 export interface NewsArticle {
   id: string
   symbol?: string
@@ -321,7 +327,11 @@ export interface NewsArticle {
   publishedAt: string
   sentiment?: NewsSentiment
   sentimentScore?: number
+  sentimentTag?: 'bullish' | 'bearish' | 'neutral'
   aiAnalysis?: string
+  relatedEntities?: NewsRelatedEntity[]
+  industryTags?: string[]
+  eventTags?: string[]
   createdAt: string
 }
 
@@ -515,6 +525,7 @@ export interface SystemConfig {
     useLlmConfig: boolean  // Use LLM config's API settings
     openaiBaseUrl: string | null  // Custom API URL (when useLlmConfig=false)
     openaiApiKey: string | null  // Custom API key (when useLlmConfig=false)
+    finnhubApiKey: string | null  // Finnhub API key for news data
   }
   features: {
     allowUserApiKeys: boolean
@@ -522,6 +533,7 @@ export interface SystemConfig {
     enableNewsAnalysis: boolean
     enableStockAnalysis: boolean
     requireRegistrationApproval: boolean
+    useTwoPhaseFilter: boolean
   }
 }
 

@@ -40,6 +40,7 @@ const DEFAULT_CONFIG: SystemConfig = {
     useLlmConfig: true,
     openaiBaseUrl: null,
     openaiApiKey: null,
+    finnhubApiKey: null,
   },
   features: {
     allowUserApiKeys: true,
@@ -47,6 +48,7 @@ const DEFAULT_CONFIG: SystemConfig = {
     enableNewsAnalysis: true,
     enableStockAnalysis: true,
     requireRegistrationApproval: false,
+    useTwoPhaseFilter: false,
   },
 }
 
@@ -367,6 +369,21 @@ export function SystemSettings() {
               />
             </div>
 
+            <div className="space-y-2">
+              <Label htmlFor="news-finnhub-key">{t('settings.finnhubApiKey')}</Label>
+              <Input
+                id="news-finnhub-key"
+                type="password"
+                value={formData.news.finnhubApiKey === '***' ? '' : (formData.news.finnhubApiKey || '')}
+                onChange={(e) => handleChange('news', 'finnhubApiKey', e.target.value || null)}
+                placeholder={formData.news.finnhubApiKey === '***' ? t('settings.apiKeySet') : t('settings.apiKeyPlaceholder')}
+              />
+              {formData.news.finnhubApiKey === '***' && (
+                <p className="text-xs text-muted-foreground">{t('settings.apiKeySetHint')}</p>
+              )}
+              <p className="text-xs text-muted-foreground">{t('settings.finnhubApiKeyHint')}</p>
+            </div>
+
             <Separator />
 
             <div className="flex items-center justify-between">
@@ -485,6 +502,19 @@ export function SystemSettings() {
               <ToggleSwitch
                 checked={formData.features.requireRegistrationApproval}
                 onCheckedChange={(checked) => handleChange('features', 'requireRegistrationApproval', checked)}
+              />
+            </div>
+
+            <Separator />
+
+            <div className="flex items-center justify-between">
+              <div className="space-y-0.5">
+                <Label>{t('settings.useTwoPhaseFilter')}</Label>
+                <p className="text-sm text-muted-foreground">{t('settings.useTwoPhaseFilterDescription')}</p>
+              </div>
+              <ToggleSwitch
+                checked={formData.features.useTwoPhaseFilter}
+                onCheckedChange={(checked) => handleChange('features', 'useTwoPhaseFilter', checked)}
               />
             </div>
 

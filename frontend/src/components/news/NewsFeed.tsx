@@ -10,7 +10,7 @@ import type { NewsArticle } from '@/types'
 
 interface NewsFeedProps {
   symbol?: string
-  mode?: 'feed' | 'symbol' | 'trending'
+  mode?: 'feed' | 'symbol' | 'trending' | 'market'
   compact?: boolean
   maxHeight?: string
   className?: string
@@ -50,6 +50,8 @@ export default function NewsFeed({
           pageSize: articles.length,
           totalPages: 1,
         }
+      } else if (mode === 'market') {
+        return newsApi.getMarket(pageParam, 10)
       } else if (mode === 'symbol' && symbol) {
         return newsApi.getBySymbol(symbol, pageParam, 10)
       } else {

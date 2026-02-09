@@ -134,10 +134,10 @@ export default function NewsPageContent({ className }: NewsPageContentProps) {
               <Card>
                 <CardHeader>
                   <CardTitle>Market Overview</CardTitle>
-                  <CardDescription>General market news and updates</CardDescription>
+                  <CardDescription>AI filtered and stored news from the monitoring pipeline</CardDescription>
                 </CardHeader>
                 <CardContent>
-                  <NewsFeed mode="feed" maxHeight="600px" />
+                  <NewsFeed mode="market" maxHeight="600px" />
                 </CardContent>
               </Card>
             </TabsContent>

@@ -164,17 +164,43 @@ export default function NewsCard({ article, compact = false, className, onSymbol
               </div>
             )}
           </div>
-          {article.symbol && article.symbol !== 'MARKET' && (
-            <div className="mt-2">
-              <span
-                className="inline-flex items-center rounded-full bg-primary/10 px-2.5 py-0.5 text-xs font-medium text-primary cursor-pointer hover:bg-primary/20 transition-colors"
-                onClick={(e) => {
-                  e.stopPropagation()
-                  onSymbolClick?.(article.symbol!)
-                }}
-              >
-                {article.symbol}
-              </span>
+          {(article.symbol && article.symbol !== 'MARKET' || (article.relatedEntities && article.relatedEntities.length > 0)) && (
+            <div className="mt-2 flex flex-wrap gap-1.5">
+              {article.symbol && article.symbol !== 'MARKET' && (
+                <span
+                  className="inline-flex items-center rounded-full bg-primary/10 px-2.5 py-0.5 text-xs font-medium text-primary cursor-pointer hover:bg-primary/20 transition-colors"
+                  onClick={(e) => {
+                    e.stopPropagation()
+                    onSymbolClick?.(article.symbol!)
+                  }}
+                >
+                  {article.symbol}
+                </span>
+              )}
+              {article.relatedEntities?.filter(e => e.type === 'stock' && e.entity !== article.symbol).map((entity) => (
+                <span
+                  key={entity.entity}
+                  className="inline-flex items-center rounded-full bg-muted px-2.5 py-0.5 text-xs font-medium text-muted-foreground cursor-pointer hover:bg-muted/80 transition-colors"
+                  onClick={(e) => {
+                    e.stopPropagation()
+                    onSymbolClick?.(entity.entity)
+                  }}
+                >
+                  {entity.entity}
+                </span>
+              ))}
+              {article.sentimentTag && (
+                <span
+                  className={cn(
+                    'inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium',
+                    article.sentimentTag === 'bullish' && 'bg-green-500/10 text-green-500',
+                    article.sentimentTag === 'bearish' && 'bg-red-500/10 text-red-500',
+                    article.sentimentTag === 'neutral' && 'bg-muted text-muted-foreground',
+                  )}
+                >
+                  {article.sentimentTag}
+                </span>
+              )}
             </div>
           )}
         </CardHeader>

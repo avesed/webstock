@@ -96,6 +96,18 @@ class OpenAIClientManager:
             finally:
                 self._global_client = None
 
+    def reset(self) -> None:
+        """
+        Reset the global client (sync version for Celery workers).
+
+        Call this after each Celery task completes to avoid "Event loop is closed"
+        errors. The AsyncOpenAI client binds to the event loop that created it,
+        so we must discard it when the loop closes.
+        """
+        if self._global_client is not None:
+            logger.debug("Resetting global OpenAI client for new event loop")
+            self._global_client = None
+
 
 # Singleton instance
 _manager = OpenAIClientManager()
@@ -129,6 +141,16 @@ def get_openai_temperature() -> Optional[float]:
 def get_openai_system_prompt() -> Optional[str]:
     """Convenience function to get custom system prompt."""
     return _manager.get_system_prompt()
+
+
+def reset_openai_client() -> None:
+    """
+    Reset the global OpenAI client.
+
+    Call this in Celery tasks after closing the event loop to prevent
+    "Event loop is closed" errors on subsequent task executions.
+    """
+    _manager.reset()
 
 
 async def get_synthesis_model_config() -> tuple[AsyncOpenAI, str]:

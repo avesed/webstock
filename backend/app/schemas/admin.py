@@ -188,6 +188,7 @@ class NewsConfig(CamelModel):
     use_llm_config: bool = True  # Use LLM config's API settings
     openai_base_url: Optional[str] = None  # Custom API URL (when use_llm_config=False)
     openai_api_key: Optional[str] = None  # Custom API key (when use_llm_config=False)
+    finnhub_api_key: Optional[str] = None  # Finnhub API key for news data
 
 
 class FeaturesConfig(CamelModel):
@@ -198,6 +199,7 @@ class FeaturesConfig(CamelModel):
     enable_news_analysis: bool = True
     enable_stock_analysis: bool = True
     require_registration_approval: bool = False
+    use_two_phase_filter: bool = False
 
 
 class SystemConfigResponse(CamelModel):
@@ -288,3 +290,119 @@ class CreateUserRequest(CamelModel):
     email: EmailStr
     password: str = Field(..., min_length=8, max_length=128)
     role: UserRole = UserRole.USER
+
+
+# ============== Filter Stats Schemas ==============
+
+
+class TokenUsageResponse(CamelModel):
+    """Token usage statistics with cost estimate."""
+
+    input_tokens: int
+    output_tokens: int
+    total_tokens: int
+    estimated_cost_usd: float
+
+
+class InitialFilterCountsResponse(CamelModel):
+    """Counts for initial filter results."""
+
+    useful: int
+    uncertain: int
+    skip: int
+    total: int
+
+
+class DeepFilterCountsResponse(CamelModel):
+    """Counts for deep filter results."""
+
+    keep: int
+    delete: int
+    total: int
+
+
+class ErrorCountsResponse(CamelModel):
+    """Counts for errors."""
+
+    filter_error: int
+    embedding_error: int
+
+
+class EmbeddingCountsResponse(CamelModel):
+    """Counts for embedding operations."""
+
+    success: int
+    error: int
+
+
+class FilterCountsResponse(CamelModel):
+    """All filter counts grouped."""
+
+    initial_filter: InitialFilterCountsResponse
+    deep_filter: DeepFilterCountsResponse
+    errors: ErrorCountsResponse
+    embedding: EmbeddingCountsResponse
+
+
+class FilterRatesResponse(CamelModel):
+    """Filter effectiveness rates as percentages."""
+
+    initial_skip_rate: float
+    initial_pass_rate: float
+    deep_keep_rate: float
+    deep_delete_rate: float
+    filter_error_rate: float
+    embedding_error_rate: float
+
+
+class FilterTokensResponse(CamelModel):
+    """Token usage summary for all filter stages."""
+
+    initial_filter: TokenUsageResponse
+    deep_filter: TokenUsageResponse
+    total: TokenUsageResponse
+    days: int
+
+
+class FilterAlertResponse(CamelModel):
+    """Alert for threshold violation."""
+
+    stat: str
+    rate: str
+    level: str  # "warning" or "critical"
+    message: str
+
+
+class FilterStatsResponse(CamelModel):
+    """Comprehensive filter statistics response."""
+
+    period_days: int
+    counts: FilterCountsResponse
+    rates: FilterRatesResponse
+    tokens: FilterTokensResponse
+    alerts: List[FilterAlertResponse]
+
+
+class DailyFilterStatsItemResponse(CamelModel):
+    """Single day filter statistics."""
+
+    date: str
+    initial_useful: int
+    initial_uncertain: int
+    initial_skip: int
+    fine_keep: int
+    fine_delete: int
+    filter_error: int
+    embedding_success: int
+    embedding_error: int
+    initial_input_tokens: int
+    initial_output_tokens: int
+    deep_input_tokens: int
+    deep_output_tokens: int
+
+
+class DailyFilterStatsResponse(CamelModel):
+    """Daily filter statistics list response."""
+
+    days: int
+    data: List[DailyFilterStatsItemResponse]

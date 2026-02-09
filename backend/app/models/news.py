@@ -10,11 +10,12 @@ from sqlalchemy import (
     DateTime,
     Float,
     ForeignKey,
+    Index,
     Integer,
     String,
     Text,
 )
-from sqlalchemy.dialects.postgresql import ARRAY, UUID, JSON
+from sqlalchemy.dialects.postgresql import ARRAY, JSON, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.database import Base
@@ -23,13 +24,26 @@ from app.db.database import Base
 class ContentStatus(str, Enum):
     """Status of full content fetching."""
 
-    PENDING = "pending"      # 等待抓取
-    FETCHED = "fetched"      # 已抓取全文
-    EMBEDDED = "embedded"    # 已生成向量
-    PARTIAL = "partial"      # 内容不完整（<500字符）
-    FAILED = "failed"        # 抓取失败
-    BLOCKED = "blocked"      # 域名被屏蔽
-    DELETED = "deleted"      # 已删除（被过滤）
+    PENDING = "pending"           # 等待抓取
+    FETCHED = "fetched"           # 已抓取全文
+    EMBEDDED = "embedded"         # 已生成向量
+    PARTIAL = "partial"           # 内容不完整（<500字符）
+    FAILED = "failed"             # 抓取失败
+    BLOCKED = "blocked"           # 域名被屏蔽
+    DELETED = "deleted"           # 已删除（被过滤）
+    EMBEDDING_FAILED = "embedding_failed"  # Embedding 失败 (P0)
+
+
+class FilterStatus(str, Enum):
+    """两阶段筛选状态追踪 (解决崩溃恢复问题)."""
+
+    PENDING = "pending"              # 等待初筛
+    INITIAL_USEFUL = "useful"        # 初筛: 有价值
+    INITIAL_UNCERTAIN = "uncertain"  # 初筛: 不确定
+    INITIAL_SKIPPED = "skipped"      # 初筛: 跳过(不存储)
+    FINE_KEEP = "keep"               # 精筛: 保留
+    FINE_DELETE = "delete"           # 精筛: 删除
+    FILTER_FAILED = "failed"         # 筛选失败
 
 
 class News(Base):
@@ -147,6 +161,88 @@ class News(Base):
         String(1024),
         nullable=True,
         comment="文章主图URL",
+    )
+
+    # === 关联实体字段（LLM提取） ===
+    related_entities: Mapped[Optional[list]] = mapped_column(
+        JSON,
+        nullable=True,
+        comment="关联实体及评分，格式: [{entity, type, score}, ...]",
+    )
+
+    # === RAG 优化辅助字段 ===
+    has_stock_entities: Mapped[bool] = mapped_column(
+        Boolean,
+        nullable=False,
+        default=False,
+        comment="是否包含个股实体",
+    )
+
+    has_macro_entities: Mapped[bool] = mapped_column(
+        Boolean,
+        nullable=False,
+        default=False,
+        comment="是否包含宏观因素",
+    )
+
+    max_entity_score: Mapped[Optional[float]] = mapped_column(
+        Float,
+        nullable=True,
+        comment="最高实体评分，用于快速过滤高相关性新闻",
+    )
+
+    primary_entity: Mapped[Optional[str]] = mapped_column(
+        String(100),
+        nullable=True,
+        comment="主实体（最高分股票，或最高分指数/宏观）",
+    )
+
+    primary_entity_type: Mapped[Optional[str]] = mapped_column(
+        String(20),
+        nullable=True,
+        comment="主实体类型: stock, index, macro",
+    )
+
+    # === 两阶段筛选状态追踪 (P0: 崩溃恢复) ===
+    filter_status: Mapped[Optional[str]] = mapped_column(
+        String(20),
+        nullable=True,
+        index=True,
+        comment="筛选状态: pending, useful, uncertain, keep, delete, failed",
+    )
+
+    # === 精筛结果 - Tags ===
+    industry_tags: Mapped[Optional[list]] = mapped_column(
+        JSON,
+        nullable=True,
+        comment='行业标签: ["tech", "finance", "healthcare", ...]',
+    )
+
+    event_tags: Mapped[Optional[list]] = mapped_column(
+        JSON,
+        nullable=True,
+        comment='事件标签: ["earnings", "merger", "regulatory", ...]',
+    )
+
+    sentiment_tag: Mapped[Optional[str]] = mapped_column(
+        String(20),
+        nullable=True,
+        index=True,
+        comment="情绪标签: bullish, bearish, neutral",
+    )
+
+    # === 精筛结果 - 投资摘要 ===
+    investment_summary: Mapped[Optional[str]] = mapped_column(
+        Text,
+        nullable=True,
+        comment="投资导向摘要 (2-3句，由精筛生成)",
+    )
+
+    # 复合索引用于 RAG 查询优化
+    __table_args__ = (
+        Index("ix_news_stock_entities_score", "has_stock_entities", "max_entity_score"),
+        Index("ix_news_macro_entities_score", "has_macro_entities", "max_entity_score"),
+        Index("ix_news_primary_entity", "primary_entity", "primary_entity_type"),
     )
 
     def __repr__(self) -> str:

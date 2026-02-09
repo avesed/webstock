@@ -144,6 +144,13 @@ class SystemSettings(Base):
         comment="是否启用股票分析功能",
     )
 
+    use_two_phase_filter: Mapped[bool] = mapped_column(
+        Boolean,
+        nullable=False,
+        default=False,
+        comment="启用两阶段新闻筛选（渐进式发布）",
+    )
+
     # === OpenAI Compatible / Local Model Configuration ===
     local_llm_base_url: Mapped[Optional[str]] = mapped_column(
         String(500),

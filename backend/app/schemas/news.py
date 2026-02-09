@@ -41,7 +41,11 @@ class NewsResponse(CamelModel):
     published_at: datetime
     market: str
     sentiment_score: Optional[float] = None
+    sentiment_tag: Optional[str] = None
     ai_analysis: Optional[str] = None
+    related_entities: Optional[List[dict]] = None
+    industry_tags: Optional[List[str]] = None
+    event_tags: Optional[List[str]] = None
     # created_at is optional since external news may not have it
     created_at: Optional[datetime] = None
 

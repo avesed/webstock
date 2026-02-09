@@ -1,8 +1,10 @@
 """News monitoring Celery tasks."""
 
+import asyncio
+import json
 import logging
 from datetime import datetime, timezone
-from typing import List, Dict, Any
+from typing import Any, Callable, Dict, List, Optional, TypeVar
 
 from worker.celery_app import celery_app
 
@@ -10,6 +12,112 @@ from worker.celery_app import celery_app
 from worker.db_utils import get_task_session
 
 logger = logging.getLogger(__name__)
+
+# Redis keys for monitor progress tracking
+MONITOR_STATUS_KEY = "news:monitor:status"
+MONITOR_PROGRESS_KEY = "news:monitor:progress"
+MONITOR_LAST_RUN_KEY = "news:monitor:last_run"
+
+
+async def _update_progress(stage: str, message: str, percent: int = 0):
+    """Update monitor progress in Redis for the admin dashboard."""
+    try:
+        from app.db.redis import get_redis
+        redis = await get_redis()
+        progress = {
+            "stage": stage,
+            "message": message,
+            "percent": percent,
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+        }
+        await redis.set(MONITOR_PROGRESS_KEY, json.dumps(progress), ex=600)
+        await redis.set(MONITOR_STATUS_KEY, "running", ex=600)
+    except Exception:
+        pass  # Non-critical, don't break task
+
+
+async def _finish_progress(stats: Dict[str, Any]):
+    """Mark monitor task as complete in Redis."""
+    try:
+        from app.db.redis import get_redis
+        redis = await get_redis()
+        now = datetime.now(timezone.utc).isoformat()
+        await redis.set(MONITOR_STATUS_KEY, "idle", ex=1800)
+        await redis.set(MONITOR_LAST_RUN_KEY, json.dumps({
+            "finished_at": now,
+            "stats": stats,
+        }), ex=1800)
+        await redis.delete(MONITOR_PROGRESS_KEY)
+    except Exception:
+        pass
+
+T = TypeVar("T")
+
+
+def run_async_task(coro_func: Callable[..., T], *args, **kwargs) -> T:
+    """
+    Run an async function in a new event loop, properly cleaning up afterwards.
+
+    This helper ensures all singleton async clients are reset after each task
+    to avoid "Event loop is closed" errors when tasks reuse singleton clients
+    that were bound to different (now closed) event loops.
+    """
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    try:
+        return loop.run_until_complete(coro_func(*args, **kwargs))
+    finally:
+        loop.close()
+        # Reset all singleton clients that may have bound to this event loop
+        try:
+            from app.core.openai_client import reset_openai_client
+            reset_openai_client()
+        except Exception:
+            pass
+        try:
+            from app.db.redis import reset_redis
+            reset_redis()
+        except Exception:
+            pass
+
+
+async def _run_initial_filter_if_enabled(
+    db,
+    system_settings,
+    articles: List[Dict[str, str]],
+) -> tuple[Dict[str, Dict], bool]:
+    """
+    Run initial filter if two-phase filtering is enabled.
+
+    Args:
+        db: Database session
+        system_settings: System settings with feature flag
+        articles: List of dicts with url, headline, summary
+
+    Returns:
+        Tuple of (filter_results dict, is_enabled bool)
+    """
+    if not system_settings.use_two_phase_filter:
+        return {}, False
+
+    from app.services.two_phase_filter_service import get_two_phase_filter_service
+    from app.services.filter_stats_service import get_filter_stats_service
+
+    filter_service = get_two_phase_filter_service()
+    stats_service = get_filter_stats_service()
+
+    results = await filter_service.batch_initial_filter(db, articles)
+
+    # Track stats
+    useful_count = sum(1 for r in results.values() if r["decision"] == "useful")
+    uncertain_count = sum(1 for r in results.values() if r["decision"] == "uncertain")
+    skip_count = sum(1 for r in results.values() if r["decision"] == "skip")
+
+    await stats_service.increment("initial_useful", useful_count)
+    await stats_service.increment("initial_uncertain", uncertain_count)
+    await stats_service.increment("initial_skip", skip_count)
+
+    return results, True
 
 
 @celery_app.task(bind=True, max_retries=3)
@@ -25,17 +133,8 @@ def monitor_news(self):
 
     This task is registered with Celery Beat schedule.
     """
-    import asyncio
-
     try:
-        # Run the async monitor function
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        try:
-            result = loop.run_until_complete(_monitor_news_async())
-            return result
-        finally:
-            loop.close()
+        return run_async_task(_monitor_news_async)
     except Exception as e:
         logger.exception(f"News monitor task failed: {e}")
         # Retry with exponential backoff
@@ -43,101 +142,350 @@ def monitor_news(self):
 
 
 async def _monitor_news_async() -> Dict[str, Any]:
-    """Async implementation of news monitoring."""
+    """
+    Async implementation of news monitoring.
+
+    Two-layer news acquisition strategy:
+    - Layer 1: Global market news (Finnhub general + AKShare trending → initial filter)
+    - Layer 2: Watchlist symbol-specific news (per-symbol queries, direct store)
+    """
     from sqlalchemy import select
 
-    from app.models.watchlist import Watchlist, WatchlistItem
-    from app.models.news import News, NewsAlert
-    from app.services.news_service import get_news_service
+    from app.config import settings as app_settings
+    from app.models.watchlist import WatchlistItem
+    from app.models.news import News, NewsAlert, FilterStatus
+    from app.services.news_service import (
+        FinnhubProvider,
+        AKShareProvider,
+        get_news_service,
+    )
+    from app.services.settings_service import SettingsService
+    from app.services.two_phase_filter_service import get_two_phase_filter_service
 
-    logger.info("Starting news monitor task")
-
-    # Use shared database engine and session factory from backend
-    # This ensures consistent connection pooling configuration
+    logger.info("Starting news monitor task (two-layer strategy)")
+    await _update_progress("init", "Initializing news monitor...", 0)
 
     stats = {
-        "symbols_checked": 0,
-        "articles_fetched": 0,
+        "global_fetched": 0,
+        "global_finnhub": 0,
+        "global_akshare": 0,
+        "watchlist_fetched": 0,
         "articles_stored": 0,
         "alerts_triggered": 0,
+        "entities_extracted": 0,
+        "high_relevance_count": 0,  # score >= 0.7
+        "stock_count": 0,
+        "index_count": 0,
+        "macro_count": 0,
+        # Two-phase filter stats
+        "initial_useful": 0,
+        "initial_uncertain": 0,
+        "initial_skipped": 0,
+        "two_phase_enabled": False,
     }
 
     try:
         async with get_task_session() as db:
-            # Get all unique symbols from all watchlists
-            query = select(WatchlistItem.symbol).distinct()
-            result = await db.execute(query)
-            symbols = [row[0] for row in result.fetchall()]
+            # Get Finnhub API key from system settings
+            settings_service = SettingsService()
+            system_settings = await settings_service.get_system_settings(db)
+            finnhub_api_key = system_settings.finnhub_api_key or app_settings.FINNHUB_API_KEY
 
-            stats["symbols_checked"] = len(symbols)
-            logger.info(f"Monitoring news for {len(symbols)} unique symbols")
-
-            if not symbols:
-                logger.info("No symbols to monitor")
-                return stats
-
-            # Get news service
-            news_service = await get_news_service()
-
-            # Fetch news for each symbol (with rate limiting)
-            import asyncio
+            # Track seen URLs to avoid duplicates
+            seen_urls: set = set()
 
             # Collect important articles for post-commit AI analysis dispatch
             important_articles: List[tuple] = []  # (News obj, importance score, title preview)
             all_new_articles: List = []  # Track all new articles for embedding
 
-            for symbol in symbols[:50]:  # Limit to 50 symbols per run
+            # ===== Layer 1: Global Market News (Finnhub + AKShare → Initial Filter) =====
+            await _update_progress("layer1", "Layer 1: Fetching global market news...", 5)
+            use_two_phase = system_settings.use_two_phase_filter
+            stats["two_phase_enabled"] = use_two_phase
+
+            try:
+                # --- Fetch from both sources ---
+                # Source 1: Finnhub news (all categories)
+                finnhub_articles = []
+                finnhub_categories = ["general", "forex", "crypto", "merger"]
+                for cat in finnhub_categories:
+                    try:
+                        if use_two_phase:
+                            cat_articles = await FinnhubProvider.get_general_news(
+                                category=cat,
+                                api_key=finnhub_api_key,
+                            )
+                        else:
+                            cat_articles = await FinnhubProvider.get_market_news_with_entities(
+                                db=db,
+                                category=cat,
+                                api_key=finnhub_api_key,
+                            )
+                        finnhub_articles.extend(cat_articles)
+                        logger.info(f"Layer 1: Finnhub [{cat}] fetched {len(cat_articles)} articles")
+                    except Exception as e:
+                        logger.warning(f"Layer 1: Finnhub [{cat}] fetch failed: {e}")
+                stats["global_finnhub"] = len(finnhub_articles)
+
+                await _update_progress("layer1_akshare", "Layer 1: Fetching AKShare news...", 10)
+
+                # Source 2: AKShare trending (东财全球快讯)
+                akshare_articles = []
                 try:
-                    articles = await news_service.get_news_by_symbol(
-                        symbol,
-                        force_refresh=True,
+                    akshare_articles = await AKShareProvider.get_trending_news_cn()
+                    stats["global_akshare"] = len(akshare_articles)
+                    logger.info(f"Layer 1: AKShare fetched {len(akshare_articles)} articles")
+                except Exception as e:
+                    logger.warning(f"Layer 1: AKShare fetch failed: {e}")
+
+                # Combine all global articles
+                global_articles = finnhub_articles + akshare_articles
+                stats["global_fetched"] = len(global_articles)
+
+                # Batch dedup: query DB once for all URLs
+                candidate_urls = [a.url for a in global_articles if a.url and a.url not in seen_urls]
+                existing_urls = set()
+                if candidate_urls:
+                    dedup_query = select(News.url).where(News.url.in_(candidate_urls))
+                    dedup_result = await db.execute(dedup_query)
+                    existing_urls = {row[0] for row in dedup_result.fetchall()}
+
+                new_articles = []
+                for a in global_articles:
+                    if a.url and a.url not in seen_urls and a.url not in existing_urls:
+                        new_articles.append(a)
+                    if a.url:
+                        seen_urls.add(a.url)
+
+                logger.info(
+                    f"Layer 1: {len(global_articles)} fetched (Finnhub={stats['global_finnhub']}, "
+                    f"AKShare={stats['global_akshare']}), "
+                    f"{len(existing_urls)} already in DB, {len(new_articles)} new"
+                )
+
+                if use_two_phase:
+                    # Two-phase mode: run initial filter on all new global articles
+                    articles_for_filter = [
+                        {
+                            "url": a.url,
+                            "headline": a.title,
+                            "summary": a.summary or "",
+                        }
+                        for a in new_articles
+                    ]
+
+                    await _update_progress("layer1_filter", f"Layer 1: Filtering {len(new_articles)} new articles...", 20)
+                    filter_results, _ = await _run_initial_filter_if_enabled(
+                        db, system_settings, articles_for_filter
                     )
-                    stats["articles_fetched"] += len(articles)
 
-                    # Store new articles in database
-                    for article_data in articles[:10]:  # Limit per symbol
-                        try:
-                            # Check if article already exists
-                            existing_query = select(News).where(
-                                News.url == article_data.get("url")
-                            )
-                            existing_result = await db.execute(existing_query)
-                            if existing_result.scalar_one_or_none():
-                                continue
+                    # Store articles that passed initial filter
+                    filter_service = get_two_phase_filter_service()
+                    for article in new_articles:
+                        filter_result = filter_results.get(article.url, {})
+                        decision = filter_result.get("decision", "uncertain")
 
-                            # Create new news record
-                            news = News(
-                                symbol=article_data.get("symbol"),
-                                title=article_data.get("title", "")[:500],
-                                summary=article_data.get("summary"),
-                                source=article_data.get("source", "unknown"),
-                                url=article_data.get("url", ""),
-                                published_at=_parse_datetime(article_data.get("published_at")),
-                                market=article_data.get("market", "US"),
-                            )
-                            db.add(news)
-                            all_new_articles.append(news)
-                            stats["articles_stored"] += 1
-
-                            # Score article importance for AI analysis
-                            importance = _score_article_importance(article_data)
-                            if importance >= 2.0:
-                                important_articles.append(
-                                    (news, importance, article_data.get("title", "")[:60])
-                                )
-
-                        except Exception as e:
-                            logger.warning(f"Error storing article: {e}")
+                        if decision == "skip":
+                            stats["initial_skipped"] += 1
                             continue
 
-                    # Small delay to avoid rate limiting
-                    await asyncio.sleep(0.5)
+                        if decision == "useful":
+                            stats["initial_useful"] += 1
+                        else:
+                            stats["initial_uncertain"] += 1
 
-                except Exception as e:
-                    logger.warning(f"Error fetching news for {symbol}: {e}")
-                    continue
+                        news = News(
+                            symbol=article.symbol,
+                            title=article.title[:500] if article.title else "",
+                            summary=article.summary,
+                            source=article.source,
+                            url=article.url,
+                            published_at=article.published_at,
+                            market=article.market,
+                            related_entities=None,
+                            has_stock_entities=False,
+                            has_macro_entities=False,
+                            max_entity_score=None,
+                            primary_entity=None,
+                            primary_entity_type=None,
+                            filter_status=filter_service.map_initial_decision_to_status(decision).value,
+                        )
+                        db.add(news)
+                        all_new_articles.append(news)
+                        stats["articles_stored"] += 1
 
-            # Commit all new articles (assigns IDs via flush)
+                        article_dict = article.to_dict()
+                        importance = _score_article_importance(article_dict)
+                        if importance >= 2.0:
+                            important_articles.append(
+                                (news, importance, article.title[:60] if article.title else "")
+                            )
+
+                    logger.info(
+                        f"Layer 1 (two-phase): useful={stats['initial_useful']}, "
+                        f"uncertain={stats['initial_uncertain']}, skipped={stats['initial_skipped']}"
+                    )
+
+                else:
+                    # Legacy mode: Finnhub articles have entities, AKShare don't
+                    # Count entity stats from Finnhub articles
+                    stats["entities_extracted"] = sum(
+                        1 for a in finnhub_articles if a.related_entities
+                    )
+                    for article in finnhub_articles:
+                        if article.related_entities:
+                            for entity in article.related_entities:
+                                if entity.get("score", 0) >= 0.7:
+                                    stats["high_relevance_count"] += 1
+                                entity_type = entity.get("type")
+                                if entity_type == "stock":
+                                    stats["stock_count"] += 1
+                                elif entity_type == "index":
+                                    stats["index_count"] += 1
+                                elif entity_type == "macro":
+                                    stats["macro_count"] += 1
+
+                    # Store all new articles
+                    for article in new_articles:
+                        # Finnhub articles have entities, AKShare articles don't
+                        entities = getattr(article, "related_entities", None) or []
+                        has_stock = any(e["type"] == "stock" for e in entities) if entities else False
+                        has_macro = any(e["type"] == "macro" for e in entities) if entities else False
+                        max_score = max((e["score"] for e in entities), default=None) if entities else None
+
+                        primary_entity = None
+                        primary_entity_type = None
+                        if entities:
+                            stock_entities = [e for e in entities if e["type"] == "stock"]
+                            if stock_entities:
+                                primary_entity = stock_entities[0]["entity"]
+                                primary_entity_type = "stock"
+                            else:
+                                primary_entity = entities[0]["entity"]
+                                primary_entity_type = entities[0]["type"]
+
+                        news = News(
+                            symbol=article.symbol,
+                            title=article.title[:500] if article.title else "",
+                            summary=article.summary,
+                            source=article.source,
+                            url=article.url,
+                            published_at=article.published_at,
+                            market=article.market,
+                            related_entities=entities if entities else None,
+                            has_stock_entities=has_stock,
+                            has_macro_entities=has_macro,
+                            max_entity_score=max_score,
+                            primary_entity=primary_entity,
+                            primary_entity_type=primary_entity_type,
+                        )
+                        db.add(news)
+                        all_new_articles.append(news)
+                        stats["articles_stored"] += 1
+
+                        article_dict = article.to_dict()
+                        importance = _score_article_importance(article_dict)
+                        if importance >= 2.0:
+                            important_articles.append(
+                                (news, importance, article.title[:60] if article.title else "")
+                            )
+
+                    logger.info(
+                        f"Layer 1 (legacy): stored={stats['articles_stored']}, "
+                        f"with_entities={stats['entities_extracted']}, "
+                        f"stocks={stats['stock_count']}, indices={stats['index_count']}, macro={stats['macro_count']}"
+                    )
+
+            except Exception as e:
+                logger.exception(f"Error in Layer 1 (Global news): {e}")
+
+            # ===== Layer 2: Watchlist Symbol-Specific News =====
+            await _update_progress("layer2", "Layer 2: Fetching watchlist news...", 45)
+            try:
+                # Get all unique symbols from watchlists (all markets)
+                query = select(WatchlistItem.symbol).distinct()
+                result = await db.execute(query)
+                watchlist_symbols = [row[0] for row in result.fetchall()]
+
+                news_service = await get_news_service()
+                import asyncio
+
+                # Pass 1: Collect all watchlist articles
+                watchlist_collected = []  # (symbol, article_data)
+                for symbol in watchlist_symbols[:40]:  # Limit to 40 symbols per run
+                    try:
+                        articles = await news_service.get_news_by_symbol(
+                            symbol,
+                            force_refresh=True,
+                        )
+                        stats["watchlist_fetched"] += len(articles)
+                        for article_data in articles[:5]:  # Limit per symbol
+                            url = article_data.get("url", "")
+                            if url and url not in seen_urls:
+                                watchlist_collected.append((symbol, article_data))
+                            if url:
+                                seen_urls.add(url)
+                        await asyncio.sleep(0.3)  # Rate limiting
+                    except Exception as e:
+                        logger.warning(f"Error fetching watchlist news for {symbol}: {e}")
+                        continue
+
+                # Pass 2: Batch dedup against DB (single query)
+                wl_urls = [a[1].get("url", "") for a in watchlist_collected if a[1].get("url")]
+                existing_wl_urls = set()
+                if wl_urls:
+                    dedup_query = select(News.url).where(News.url.in_(wl_urls))
+                    dedup_result = await db.execute(dedup_query)
+                    existing_wl_urls = {row[0] for row in dedup_result.fetchall()}
+
+                # Pass 3: Store only new articles
+                for symbol, article_data in watchlist_collected:
+                    url = article_data.get("url", "")
+                    if url in existing_wl_urls:
+                        continue
+
+                    # Company news: related_entities = the stock itself with score 1.0
+                    entities = [{
+                        "entity": symbol,
+                        "type": "stock",
+                        "score": 1.0,
+                    }]
+
+                    news = News(
+                        symbol=article_data.get("symbol", symbol),
+                        title=article_data.get("title", "")[:500],
+                        summary=article_data.get("summary"),
+                        source=article_data.get("source", "unknown"),
+                        url=url,
+                        published_at=_parse_datetime(article_data.get("publishedAt")),
+                        market=article_data.get("market", "US"),
+                        related_entities=entities,
+                        has_stock_entities=True,
+                        has_macro_entities=False,
+                        max_entity_score=1.0,
+                        primary_entity=symbol,
+                        primary_entity_type="stock",
+                    )
+                    db.add(news)
+                    all_new_articles.append(news)
+                    stats["articles_stored"] += 1
+
+                    importance = _score_article_importance(article_data)
+                    if importance >= 2.0:
+                        important_articles.append(
+                            (news, importance, article_data.get("title", "")[:60])
+                        )
+
+                logger.info(
+                    f"Layer 2 (Watchlist): fetched={stats['watchlist_fetched']}, "
+                    f"collected={len(watchlist_collected)}, dupes={len(existing_wl_urls)}"
+                )
+
+            except Exception as e:
+                logger.exception(f"Error in Layer 2 (Watchlist news): {e}")
+
+            # Commit all new articles
+            await _update_progress("saving", f"Saving {stats['articles_stored']} new articles...", 85)
             await db.commit()
 
             # Dispatch AI analysis for important articles AFTER commit
@@ -152,6 +500,7 @@ async def _monitor_news_async() -> Dict[str, Any]:
                         importance,
                     )
 
+            await _update_progress("dispatch", f"Dispatching content fetch for {len(all_new_articles)} articles...", 92)
             # Dispatch full content fetching for ALL newly stored articles
             # This replaces direct embedding - full_content_tasks will handle embedding
             for news_obj in all_new_articles:
@@ -165,10 +514,12 @@ async def _monitor_news_async() -> Dict[str, Any]:
                             news_obj.market,
                             news_obj.symbol,
                             None,  # user_id - use default settings
+                            use_two_phase,  # Pass two-phase flag
                         )
                         logger.debug(
-                            "Dispatched full content fetch for news_id=%s",
+                            "Dispatched full content fetch for news_id=%s (two_phase=%s)",
                             news_obj.id,
+                            use_two_phase,
                         )
                 except Exception as e:
                     logger.warning("Failed to dispatch full content fetch: %s", e)
@@ -182,10 +533,13 @@ async def _monitor_news_async() -> Dict[str, Any]:
         raise
     # get_task_session handles connection cleanup automatically
 
+    await _finish_progress(stats)
+
     logger.info(
-        f"News monitor completed: {stats['symbols_checked']} symbols, "
-        f"{stats['articles_fetched']} fetched, {stats['articles_stored']} stored, "
-        f"{stats['alerts_triggered']} alerts triggered"
+        f"News monitor completed: "
+        f"global={stats['global_fetched']} (finnhub={stats['global_finnhub']}, akshare={stats['global_akshare']}), "
+        f"watchlist={stats['watchlist_fetched']}, stored={stats['articles_stored']}, "
+        f"entities={stats['entities_extracted']}, alerts={stats['alerts_triggered']}"
     )
 
     return stats
@@ -288,16 +642,8 @@ def analyze_important_news(self, news_id: str):
     Args:
         news_id: UUID of the news article to analyze
     """
-    import asyncio
-
     try:
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        try:
-            result = loop.run_until_complete(_analyze_news_async(news_id))
-            return result
-        finally:
-            loop.close()
+        return run_async_task(_analyze_news_async, news_id)
     except Exception as e:
         logger.exception(f"News analysis task failed: {e}")
         raise self.retry(exc=e, countdown=30 * (2 ** self.request.retries))

@@ -1,3 +1,4 @@
 export { UserManagement } from './UserManagement'
 export { SystemSettings } from './SystemSettings'
 export { SystemMonitor } from './SystemMonitor'
+export { default as FilterStats } from './FilterStats'

@@ -224,4 +224,120 @@ export const adminApi = {
     })
     return response.data
   },
+
+  // News filter statistics
+  getFilterStats: async (days = 7): Promise<FilterStats> => {
+    const response = await apiClient.get<FilterStats>('/admin/news/filter-stats', {
+      params: { days },
+    })
+    return response.data
+  },
+
+  getDailyFilterStats: async (days = 7): Promise<DailyFilterStats> => {
+    const response = await apiClient.get<DailyFilterStats>('/admin/news/filter-stats/daily', {
+      params: { days },
+    })
+    return response.data
+  },
+
+  triggerNewsMonitor: async (): Promise<{ message: string; taskId: string }> => {
+    const response = await apiClient.post<{ message: string; taskId: string }>('/admin/news/trigger-monitor')
+    return response.data
+  },
+
+  getMonitorStatus: async (): Promise<MonitorStatus> => {
+    const response = await apiClient.get<MonitorStatus>('/admin/news/monitor-status')
+    return response.data
+  },
+}
+
+// Filter stats types
+export interface FilterStats {
+  periodDays: number
+  counts: {
+    initialFilter: {
+      useful: number
+      uncertain: number
+      skip: number
+      total: number
+    }
+    deepFilter: {
+      keep: number
+      delete: number
+      total: number
+    }
+    errors: {
+      filterError: number
+      embeddingError: number
+    }
+    embedding: {
+      success: number
+      error: number
+    }
+  }
+  rates: {
+    initialSkipRate: number
+    initialPassRate: number
+    deepKeepRate: number
+    deepDeleteRate: number
+    filterErrorRate: number
+    embeddingErrorRate: number
+  }
+  tokens: {
+    initialFilter: TokenUsage
+    deepFilter: TokenUsage
+    total: TokenUsage
+    days: number
+  }
+  alerts: FilterAlert[]
+}
+
+export interface TokenUsage {
+  inputTokens: number
+  outputTokens: number
+  totalTokens: number
+  estimatedCostUsd: number
+}
+
+export interface FilterAlert {
+  stat: string
+  rate: string
+  level: 'warning' | 'critical'
+  message: string
+}
+
+export interface DailyFilterStats {
+  days: number
+  data: DailyFilterStatsItem[]
+}
+
+export interface MonitorStatus {
+  status: 'running' | 'idle'
+  progress: {
+    stage: string
+    message: string
+    percent: number
+    updatedAt: string
+  } | null
+  lastRun: {
+    finishedAt: string
+    stats: Record<string, number>
+  } | null
+  nextRunAt: string | null
+}
+
+export interface DailyFilterStatsItem {
+  date: string
+  initialUseful: number
+  initialUncertain: number
+  initialSkip: number
+  fineKeep: number
+  fineDelete: number
+  filterError: number
+  embeddingSuccess: number
+  embeddingError: number
+  initialInputTokens: number
+  initialOutputTokens: number
+  deepInputTokens: number
+  deepOutputTokens: number
 }

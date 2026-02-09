@@ -103,12 +103,23 @@ export default function StockDetailPage() {
   const {
     data: chartData,
     isLoading: isLoadingChart,
+    error: chartError,
   } = useQuery({
     queryKey: ['stock-history', upperSymbol, chartControls.timeframe],
     queryFn: () => stockApi.getHistory(upperSymbol, chartControls.timeframe),
     enabled: !!upperSymbol,
     refetchInterval: isIntradayTimeframe ? 60000 : false, // Refresh every 60s for 1H/1D
+    retry: (failureCount, error: any) => {
+      // Don't retry 409 (futures market closed)
+      if (error?.response?.status === 409) return false
+      return failureCount < 2
+    },
   })
+
+  // Extract futures market closed message
+  const chartErrorMessage = (chartError as any)?.response?.status === 409
+    ? (chartError as any)?.response?.data?.detail
+    : null
 
   // Fetch related news
   const {
@@ -335,14 +346,20 @@ export default function StockDetailPage() {
                     />
                   </CardHeader>
                   <CardContent>
-                    <StockChart
-                      data={chartData ?? []}
-                      timeframe={chartControls.timeframe}
-                      symbol={upperSymbol}
-                      isLoading={isLoadingChart}
-                      height={400}
-                      onTimeframeChange={chartControls.setTimeframe}
-                    />
+                    {chartErrorMessage ? (
+                      <div className="flex items-center justify-center h-[400px] text-muted-foreground">
+                        <p>{chartErrorMessage}</p>
+                      </div>
+                    ) : (
+                      <StockChart
+                        data={chartData ?? []}
+                        timeframe={chartControls.timeframe}
+                        symbol={upperSymbol}
+                        isLoading={isLoadingChart}
+                        height={400}
+                        onTimeframeChange={chartControls.setTimeframe}
+                      />
+                    )}
                   </CardContent>
                 </Card>
 

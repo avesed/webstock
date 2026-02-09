@@ -475,6 +475,30 @@ export const newsApi = {
     }
   },
 
+  getMarket: async (
+    page: number = 1,
+    pageSize: number = 20
+  ): Promise<PaginatedResponse<NewsArticle>> => {
+    interface MarketResponse {
+      news: NewsArticle[]
+      total: number
+      page: number
+      pageSize: number
+      hasMore: boolean
+    }
+    const response = await apiClient.get<MarketResponse>('/news/market', {
+      params: { page, page_size: pageSize },
+    })
+    const { news, total, page: currentPage, pageSize: size, hasMore } = response.data
+    return {
+      items: news,
+      total,
+      page: currentPage,
+      pageSize: size,
+      totalPages: hasMore ? currentPage + 1 : currentPage,
+    }
+  },
+
   getTrending: async (): Promise<NewsArticle[]> => {
     interface TrendingResponse {
       news: NewsArticle[]

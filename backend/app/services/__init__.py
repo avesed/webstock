@@ -22,6 +22,17 @@ from app.services.news_filter_service import (
     NewsFilterService,
     get_news_filter_service,
 )
+from app.services.two_phase_filter_service import (
+    TwoPhaseFilterService,
+    get_two_phase_filter_service,
+    InitialFilterResult,
+    DeepFilterResult,
+    get_news_llm_settings,
+)
+from app.services.filter_stats_service import (
+    FilterStatsService,
+    get_filter_stats_service,
+)
 from app.services.news_storage_service import (
     NewsStorageService,
     get_news_storage_service,
@@ -73,6 +84,15 @@ __all__ = [
     # News filter
     "NewsFilterService",
     "get_news_filter_service",
+    # Two-phase filter
+    "TwoPhaseFilterService",
+    "get_two_phase_filter_service",
+    "InitialFilterResult",
+    "DeepFilterResult",
+    "get_news_llm_settings",
+    # Filter stats
+    "FilterStatsService",
+    "get_filter_stats_service",
     # News storage
     "NewsStorageService",
     "get_news_storage_service",

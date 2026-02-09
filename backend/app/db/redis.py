@@ -69,6 +69,18 @@ class RedisConnectionManager:
         """Check if the connection manager is initialized."""
         return self._initialized
 
+    def reset(self) -> None:
+        """
+        Reset the connection manager state (sync version for Celery workers).
+
+        Call this after closing an event loop in Celery tasks to prevent
+        "Event loop is closed" errors. The Redis client binds to the event loop
+        that initialized it, so we must discard it when the loop closes.
+        """
+        self._pool = None
+        self._client = None
+        self._initialized = False
+
 
 # Singleton instance of the connection manager
 _redis_manager = RedisConnectionManager()
@@ -88,6 +100,16 @@ async def get_redis() -> Redis:
 async def close_redis() -> None:
     """Close Redis connection pool."""
     await _redis_manager.close()
+
+
+def reset_redis() -> None:
+    """
+    Reset the Redis connection manager (sync version for Celery workers).
+
+    Call this in Celery tasks after closing the event loop to prevent
+    "Event loop is closed" errors on subsequent task executions.
+    """
+    _redis_manager.reset()
 
 
 @asynccontextmanager

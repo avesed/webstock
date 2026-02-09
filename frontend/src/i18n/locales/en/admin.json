@@ -4,7 +4,8 @@
   "tabs": {
     "users": "User Management",
     "settings": "System Settings",
-    "monitor": "System Monitor"
+    "monitor": "System Monitor",
+    "filter": "Filter Stats"
   },
   "users": {
     "title": "User Management",
@@ -79,6 +80,8 @@
     "useLlmConfigDescription": "Use API settings from LLM config above. Disable to configure separately",
     "newsApiUrl": "News API URL",
     "newsApiKey": "News API Key",
+    "finnhubApiKey": "Finnhub API Key",
+    "finnhubApiKeyHint": "For fetching global market news. Get your free key at finnhub.io",
     "featuresTitle": "Feature Toggles",
     "featuresDescription": "Enable or disable system features",
     "allowUserApiKeys": "Allow User API Keys",
@@ -93,6 +96,8 @@
     "requireApproval": "Require Registration Approval",
     "requireApprovalDescription": "New users must be approved by an admin before they can log in",
     "disableApprovalWarning": "Disabling this will auto-approve all pending users",
+    "useTwoPhaseFilter": "Two-Phase News Filter",
+    "useTwoPhaseFilterDescription": "Enable two-phase news filtering (initial + deep) for better quality and cost optimization",
     "langgraphTitle": "LangGraph Multi-Agent Analysis",
     "langgraphDescription": "Configure models and parameters for multi-agent stock analysis workflow",
     "useLocalModels": "Use Local Models",
@@ -133,5 +138,38 @@
     "errorRate": "Error Rate",
     "rateLimitHits": "Rate Limit Hits",
     "autoRefresh": "Data refreshes automatically every 30 seconds"
+  },
+  "filter": {
+    "title": "News Filter Statistics",
+    "description": "View two-phase news filtering effectiveness and costs",
+    "period": "Period",
+    "days": "days",
+    "initialFilter": "Initial Filter",
+    "deepFilter": "Deep Filter",
+    "totalTokens": "Total Tokens",
+    "estimatedCost": "Est. Cost",
+    "useful": "Useful",
+    "uncertain": "Uncertain",
+    "skip": "Skip",
+    "keep": "Keep",
+    "delete": "Delete",
+    "passRate": "Pass Rate",
+    "inputTokens": "Input Tokens",
+    "outputTokens": "Output Tokens",
+    "totalCount": "Total",
+    "errors": "Error Statistics",
+    "filterError": "Filter Errors",
+    "embeddingError": "Embedding Errors",
+    "noData": "No filter data available",
+    "noDataHint": "Statistics will appear here after enabling two-phase filtering",
+    "alertHighSkipRate": "High initial skip rate",
+    "alertHighDeleteRate": "High deep delete rate",
+    "alertHighFilterError": "High filter error rate",
+    "alertHighEmbeddingError": "High embedding error rate",
+    "triggerMonitor": "Run News Monitor",
+    "running": "Running...",
+    "taskTriggered": "Task started successfully",
+    "nextRun": "Next run",
+    "lastRun": "Last run"
   }
 }
