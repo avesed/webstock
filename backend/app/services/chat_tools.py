@@ -7,7 +7,9 @@ from typing import Any, Dict, List, Optional
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from fastapi import HTTPException
 from app.prompts.analysis.sanitizer import sanitize_input, sanitize_symbol
+from app.utils.symbol_validation import validate_symbol as _validate_symbol
 
 logger = logging.getLogger(__name__)
 
@@ -15,7 +17,21 @@ logger = logging.getLogger(__name__)
 MAX_TOOL_RESULT_CHARS = 500
 
 # Per-tool execution timeout in seconds
-TOOL_TIMEOUT_SECONDS = 10
+TOOL_TIMEOUT_SECONDS = 15
+
+
+def _normalize_symbol(raw: Optional[str]) -> str:
+    """Sanitize and normalize a stock symbol.
+
+    Applies sanitize_symbol for injection protection, then validate_symbol
+    for market-specific normalization (e.g. 01810.HK -> 1810.HK).
+    Falls back to the sanitized-only value if validation raises.
+    """
+    sanitized = sanitize_symbol(raw)
+    try:
+        return _validate_symbol(sanitized)
+    except (HTTPException, Exception):
+        return sanitized
 
 # Valid enum values for history tool
 VALID_PERIODS = {"1d", "5d", "1mo", "3mo", "6mo", "1y", "2y", "5y", "max"}
@@ -310,7 +326,7 @@ async def _dispatch_tool(
     """Route tool call to the appropriate service method."""
 
     if tool_name == "get_stock_quote":
-        symbol = sanitize_symbol(arguments.get("symbol"))
+        symbol = _normalize_symbol(arguments.get("symbol"))
         from app.services.stock_service import get_stock_service
         service = await get_stock_service()
         result = await service.get_quote(symbol)
@@ -322,7 +338,7 @@ async def _dispatch_tool(
             HistoryPeriod,
             get_stock_service,
         )
-        symbol = sanitize_symbol(arguments.get("symbol"))
+        symbol = _normalize_symbol(arguments.get("symbol"))
         period_str = arguments.get("period", "1y")
         interval_str = arguments.get("interval", "1d")
 
@@ -358,14 +374,14 @@ async def _dispatch_tool(
         return summary
 
     elif tool_name == "get_stock_info":
-        symbol = sanitize_symbol(arguments.get("symbol"))
+        symbol = _normalize_symbol(arguments.get("symbol"))
         from app.services.stock_service import get_stock_service
         service = await get_stock_service()
         result = await service.get_info(symbol)
         return result or {"error": f"No info available for {symbol}"}
 
     elif tool_name == "get_stock_financials":
-        symbol = sanitize_symbol(arguments.get("symbol"))
+        symbol = _normalize_symbol(arguments.get("symbol"))
         from app.services.stock_service import get_stock_service
         service = await get_stock_service()
         result = await service.get_financials(symbol)
@@ -381,7 +397,7 @@ async def _dispatch_tool(
         return [r.to_dict() if hasattr(r, "to_dict") else r for r in results[:10]]
 
     elif tool_name == "get_news":
-        symbol = sanitize_symbol(arguments.get("symbol"))
+        symbol = _normalize_symbol(arguments.get("symbol"))
         from app.services.news_service import get_news_service
         from app.services.embedding_service import get_embedding_service
         from app.services.rag_service import get_rag_service
@@ -495,7 +511,7 @@ async def _dispatch_tool(
         query = sanitize_input(arguments.get("query", ""), max_length=500)
         symbol = arguments.get("symbol")
         if symbol:
-            symbol = sanitize_symbol(symbol)
+            symbol = _normalize_symbol(symbol)
 
         from app.services.embedding_service import get_embedding_service
         from app.services.rag_service import get_rag_service

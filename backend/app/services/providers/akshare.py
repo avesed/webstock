@@ -210,26 +210,30 @@ class AKShareProvider(DataProvider):
             return None
 
     async def _get_quote_hk(self, symbol: str) -> Optional[StockQuote]:
-        """Get real-time quote for HK stocks."""
+        """Get real-time quote for HK stocks.
+
+        Uses stock_individual_spot_xq (Xueqiu) for fast per-symbol lookup
+        instead of stock_hk_spot_em which downloads the entire HK market.
+        """
         try:
             import akshare as ak
 
             code = normalize_symbol(symbol, Market.HK)
 
             def fetch():
-                df = ak.stock_hk_spot_em()
-                row = df[df["代码"] == code]
-                if row.empty:
+                df = ak.stock_individual_spot_xq(symbol=code)
+                if df is None or df.empty:
                     return None
-                return row.iloc[0].to_dict()
+                # Convert item/value pairs to dict
+                return dict(zip(df["item"], df["value"]))
 
             data = await run_in_executor(fetch)
             if not data:
                 return None
 
-            price = float(data.get("最新价", 0))
-            change = float(data.get("涨跌额", 0))
-            change_pct = float(data.get("涨跌幅", 0))
+            price = float(data.get("现价", 0))
+            change = float(data.get("涨跌", 0))
+            change_pct = float(data.get("涨幅", 0))
 
             return StockQuote(
                 symbol=symbol,
@@ -238,7 +242,7 @@ class AKShareProvider(DataProvider):
                 change=round(change, 4),
                 change_percent=round(change_pct, 2),
                 volume=int(data.get("成交量", 0)),
-                market_cap=float(data.get("总市值", 0)) if data.get("总市值") else None,
+                market_cap=float(data.get("资产净值/总市值", 0)) if data.get("资产净值/总市值") else None,
                 day_high=float(data.get("最高", 0)) if data.get("最高") else None,
                 day_low=float(data.get("最低", 0)) if data.get("最低") else None,
                 open=float(data.get("今开", 0)) if data.get("今开") else None,
