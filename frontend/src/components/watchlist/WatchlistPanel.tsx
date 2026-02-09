@@ -482,12 +482,12 @@ export default function WatchlistPanel({
           </DialogHeader>
           <div className="grid gap-4 py-4">
             <div className="grid gap-2">
-              <Label htmlFor="name">Name</Label>
+              <Label htmlFor="name">{t('watchlist.name')}</Label>
               <Input
                 id="name"
                 value={newWatchlistName}
                 onChange={(e) => setNewWatchlistName(e.target.value)}
-                placeholder="My Watchlist"
+                placeholder={t('watchlist.watchlistPlaceholder')}
                 onKeyDown={(e) => {
                   if (e.key === 'Enter') {
                     handleCreateWatchlist()
@@ -563,12 +563,12 @@ export default function WatchlistPanel({
           </DialogHeader>
           <div className="grid gap-4 py-4">
             <div className="grid gap-2">
-              <Label htmlFor="rename">Name</Label>
+              <Label htmlFor="rename">{t('watchlist.name')}</Label>
               <Input
                 id="rename"
                 value={newWatchlistName}
                 onChange={(e) => setNewWatchlistName(e.target.value)}
-                placeholder="Watchlist name"
+                placeholder={t('watchlist.watchlistPlaceholder')}
                 onKeyDown={(e) => {
                   if (e.key === 'Enter') {
                     handleConfirmRename()

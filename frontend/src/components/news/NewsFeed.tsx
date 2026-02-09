@@ -1,6 +1,7 @@
 import { useState, useCallback, useEffect, useRef } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useInfiniteQuery } from '@tanstack/react-query'
+import { useTranslation } from 'react-i18next'
 import { Loader2, AlertCircle, Newspaper, RefreshCw } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { cn } from '@/lib/utils'
@@ -24,6 +25,7 @@ export default function NewsFeed({
   className,
 }: NewsFeedProps) {
   const navigate = useNavigate()
+  const { t } = useTranslation('dashboard')
   const loadMoreRef = useRef<HTMLDivElement>(null)
   const [isRefreshing, setIsRefreshing] = useState(false)
 
@@ -117,10 +119,10 @@ export default function NewsFeed({
       <div className={cn('flex flex-col items-center justify-center gap-2 p-8', className)}>
         <AlertCircle className="h-8 w-8 text-destructive" />
         <p className="text-sm text-muted-foreground">
-          {error instanceof Error ? error.message : 'Failed to load news'}
+          {error instanceof Error ? error.message : t('news.noNews')}
         </p>
         <Button variant="outline" size="sm" onClick={handleRefresh}>
-          Try again
+          {t('common:actions.retry', 'Try again')}
         </Button>
       </div>
     )
@@ -131,7 +133,7 @@ export default function NewsFeed({
       <div className={cn('flex flex-col items-center justify-center gap-2 p-8', className)}>
         <Newspaper className="h-12 w-12 text-muted-foreground/50" />
         <p className="text-sm text-muted-foreground">
-          {symbol ? `No news found for ${symbol}` : 'No news available'}
+          {symbol ? t('news.noNewsForSymbol', { symbol }) : t('news.noNews')}
         </p>
       </div>
     )
@@ -148,7 +150,7 @@ export default function NewsFeed({
           disabled={isRefreshing}
         >
           <RefreshCw className={cn('h-4 w-4 mr-2', isRefreshing && 'animate-spin')} />
-          Refresh
+          {t('news.refresh')}
         </Button>
       </div>
 
@@ -176,7 +178,7 @@ export default function NewsFeed({
             )}
             {!hasNextPage && articles.length > 0 && mode !== 'trending' && (
               <p className="text-center text-sm text-muted-foreground">
-                No more articles
+                {t('news.noMoreArticles')}
               </p>
             )}
           </div>

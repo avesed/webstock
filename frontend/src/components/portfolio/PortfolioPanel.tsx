@@ -169,8 +169,8 @@ export default function PortfolioPanel({ className }: PortfolioPanelProps) {
     },
     onError: () => {
       toast({
-        title: 'Error',
-        description: 'Failed to create portfolio. Please try again.',
+        title: t('common:status.error', 'Error'),
+        description: t('portfolio.createError', 'Failed to create portfolio. Please try again.'),
         variant: 'destructive',
       })
     },
@@ -193,8 +193,8 @@ export default function PortfolioPanel({ className }: PortfolioPanelProps) {
     },
     onError: () => {
       toast({
-        title: 'Error',
-        description: 'Failed to delete portfolio. Please try again.',
+        title: t('common:status.error', 'Error'),
+        description: t('portfolio.deleteError', 'Failed to delete portfolio. Please try again.'),
         variant: 'destructive',
       })
     },
@@ -217,8 +217,8 @@ export default function PortfolioPanel({ className }: PortfolioPanelProps) {
     },
     onError: () => {
       toast({
-        title: 'Error',
-        description: 'Failed to record transaction. Please try again.',
+        title: t('common:status.error', 'Error'),
+        description: t('portfolio.transactionError', 'Failed to record transaction. Please try again.'),
         variant: 'destructive',
       })
     },
@@ -345,7 +345,7 @@ export default function PortfolioPanel({ className }: PortfolioPanelProps) {
                 <div className="flex items-center gap-2">
                   <Briefcase className="h-4 w-4" />
                   <span className="truncate">
-                    {selectedPortfolio?.name ?? t('common:actions.select', 'Select portfolio')}
+                    {selectedPortfolio?.name ?? t('portfolio.selectPortfolio')}
                   </span>
                 </div>
                 <ChevronRight className="h-4 w-4 rotate-90 opacity-50" />
@@ -599,7 +599,7 @@ export default function PortfolioPanel({ className }: PortfolioPanelProps) {
                                 : 'bg-stock-down/10 text-stock-down'
                             )}
                           >
-                            {transaction.type}
+                            {transaction.type === 'BUY' ? t('portfolio.buy') : t('portfolio.sell')}
                           </span>
                         </div>
                         <div className="font-medium">{transaction.symbol}</div>
@@ -643,21 +643,21 @@ export default function PortfolioPanel({ className }: PortfolioPanelProps) {
           </DialogHeader>
           <div className="grid gap-4 py-4">
             <div className="grid gap-2">
-              <Label htmlFor="portfolio-name">Name</Label>
+              <Label htmlFor="portfolio-name">{t('portfolio.name')}</Label>
               <Input
                 id="portfolio-name"
                 value={newPortfolioName}
                 onChange={(e) => setNewPortfolioName(e.target.value)}
-                placeholder="My Portfolio"
+                placeholder={t('portfolio.myPortfolio')}
               />
             </div>
             <div className="grid gap-2">
-              <Label htmlFor="portfolio-description">Description (optional)</Label>
+              <Label htmlFor="portfolio-description">{t('portfolio.descriptionOptional')}</Label>
               <Input
                 id="portfolio-description"
                 value={newPortfolioDescription}
                 onChange={(e) => setNewPortfolioDescription(e.target.value)}
-                placeholder="Long-term growth stocks"
+                placeholder={t('portfolio.longTermGrowth')}
               />
             </div>
           </div>
@@ -730,7 +730,7 @@ export default function PortfolioPanel({ className }: PortfolioPanelProps) {
           <div className="grid gap-4 py-4">
             <div className="grid grid-cols-2 gap-4">
               <div className="grid gap-2">
-                <Label htmlFor="symbol">Symbol</Label>
+                <Label htmlFor="symbol">{t('alerts.symbol')}</Label>
                 <Input
                   id="symbol"
                   value={transactionForm.symbol}
@@ -740,11 +740,11 @@ export default function PortfolioPanel({ className }: PortfolioPanelProps) {
                       symbol: e.target.value.toUpperCase(),
                     }))
                   }
-                  placeholder="AAPL"
+                  placeholder={t('portfolio.symbolPlaceholder')}
                 />
               </div>
               <div className="grid gap-2">
-                <Label htmlFor="type">Type</Label>
+                <Label htmlFor="type">{t('portfolio.transactionType')}</Label>
                 <Select
                   value={transactionForm.type}
                   onValueChange={(value: 'BUY' | 'SELL') =>
@@ -763,7 +763,7 @@ export default function PortfolioPanel({ className }: PortfolioPanelProps) {
             </div>
             <div className="grid grid-cols-2 gap-4">
               <div className="grid gap-2">
-                <Label htmlFor="quantity">Quantity</Label>
+                <Label htmlFor="quantity">{t('portfolio.quantity')}</Label>
                 <Input
                   id="quantity"
                   type="number"
@@ -771,13 +771,13 @@ export default function PortfolioPanel({ className }: PortfolioPanelProps) {
                   onChange={(e) =>
                     setTransactionForm((prev) => ({ ...prev, quantity: e.target.value }))
                   }
-                  placeholder="100"
+                  placeholder={t('portfolio.quantityPlaceholder')}
                   min="0"
                   step="1"
                 />
               </div>
               <div className="grid gap-2">
-                <Label htmlFor="price">Price per share</Label>
+                <Label htmlFor="price">{t('portfolio.pricePerShare')}</Label>
                 <Input
                   id="price"
                   type="number"
@@ -785,7 +785,7 @@ export default function PortfolioPanel({ className }: PortfolioPanelProps) {
                   onChange={(e) =>
                     setTransactionForm((prev) => ({ ...prev, price: e.target.value }))
                   }
-                  placeholder="150.00"
+                  placeholder={t('portfolio.pricePlaceholder')}
                   min="0"
                   step="0.01"
                 />
@@ -793,7 +793,7 @@ export default function PortfolioPanel({ className }: PortfolioPanelProps) {
             </div>
             <div className="grid grid-cols-2 gap-4">
               <div className="grid gap-2">
-                <Label htmlFor="date">Date</Label>
+                <Label htmlFor="date">{t('portfolio.date')}</Label>
                 <Input
                   id="date"
                   type="date"
@@ -804,7 +804,7 @@ export default function PortfolioPanel({ className }: PortfolioPanelProps) {
                 />
               </div>
               <div className="grid gap-2">
-                <Label htmlFor="fee">Fee (optional)</Label>
+                <Label htmlFor="fee">{t('portfolio.feeOptional')}</Label>
                 <Input
                   id="fee"
                   type="number"
@@ -819,14 +819,14 @@ export default function PortfolioPanel({ className }: PortfolioPanelProps) {
               </div>
             </div>
             <div className="grid gap-2">
-              <Label htmlFor="notes">Notes (optional)</Label>
+              <Label htmlFor="notes">{t('portfolio.notesOptional')}</Label>
               <Input
                 id="notes"
                 value={transactionForm.notes}
                 onChange={(e) =>
                   setTransactionForm((prev) => ({ ...prev, notes: e.target.value }))
                 }
-                placeholder="Earnings play..."
+                placeholder={t('portfolio.notesPlaceholder')}
               />
             </div>
           </div>

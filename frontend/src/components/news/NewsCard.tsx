@@ -34,10 +34,10 @@ interface NewsCardProps {
   onSymbolClick?: (symbol: string) => void
 }
 
-const SENTIMENT_CONFIG: Record<NewsSentiment, { icon: typeof TrendingUp; color: string; label: string }> = {
-  POSITIVE: { icon: TrendingUp, color: 'text-stock-up', label: 'Positive' },
-  NEGATIVE: { icon: TrendingDown, color: 'text-stock-down', label: 'Negative' },
-  NEUTRAL: { icon: Minus, color: 'text-muted-foreground', label: 'Neutral' },
+const SENTIMENT_CONFIG: Record<NewsSentiment, { icon: typeof TrendingUp; color: string; translationKey: string }> = {
+  POSITIVE: { icon: TrendingUp, color: 'text-stock-up', translationKey: 'news.positive' },
+  NEGATIVE: { icon: TrendingDown, color: 'text-stock-down', translationKey: 'news.negative' },
+  NEUTRAL: { icon: Minus, color: 'text-muted-foreground', translationKey: 'news.neutral' },
 }
 
 export default function NewsCard({ article, compact = false, className, onSymbolClick }: NewsCardProps) {
@@ -135,7 +135,7 @@ export default function NewsCard({ article, compact = false, className, onSymbol
                 )}
               >
                 {SentimentIcon && <SentimentIcon className={cn('h-3 w-3', sentiment.color)} />}
-                <span className={sentiment.color}>{sentiment.label}</span>
+                <span className={sentiment.color}>{t(sentiment.translationKey as 'news.positive' | 'news.negative' | 'news.neutral')}</span>
               </div>
             )}
           </div>

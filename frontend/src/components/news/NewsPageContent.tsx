@@ -1,6 +1,7 @@
 import { useState, useCallback } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
+import { useTranslation } from 'react-i18next'
 import { Newspaper, TrendingUp, Clock, Loader2 } from 'lucide-react'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
@@ -15,6 +16,7 @@ interface NewsPageContentProps {
 
 export default function NewsPageContent({ className }: NewsPageContentProps) {
   const navigate = useNavigate()
+  const { t } = useTranslation('dashboard')
   const [activeTab, setActiveTab] = useState('feed')
 
   // Fetch trending news for the sidebar
@@ -51,9 +53,9 @@ export default function NewsPageContent({ className }: NewsPageContentProps) {
     <div className={cn('space-y-6', className)}>
       {/* Header */}
       <div>
-        <h1 className="text-3xl font-bold tracking-tight">Market News</h1>
+        <h1 className="text-3xl font-bold tracking-tight">{t('news.title')}</h1>
         <p className="text-muted-foreground">
-          Stay updated with the latest market news and AI-powered analysis
+          {t('news.subtitle')}
         </p>
       </div>
 
@@ -61,34 +63,34 @@ export default function NewsPageContent({ className }: NewsPageContentProps) {
       <div className="grid gap-4 md:grid-cols-3">
         <Card>
           <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-            <CardTitle className="text-sm font-medium">Total Articles</CardTitle>
+            <CardTitle className="text-sm font-medium">{t('news.totalArticles')}</CardTitle>
             <Newspaper className="h-4 w-4 text-muted-foreground" />
           </CardHeader>
           <CardContent>
             <div className="text-2xl font-bold">{todayArticles}</div>
-            <p className="text-xs text-muted-foreground">News articles available</p>
+            <p className="text-xs text-muted-foreground">{t('news.articlesAvailable')}</p>
           </CardContent>
         </Card>
 
         <Card>
           <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-            <CardTitle className="text-sm font-medium">Trending</CardTitle>
+            <CardTitle className="text-sm font-medium">{t('news.trending')}</CardTitle>
             <TrendingUp className="h-4 w-4 text-muted-foreground" />
           </CardHeader>
           <CardContent>
             <div className="text-2xl font-bold">{trendingNews?.length ?? 0}</div>
-            <p className="text-xs text-muted-foreground">Hot topics</p>
+            <p className="text-xs text-muted-foreground">{t('news.hotTopics')}</p>
           </CardContent>
         </Card>
 
         <Card>
           <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-            <CardTitle className="text-sm font-medium">Last Update</CardTitle>
+            <CardTitle className="text-sm font-medium">{t('news.lastUpdate')}</CardTitle>
             <Clock className="h-4 w-4 text-muted-foreground" />
           </CardHeader>
           <CardContent>
             <div className="text-2xl font-bold">Live</div>
-            <p className="text-xs text-muted-foreground">Real-time updates</p>
+            <p className="text-xs text-muted-foreground">{t('news.realTimeUpdates')}</p>
           </CardContent>
         </Card>
       </div>
@@ -98,18 +100,18 @@ export default function NewsPageContent({ className }: NewsPageContentProps) {
         {/* News feed - main area */}
         <div className="lg:col-span-2">
           <Tabs value={activeTab} onValueChange={setActiveTab} className="space-y-4">
-            <TabsList>
-              <TabsTrigger value="feed">My Feed</TabsTrigger>
-              <TabsTrigger value="trending">Trending</TabsTrigger>
-              <TabsTrigger value="market">Market News</TabsTrigger>
-            </TabsList>
+          <TabsList>
+            <TabsTrigger value="feed">{t('news.myFeed')}</TabsTrigger>
+            <TabsTrigger value="trending">{t('news.trending')}</TabsTrigger>
+            <TabsTrigger value="market">{t('news.market')}</TabsTrigger>
+          </TabsList>
 
             <TabsContent value="feed">
               <Card>
                 <CardHeader>
-                  <CardTitle>Your News Feed</CardTitle>
+                  <CardTitle>{t('news.yourFeed')}</CardTitle>
                   <CardDescription>
-                    News related to stocks in your watchlist
+                    {t('news.feedDescription')}
                   </CardDescription>
                 </CardHeader>
                 <CardContent>
@@ -121,8 +123,8 @@ export default function NewsPageContent({ className }: NewsPageContentProps) {
             <TabsContent value="trending">
               <Card>
                 <CardHeader>
-                  <CardTitle>Trending News</CardTitle>
-                  <CardDescription>Most discussed news in the market</CardDescription>
+                  <CardTitle>{t('news.trendingTitle')}</CardTitle>
+                  <CardDescription>{t('news.trendingDescription')}</CardDescription>
                 </CardHeader>
                 <CardContent>
                   <NewsFeed mode="trending" maxHeight="600px" />
@@ -133,8 +135,8 @@ export default function NewsPageContent({ className }: NewsPageContentProps) {
             <TabsContent value="market">
               <Card>
                 <CardHeader>
-                  <CardTitle>Market Overview</CardTitle>
-                  <CardDescription>AI filtered and stored news from the monitoring pipeline</CardDescription>
+                  <CardTitle>{t('news.marketOverview')}</CardTitle>
+                  <CardDescription>{t('news.marketDescription')}</CardDescription>
                 </CardHeader>
                 <CardContent>
                   <NewsFeed mode="market" maxHeight="600px" />
@@ -150,9 +152,9 @@ export default function NewsPageContent({ className }: NewsPageContentProps) {
             <CardHeader>
               <div className="flex items-center gap-2">
                 <TrendingUp className="h-5 w-5 text-primary" />
-                <CardTitle className="text-lg">Trending Now</CardTitle>
+                <CardTitle className="text-lg">{t('news.trendingNow')}</CardTitle>
               </div>
-              <CardDescription>Top stories right now</CardDescription>
+              <CardDescription>{t('news.topStories')}</CardDescription>
             </CardHeader>
             <CardContent>
               {isTrendingLoading ? (
@@ -173,7 +175,7 @@ export default function NewsPageContent({ className }: NewsPageContentProps) {
               ) : (
                 <div className="flex flex-col items-center justify-center py-8 text-muted-foreground">
                   <Newspaper className="h-8 w-8 mb-2 opacity-50" />
-                  <p className="text-sm">No trending news</p>
+                  <p className="text-sm">{t('news.noNews')}</p>
                 </div>
               )}
             </CardContent>
@@ -182,8 +184,8 @@ export default function NewsPageContent({ className }: NewsPageContentProps) {
           {/* Quick links to popular stocks */}
           <Card>
             <CardHeader>
-              <CardTitle className="text-lg">Popular Stocks</CardTitle>
-              <CardDescription>View news by stock</CardDescription>
+              <CardTitle className="text-lg">{t('news.popularStocks')}</CardTitle>
+              <CardDescription>{t('news.viewNewsByStock')}</CardDescription>
             </CardHeader>
             <CardContent>
               <div className="flex flex-wrap gap-2">
