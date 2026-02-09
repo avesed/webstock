@@ -55,8 +55,8 @@ def upgrade() -> None:
     """)
     op.execute("CREATE INDEX IF NOT EXISTS idx_users_email ON users(email)")
     op.execute("CREATE INDEX IF NOT EXISTS idx_users_created_at ON users(created_at)")
+    op.execute("DROP TRIGGER IF EXISTS update_users_updated_at ON users")
     op.execute("""
-        DROP TRIGGER IF EXISTS update_users_updated_at ON users;
         CREATE TRIGGER update_users_updated_at
             BEFORE UPDATE ON users
             FOR EACH ROW
@@ -76,13 +76,15 @@ def upgrade() -> None:
             openai_api_key TEXT,
             openai_base_url VARCHAR(500),
             openai_model VARCHAR(100),
+            news_openai_base_url VARCHAR(500),
+            news_openai_api_key TEXT,
             created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
             updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP
         )
     """)
     op.execute("CREATE INDEX IF NOT EXISTS idx_user_settings_user_id ON user_settings(user_id)")
+    op.execute("DROP TRIGGER IF EXISTS update_user_settings_updated_at ON user_settings")
     op.execute("""
-        DROP TRIGGER IF EXISTS update_user_settings_updated_at ON user_settings;
         CREATE TRIGGER update_user_settings_updated_at
             BEFORE UPDATE ON user_settings
             FOR EACH ROW
@@ -120,8 +122,8 @@ def upgrade() -> None:
     """)
     op.execute("CREATE INDEX IF NOT EXISTS idx_watchlists_user_id ON watchlists(user_id)")
     op.execute("CREATE INDEX IF NOT EXISTS idx_watchlists_is_default ON watchlists(is_default)")
+    op.execute("DROP TRIGGER IF EXISTS update_watchlists_updated_at ON watchlists")
     op.execute("""
-        DROP TRIGGER IF EXISTS update_watchlists_updated_at ON watchlists;
         CREATE TRIGGER update_watchlists_updated_at
             BEFORE UPDATE ON watchlists
             FOR EACH ROW
@@ -197,8 +199,8 @@ def upgrade() -> None:
     op.execute("CREATE INDEX IF NOT EXISTS idx_portfolios_user_id ON portfolios(user_id)")
     op.execute("CREATE INDEX IF NOT EXISTS idx_portfolios_is_default ON portfolios(is_default)")
     op.execute("CREATE INDEX IF NOT EXISTS idx_portfolios_created_at ON portfolios(created_at)")
+    op.execute("DROP TRIGGER IF EXISTS update_portfolios_updated_at ON portfolios")
     op.execute("""
-        DROP TRIGGER IF EXISTS update_portfolios_updated_at ON portfolios;
         CREATE TRIGGER update_portfolios_updated_at
             BEFORE UPDATE ON portfolios
             FOR EACH ROW
@@ -222,8 +224,8 @@ def upgrade() -> None:
     op.execute("CREATE INDEX IF NOT EXISTS idx_holdings_portfolio_id ON holdings(portfolio_id)")
     op.execute("CREATE INDEX IF NOT EXISTS idx_holdings_symbol ON holdings(symbol)")
     op.execute("CREATE INDEX IF NOT EXISTS idx_holdings_created_at ON holdings(created_at)")
+    op.execute("DROP TRIGGER IF EXISTS update_holdings_updated_at ON holdings")
     op.execute("""
-        DROP TRIGGER IF EXISTS update_holdings_updated_at ON holdings;
         CREATE TRIGGER update_holdings_updated_at
             BEFORE UPDATE ON holdings
             FOR EACH ROW
@@ -280,8 +282,8 @@ def upgrade() -> None:
         CREATE INDEX IF NOT EXISTS idx_price_alerts_active_symbol ON price_alerts(symbol)
             WHERE is_active = TRUE AND is_triggered = FALSE
     """)
+    op.execute("DROP TRIGGER IF EXISTS update_price_alerts_updated_at ON price_alerts")
     op.execute("""
-        DROP TRIGGER IF EXISTS update_price_alerts_updated_at ON price_alerts;
         CREATE TRIGGER update_price_alerts_updated_at
             BEFORE UPDATE ON price_alerts
             FOR EACH ROW
@@ -335,8 +337,8 @@ def upgrade() -> None:
         CREATE INDEX IF NOT EXISTS idx_report_schedules_active_time
             ON report_schedules(time_of_day) WHERE is_active = TRUE
     """)
+    op.execute("DROP TRIGGER IF EXISTS update_report_schedules_updated_at ON report_schedules")
     op.execute("""
-        DROP TRIGGER IF EXISTS update_report_schedules_updated_at ON report_schedules;
         CREATE TRIGGER update_report_schedules_updated_at
             BEFORE UPDATE ON report_schedules
             FOR EACH ROW
@@ -380,8 +382,8 @@ def upgrade() -> None:
     """)
     op.execute("CREATE INDEX IF NOT EXISTS idx_conversations_user_id ON conversations(user_id)")
     op.execute("CREATE INDEX IF NOT EXISTS idx_conversations_symbol ON conversations(symbol)")
+    op.execute("DROP TRIGGER IF EXISTS update_conversations_updated_at ON conversations")
     op.execute("""
-        DROP TRIGGER IF EXISTS update_conversations_updated_at ON conversations;
         CREATE TRIGGER update_conversations_updated_at
             BEFORE UPDATE ON conversations
             FOR EACH ROW
