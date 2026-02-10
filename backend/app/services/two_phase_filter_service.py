@@ -258,10 +258,11 @@ class TwoPhaseFilterService:
                 response = await client.chat.completions.create(
                     model=llm_settings.model,
                     messages=[{"role": "user", "content": prompt}],
+                    stream=False,
                 )
 
                 # Track token usage
-                if response.usage:
+                if hasattr(response, 'usage') and response.usage:
                     from app.services.filter_stats_service import get_filter_stats_service
                     stats_service = get_filter_stats_service()
                     await stats_service.track_tokens(
@@ -270,7 +271,8 @@ class TwoPhaseFilterService:
                         output_tokens=response.usage.completion_tokens,
                     )
 
-                parsed = extract_json_from_response(response.choices[0].message.content or "")
+                content = response.choices[0].message.content if hasattr(response, 'choices') else str(response)
+                parsed = extract_json_from_response(content or "")
 
                 for j, a in enumerate(batch):
                     url = a.get("url", "")
@@ -345,10 +347,11 @@ class TwoPhaseFilterService:
             response = await client.chat.completions.create(
                 model=llm_settings.model,
                 messages=[{"role": "user", "content": prompt}],
+                stream=False,
             )
 
             # Track token usage
-            if response.usage:
+            if hasattr(response, 'usage') and response.usage:
                 from app.services.filter_stats_service import get_filter_stats_service
                 stats_service = get_filter_stats_service()
                 await stats_service.track_tokens(
@@ -357,7 +360,8 @@ class TwoPhaseFilterService:
                     output_tokens=response.usage.completion_tokens,
                 )
 
-            result = extract_json_from_response(response.choices[0].message.content or "")
+            content = response.choices[0].message.content if hasattr(response, 'choices') else str(response)
+            result = extract_json_from_response(content or "")
 
             decision = result.get("decision", "keep")
             if decision not in ("keep", "delete"):

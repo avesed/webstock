@@ -284,6 +284,7 @@ class RAGService:
         symbol: Optional[str] = None,
         chunk_index: int = 0,
         token_count: Optional[int] = None,
+        model: Optional[str] = None,
     ) -> DocumentEmbedding:
         """Store a document embedding in the database."""
         doc = DocumentEmbedding(
@@ -293,7 +294,7 @@ class RAGService:
             chunk_text=chunk_text,
             chunk_index=chunk_index,
             embedding=embedding,
-            model=settings.OPENAI_EMBEDDING_MODEL,
+            model=model or settings.OPENAI_EMBEDDING_MODEL,
             token_count=token_count,
         )
         db.add(doc)

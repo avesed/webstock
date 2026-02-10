@@ -633,7 +633,7 @@ async def _embed_news_full_content_async(
     from app.models.news import News, ContentStatus
     from app.models.user_settings import UserSettings
     from app.services.news_storage_service import get_news_storage_service
-    from app.services.embedding_service import get_embedding_service
+    from app.services.embedding_service import get_embedding_service, get_embedding_model_from_db
     from app.services.rag_service import get_rag_service
     from app.services.filter_stats_service import get_filter_stats_service
 
@@ -645,6 +645,8 @@ async def _embed_news_full_content_async(
     stats_service = get_filter_stats_service()
 
     async with get_task_session() as db:
+        # Read embedding model from system settings
+        embedding_model = await get_embedding_model_from_db(db)
         # Get news record
         query = select(News).where(News.id == uuid.UUID(news_id))
         result = await db.execute(query)
@@ -702,7 +704,7 @@ async def _embed_news_full_content_async(
 
         # Generate embeddings (set up AI context for API call)
         async with setup_task_ai_context():
-            embeddings = await embedding_service.generate_embeddings_batch(chunks)
+            embeddings = await embedding_service.generate_embeddings_batch(chunks, model=embedding_model)
 
         # Check for valid embeddings
         valid_pairs = [
@@ -748,6 +750,7 @@ async def _embed_news_full_content_async(
                     embedding=embedding,
                     symbol=news.symbol,
                     chunk_index=i,
+                    model=embedding_model,
                 )
                 stored_count += 1
 

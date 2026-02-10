@@ -729,11 +729,12 @@ class ChatService:
         symbol: str | None = None,
     ) -> list:
         """Generate an embedding for *query* and search for relevant context."""
-        from app.services.embedding_service import get_embedding_service
+        from app.services.embedding_service import get_embedding_service, get_embedding_model_from_db
         from app.services.rag_service import get_rag_service
 
         embedding_service = get_embedding_service()
-        embedding = await embedding_service.generate_embedding(query)
+        embedding_model = await get_embedding_model_from_db(db)
+        embedding = await embedding_service.generate_embedding(query, model=embedding_model)
         if embedding is None:
             logger.warning("Embedding generation returned None; skipping RAG")
             return []

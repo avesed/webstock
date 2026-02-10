@@ -3,6 +3,9 @@
 import logging
 from typing import List, Optional
 
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
 from app.config import settings
 from app.core.openai_client import get_openai_client
 from app.core.token_bucket import get_embedding_rate_limiter
@@ -15,6 +18,21 @@ MAX_CHUNK_TOKENS = 512
 CHUNK_OVERLAP_TOKENS = 50
 
 
+async def get_embedding_model_from_db(db: AsyncSession) -> str:
+    """Read embedding model name from system_settings, fallback to env config."""
+    try:
+        from app.models.system_settings import SystemSettings
+        result = await db.execute(
+            select(SystemSettings.embedding_model).where(SystemSettings.id == 1)
+        )
+        row = result.scalar_one_or_none()
+        if row:
+            return row
+    except Exception as e:
+        logger.warning("Failed to read embedding model from DB: %s", e)
+    return settings.OPENAI_EMBEDDING_MODEL
+
+
 class EmbeddingService:
     """
     Service for generating text embeddings using OpenAI's API.
@@ -25,12 +43,15 @@ class EmbeddingService:
     - Batch processing
     """
 
-    async def generate_embedding(self, text: str) -> Optional[List[float]]:
+    async def generate_embedding(
+        self, text: str, model: Optional[str] = None,
+    ) -> Optional[List[float]]:
         """
         Generate embedding for a single text.
 
         Args:
             text: Text to embed (will be truncated if too long)
+            model: Embedding model name (falls back to env config if None)
 
         Returns:
             Embedding vector or None on failure
@@ -45,16 +66,21 @@ class EmbeddingService:
             logger.warning("Embedding rate limit exceeded")
             return None
 
+        resolved_model = model or settings.OPENAI_EMBEDDING_MODEL
+
         try:
             client = get_openai_client()
-            response = await client.embeddings.create(
-                model=settings.OPENAI_EMBEDDING_MODEL,
-                input=text[:8000],  # Truncate to stay within token limits
-                dimensions=settings.OPENAI_EMBEDDING_DIMENSIONS,
-            )
+            kwargs: dict = {
+                "model": resolved_model,
+                "input": text[:8000],
+            }
+            if settings.OPENAI_EMBEDDING_DIMENSIONS:
+                kwargs["dimensions"] = settings.OPENAI_EMBEDDING_DIMENSIONS
+            response = await client.embeddings.create(**kwargs)
             embedding = response.data[0].embedding
             logger.debug(
-                "Generated embedding (dim=%d) for text of length %d",
+                "Generated embedding (model=%s, dim=%d) for text of length %d",
+                resolved_model,
                 len(embedding),
                 len(text),
             )
@@ -66,12 +92,14 @@ class EmbeddingService:
     async def generate_embeddings_batch(
         self,
         texts: List[str],
+        model: Optional[str] = None,
     ) -> List[Optional[List[float]]]:
         """
         Generate embeddings for multiple texts in a single API call.
 
         Args:
             texts: List of texts to embed
+            model: Embedding model name (falls back to env config if None)
 
         Returns:
             List of embeddings (None for failed items)
@@ -96,13 +124,17 @@ class EmbeddingService:
             logger.warning("Embedding batch rate limit exceeded")
             return [None] * len(texts)
 
+        resolved_model = model or settings.OPENAI_EMBEDDING_MODEL
+
         try:
             client = get_openai_client()
-            response = await client.embeddings.create(
-                model=settings.OPENAI_EMBEDDING_MODEL,
-                input=valid_texts,
-                dimensions=settings.OPENAI_EMBEDDING_DIMENSIONS,
-            )
+            kwargs: dict = {
+                "model": resolved_model,
+                "input": valid_texts,
+            }
+            if settings.OPENAI_EMBEDDING_DIMENSIONS:
+                kwargs["dimensions"] = settings.OPENAI_EMBEDDING_DIMENSIONS
+            response = await client.embeddings.create(**kwargs)
 
             # Map results back to original indices
             results: List[Optional[List[float]]] = [None] * len(texts)
@@ -110,7 +142,7 @@ class EmbeddingService:
                 original_idx = valid_indices[item.index]
                 results[original_idx] = item.embedding
 
-            logger.info("Generated %d embeddings in batch", len(response.data))
+            logger.info("Generated %d embeddings in batch (model=%s)", len(response.data), resolved_model)
             return results
         except Exception as e:
             logger.error("Failed to generate batch embeddings: %s", e)

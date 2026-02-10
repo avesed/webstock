@@ -399,17 +399,18 @@ async def _dispatch_tool(
     elif tool_name == "get_news":
         symbol = _normalize_symbol(arguments.get("symbol"))
         from app.services.news_service import get_news_service
-        from app.services.embedding_service import get_embedding_service
+        from app.services.embedding_service import get_embedding_service, get_embedding_model_from_db
         from app.services.rag_service import get_rag_service
 
         news_service = await get_news_service()
         embedding_service = get_embedding_service()
         rag_service = get_rag_service()
+        embedding_model = await get_embedding_model_from_db(db)
 
         # Parallel fetch: realtime news + embedding generation
         realtime_task = news_service.get_news_by_symbol(symbol)
         embedding_task = embedding_service.generate_embedding(
-            f"latest news about {symbol} stock"
+            f"latest news about {symbol} stock", model=embedding_model
         )
 
         articles, query_embedding = await asyncio.gather(
@@ -513,14 +514,15 @@ async def _dispatch_tool(
         if symbol:
             symbol = _normalize_symbol(symbol)
 
-        from app.services.embedding_service import get_embedding_service
+        from app.services.embedding_service import get_embedding_service, get_embedding_model_from_db
         from app.services.rag_service import get_rag_service
 
         embedding_svc = get_embedding_service()
         rag_svc = get_rag_service()
+        embedding_model = await get_embedding_model_from_db(db)
 
         # Generate embedding for query
-        query_embedding = await embedding_svc.generate_embedding(query)
+        query_embedding = await embedding_svc.generate_embedding(query, model=embedding_model)
         if not query_embedding:
             return {"info": "Could not generate embedding for search query"}
 

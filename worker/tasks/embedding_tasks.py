@@ -144,7 +144,7 @@ async def _embed_document_async(
 
     from sqlalchemy import text
 
-    from app.services.embedding_service import get_embedding_service
+    from app.services.embedding_service import get_embedding_service, get_embedding_model_from_db
     from app.services.rag_service import get_rag_service
 
     embedding_service = get_embedding_service()
@@ -167,8 +167,14 @@ async def _embed_document_async(
     if not chunks:
         return {"status": "skipped", "reason": "no_chunks"}
 
+    # Read embedding model from system settings before generating
+    # (done inside session block below, but we need it before store too)
+    embedding_model = None
+    async with get_task_session() as tmp_db:
+        embedding_model = await get_embedding_model_from_db(tmp_db)
+
     # Generate embeddings in batch (handles rate limiting internally)
-    embeddings = await embedding_service.generate_embeddings_batch(chunks)
+    embeddings = await embedding_service.generate_embeddings_batch(chunks, model=embedding_model)
 
     # P0-4: Check that at least one embedding succeeded before replacing old data
     valid_pairs = [
@@ -216,6 +222,7 @@ async def _embed_document_async(
                     embedding=embedding,
                     symbol=symbol,
                     chunk_index=i,
+                    model=embedding_model,
                 )
                 stored_count += 1
 
