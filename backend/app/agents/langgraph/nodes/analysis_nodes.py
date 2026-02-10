@@ -28,7 +28,7 @@ from app.agents.langgraph.utils.json_extractor import (
     extract_structured_data,
     safe_json_extract,
 )
-from app.core.llm_config import get_analysis_model_from_settings
+from app.core.llm import get_analysis_langchain_model
 from app.prompts.loader import load_instructions
 from app.schemas.agent_analysis import (
     ActionRecommendation,
@@ -353,7 +353,7 @@ Please analyze the fundamentals of this stock and output results in JSON format.
 
         # 4. Call LLM
         try:
-            llm = await get_analysis_model_from_settings()
+            llm = await get_analysis_langchain_model()
             messages = [
                 {"role": "system", "content": instructions},
                 {"role": "user", "content": user_prompt},
@@ -728,7 +728,7 @@ Please analyze the technicals of this stock and output results in JSON format.
 
         # 4. Call LLM
         try:
-            llm = await get_analysis_model_from_settings()
+            llm = await get_analysis_langchain_model()
             messages = [
                 {"role": "system", "content": instructions},
                 {"role": "user", "content": user_prompt},
@@ -1016,7 +1016,7 @@ Please analyze the market sentiment for this stock and output results in JSON fo
 
         # 4. Call LLM
         try:
-            llm = await get_analysis_model_from_settings()
+            llm = await get_analysis_langchain_model()
             messages = [
                 {"role": "system", "content": instructions},
                 {"role": "user", "content": user_prompt},
@@ -1303,7 +1303,7 @@ Please analyze the impact of these news articles on the stock and output results
 
         # 4. Call LLM
         try:
-            llm = await get_analysis_model_from_settings()
+            llm = await get_analysis_langchain_model()
             messages = [
                 {"role": "system", "content": instructions},
                 {"role": "user", "content": user_prompt},

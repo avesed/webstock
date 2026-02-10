@@ -3,6 +3,7 @@
 import logging
 from datetime import datetime, timedelta, timezone
 from typing import Optional
+from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import and_, func, or_, select
@@ -12,6 +13,7 @@ from app.core.rate_limiter import rate_limit
 from app.core.security import hash_password, require_admin
 from app.db.database import get_db
 from app.db.redis import get_redis
+from app.models.llm_provider import LlmProvider
 from app.models.system_settings import SystemSettings
 from app.models.user import AccountStatus, User, UserRole
 from app.services.pending_token_service import clear_pending_token
@@ -27,6 +29,8 @@ from app.schemas.admin import (
     FilterStatsResponse,
     LangGraphConfig,
     LlmConfig,
+    ModelAssignment,
+    ModelAssignmentsConfig,
     NewsConfig,
     RejectUserRequest,
     ResetPasswordRequest,
@@ -41,6 +45,12 @@ from app.schemas.admin import (
     UserAdminResponse,
     UserListResponse,
     UserStats,
+)
+from app.schemas.llm_provider import (
+    LlmProviderCreate,
+    LlmProviderListResponse,
+    LlmProviderResponse,
+    LlmProviderUpdate,
 )
 from app.schemas.user import MessageResponse
 
@@ -578,6 +588,9 @@ async def get_system_settings(
         openai_model=settings.openai_model or "gpt-4o-mini",
         openai_max_tokens=settings.openai_max_tokens,
         openai_temperature=settings.openai_temperature,
+        # Anthropic settings
+        anthropic_api_key_set=bool(settings.anthropic_api_key),
+        anthropic_base_url=settings.anthropic_base_url,
         embedding_model=settings.embedding_model or "text-embedding-3-small",
         news_filter_model=settings.news_filter_model or "gpt-4o-mini",
         news_retention_days=settings.news_retention_days,
@@ -629,6 +642,10 @@ async def update_system_settings(
         settings.openai_max_tokens = data.openai_max_tokens
     if data.openai_temperature is not None:
         settings.openai_temperature = data.openai_temperature
+    if data.anthropic_api_key is not None:
+        settings.anthropic_api_key = data.anthropic_api_key or None
+    if data.anthropic_base_url is not None:
+        settings.anthropic_base_url = data.anthropic_base_url or None
     if data.embedding_model is not None:
         settings.embedding_model = data.embedding_model or None
     if data.news_filter_model is not None:
@@ -698,6 +715,9 @@ async def update_system_settings(
         openai_model=settings.openai_model or "gpt-4o-mini",
         openai_max_tokens=settings.openai_max_tokens,
         openai_temperature=settings.openai_temperature,
+        # Anthropic settings
+        anthropic_api_key_set=bool(settings.anthropic_api_key),
+        anthropic_base_url=settings.anthropic_base_url,
         embedding_model=settings.embedding_model or "text-embedding-3-small",
         news_filter_model=settings.news_filter_model or "gpt-4o-mini",
         news_retention_days=settings.news_retention_days,
@@ -813,20 +833,42 @@ async def get_system_config(
 
     settings = await get_or_create_system_settings(db)
 
+    # Build model assignments from provider FKs
+    model_assignments = ModelAssignmentsConfig(
+        chat=ModelAssignment(
+            provider_id=str(settings.chat_provider_id) if settings.chat_provider_id else None,
+            model=settings.openai_model or "gpt-4o-mini",
+        ),
+        analysis=ModelAssignment(
+            provider_id=str(settings.analysis_provider_id) if settings.analysis_provider_id else None,
+            model=settings.analysis_model or "gpt-4o-mini",
+        ),
+        synthesis=ModelAssignment(
+            provider_id=str(settings.synthesis_provider_id) if settings.synthesis_provider_id else None,
+            model=settings.synthesis_model or "gpt-4o",
+        ),
+        embedding=ModelAssignment(
+            provider_id=str(settings.embedding_provider_id) if settings.embedding_provider_id else None,
+            model=settings.embedding_model or "text-embedding-3-small",
+        ),
+    )
+
     return SystemConfigResponse(
         llm=LlmConfig(
             api_key="***" if settings.openai_api_key else None,
             base_url=settings.openai_base_url or "https://api.openai.com/v1",
             model=settings.openai_model or "gpt-4o-mini",
-            max_tokens=settings.openai_max_tokens,  # None = use model default
-            temperature=settings.openai_temperature,  # None = use model default
+            max_tokens=settings.openai_max_tokens,
+            temperature=settings.openai_temperature,
+            anthropic_api_key="***" if settings.anthropic_api_key else None,
+            anthropic_base_url=settings.anthropic_base_url,
         ),
         news=NewsConfig(
-            default_source="scraper",  # TODO: Add to system settings if needed
+            default_source="scraper",
             retention_days=settings.news_retention_days,
             embedding_model=settings.embedding_model or "text-embedding-3-small",
             filter_model=settings.news_filter_model or "gpt-4o-mini",
-            auto_fetch_enabled=True,  # TODO: Add to system settings if needed
+            auto_fetch_enabled=True,
             use_llm_config=settings.news_use_llm_config,
             openai_base_url=settings.news_openai_base_url,
             openai_api_key="***" if settings.news_openai_api_key else None,
@@ -834,7 +876,7 @@ async def get_system_config(
         ),
         features=FeaturesConfig(
             allow_user_api_keys=settings.allow_user_custom_api_keys,
-            allow_user_custom_models=False,  # TODO: Add to system settings if needed
+            allow_user_custom_models=False,
             enable_news_analysis=settings.enable_news_analysis,
             enable_stock_analysis=settings.enable_stock_analysis,
             require_registration_approval=settings.require_registration_approval,
@@ -848,6 +890,7 @@ async def get_system_config(
             max_clarification_rounds=settings.max_clarification_rounds,
             clarification_confidence_threshold=settings.clarification_confidence_threshold,
         ),
+        model_assignments=model_assignments,
     )
 
 
@@ -880,6 +923,10 @@ async def update_system_config(
         settings.openai_max_tokens = data.llm.max_tokens
         # Allow temperature to be cleared (set to null)
         settings.openai_temperature = data.llm.temperature
+        if data.llm.anthropic_api_key and data.llm.anthropic_api_key != "***":
+            settings.anthropic_api_key = data.llm.anthropic_api_key
+        if data.llm.anthropic_base_url is not None:
+            settings.anthropic_base_url = data.llm.anthropic_base_url or None
 
     # Update news settings
     if data.news:
@@ -928,6 +975,22 @@ async def update_system_config(
             settings.max_clarification_rounds = data.langgraph.max_clarification_rounds
         if data.langgraph.clarification_confidence_threshold is not None:
             settings.clarification_confidence_threshold = data.langgraph.clarification_confidence_threshold
+
+    # Update model assignments
+    if data.model_assignments:
+        ma = data.model_assignments
+        if ma.chat:
+            settings.openai_model = ma.chat.model or None
+            settings.chat_provider_id = UUID(ma.chat.provider_id) if ma.chat.provider_id else None
+        if ma.analysis:
+            settings.analysis_model = ma.analysis.model or None
+            settings.analysis_provider_id = UUID(ma.analysis.provider_id) if ma.analysis.provider_id else None
+        if ma.synthesis:
+            settings.synthesis_model = ma.synthesis.model or None
+            settings.synthesis_provider_id = UUID(ma.synthesis.provider_id) if ma.synthesis.provider_id else None
+        if ma.embedding:
+            settings.embedding_model = ma.embedding.model or None
+            settings.embedding_provider_id = UUID(ma.embedding.provider_id) if ma.embedding.provider_id else None
 
     settings.updated_at = datetime.now(timezone.utc)
     settings.updated_by = admin.id
@@ -1014,6 +1077,211 @@ async def get_system_monitor_stats(
             rate_limit_hits=0,
         ),
     )
+
+
+# ============== LLM Provider CRUD Endpoints ==============
+
+
+def _provider_to_response(provider: LlmProvider) -> LlmProviderResponse:
+    """Convert LlmProvider model to response schema."""
+    return LlmProviderResponse(
+        id=str(provider.id),
+        name=provider.name,
+        provider_type=provider.provider_type,
+        api_key_set=bool(provider.api_key),
+        base_url=provider.base_url,
+        models=provider.models or [],
+        is_enabled=provider.is_enabled,
+        sort_order=provider.sort_order,
+        created_at=provider.created_at,
+        updated_at=provider.updated_at,
+    )
+
+
+@router.get(
+    "/llm-providers",
+    response_model=LlmProviderListResponse,
+    summary="List all LLM providers",
+    dependencies=[Depends(rate_limit(max_requests=60, window_seconds=60))],
+)
+async def list_llm_providers(
+    admin: User = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """Get all configured LLM providers."""
+    logger.info("Admin %d listing LLM providers", admin.id)
+    result = await db.execute(
+        select(LlmProvider).order_by(LlmProvider.sort_order, LlmProvider.created_at)
+    )
+    providers = result.scalars().all()
+    return LlmProviderListResponse(
+        providers=[_provider_to_response(p) for p in providers]
+    )
+
+
+@router.post(
+    "/llm-providers",
+    response_model=LlmProviderResponse,
+    status_code=status.HTTP_201_CREATED,
+    summary="Create a new LLM provider",
+    dependencies=[Depends(rate_limit(max_requests=20, window_seconds=60))],
+)
+async def create_llm_provider(
+    data: LlmProviderCreate,
+    admin: User = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """Create a new LLM provider configuration."""
+    logger.info(
+        "Admin %d creating LLM provider: name=%s, type=%s",
+        admin.id, data.name, data.provider_type,
+    )
+
+    # Check unique name
+    existing = await db.execute(
+        select(LlmProvider).where(LlmProvider.name == data.name)
+    )
+    if existing.scalar_one_or_none():
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Provider with name '{data.name}' already exists",
+        )
+
+    provider = LlmProvider(
+        name=data.name,
+        provider_type=data.provider_type,
+        api_key=data.api_key or None,
+        base_url=data.base_url or None,
+        models=data.models or [],
+    )
+    db.add(provider)
+    await db.commit()
+    await db.refresh(provider)
+
+    logger.info(
+        "[AUDIT] Admin %d created LLM provider %s (%s)",
+        admin.id, provider.id, provider.name,
+    )
+    return _provider_to_response(provider)
+
+
+@router.put(
+    "/llm-providers/{provider_id}",
+    response_model=LlmProviderResponse,
+    summary="Update an LLM provider",
+    dependencies=[Depends(rate_limit(max_requests=30, window_seconds=60))],
+)
+async def update_llm_provider(
+    provider_id: UUID,
+    data: LlmProviderUpdate,
+    admin: User = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """Update an existing LLM provider configuration."""
+    result = await db.execute(
+        select(LlmProvider).where(LlmProvider.id == provider_id)
+    )
+    provider = result.scalar_one_or_none()
+    if not provider:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Provider not found",
+        )
+
+    update_fields = data.model_dump(exclude_none=True)
+    logger.info(
+        "Admin %d updating LLM provider %s: %s",
+        admin.id, provider_id, list(update_fields.keys()),
+    )
+
+    if data.name is not None and data.name != provider.name:
+        # Check unique name
+        existing = await db.execute(
+            select(LlmProvider).where(
+                LlmProvider.name == data.name,
+                LlmProvider.id != provider_id,
+            )
+        )
+        if existing.scalar_one_or_none():
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=f"Provider with name '{data.name}' already exists",
+            )
+        provider.name = data.name
+
+    if data.api_key is not None and data.api_key != "***":
+        provider.api_key = data.api_key or None
+
+    if data.base_url is not None:
+        provider.base_url = data.base_url or None
+
+    if data.models is not None:
+        provider.models = data.models
+
+    if data.is_enabled is not None:
+        provider.is_enabled = data.is_enabled
+
+    if data.sort_order is not None:
+        provider.sort_order = data.sort_order
+
+    await db.commit()
+    await db.refresh(provider)
+
+    logger.info(
+        "[AUDIT] Admin %d updated LLM provider %s (%s)",
+        admin.id, provider.id, provider.name,
+    )
+    return _provider_to_response(provider)
+
+
+@router.delete(
+    "/llm-providers/{provider_id}",
+    summary="Delete an LLM provider",
+    dependencies=[Depends(rate_limit(max_requests=10, window_seconds=60))],
+)
+async def delete_llm_provider(
+    provider_id: UUID,
+    admin: User = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """Delete an LLM provider. Fails if actively assigned."""
+    result = await db.execute(
+        select(LlmProvider).where(LlmProvider.id == provider_id)
+    )
+    provider = result.scalar_one_or_none()
+    if not provider:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Provider not found",
+        )
+
+    # Check if any model assignment references this provider
+    settings = await get_or_create_system_settings(db)
+    active_assignments = []
+    if settings.chat_provider_id == provider_id:
+        active_assignments.append("chat")
+    if settings.analysis_provider_id == provider_id:
+        active_assignments.append("analysis")
+    if settings.synthesis_provider_id == provider_id:
+        active_assignments.append("synthesis")
+    if settings.embedding_provider_id == provider_id:
+        active_assignments.append("embedding")
+
+    if active_assignments:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Provider is actively assigned to: {', '.join(active_assignments)}. "
+            f"Reassign these roles before deleting.",
+        )
+
+    logger.info(
+        "[AUDIT] Admin %d deleting LLM provider %s (%s)",
+        admin.id, provider.id, provider.name,
+    )
+    await db.delete(provider)
+    await db.commit()
+
+    return {"message": f"Provider '{provider.name}' deleted"}
 
 
 # ============== News Filter Statistics Endpoints ==============

@@ -9,8 +9,10 @@ from sqlalchemy import DateTime, Index, Integer, String, Text
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
-from app.config import settings
 from app.db.database import Base
+
+# Hardcoded: changing dimensions requires a DB migration + full re-embedding
+EMBEDDING_DIMENSIONS = 1536
 
 
 class DocumentEmbedding(Base):
@@ -66,7 +68,7 @@ class DocumentEmbedding(Base):
 
     # Vector embedding
     embedding: Mapped[list] = mapped_column(
-        Vector(settings.OPENAI_EMBEDDING_DIMENSIONS),
+        Vector(EMBEDDING_DIMENSIONS),
         nullable=False,
     )
 
@@ -74,7 +76,7 @@ class DocumentEmbedding(Base):
     model: Mapped[str] = mapped_column(
         String(100),
         nullable=False,
-        default=settings.OPENAI_EMBEDDING_MODEL,
+        default="unknown",
     )
 
     token_count: Mapped[Optional[int]] = mapped_column(

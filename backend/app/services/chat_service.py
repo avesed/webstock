@@ -1,7 +1,7 @@
 """Chat service for AI-powered stock analysis conversations.
 
 Handles conversation lifecycle, message persistence, and streaming responses
-from the OpenAI API with function calling (tool use).  The LLM can invoke
+via the LLM Gateway with function calling (tool use).  The LLM can invoke
 stock data, news, portfolio, and RAG tools during a conversation.
 
 All database operations use async SQLAlchemy ORM to prevent SQL injection.
@@ -22,12 +22,19 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.db.database import AsyncSessionLocal
 
 from app.config import settings
-from app.core.openai_client import (
-    get_openai_max_tokens,
-    get_openai_temperature,
-    get_openai_system_prompt,
-    get_synthesis_model_config,
+from app.core.llm import (
+    get_llm_gateway,
+    get_chat_model_config,
+    ChatRequest,
+    Message,
+    Role,
+    ToolCall,
+    ContentDelta,
+    ToolCallDelta,
+    UsageInfo,
+    FinishEvent,
 )
+from app.core.user_ai_config import current_user_ai_config
 from app.core.token_bucket import get_chat_rate_limiter, get_user_chat_rate_limiter
 from app.models.chat import ChatMessage, Conversation
 from app.services.chat_tools import (
@@ -43,7 +50,7 @@ logger = logging.getLogger(__name__)
 # Constants
 # ---------------------------------------------------------------------------
 
-# Maximum messages to include in the context window sent to OpenAI
+# Maximum messages to include in the context window sent to the LLM
 _MAX_CONTEXT_MESSAGES = 10
 
 # Rough token budget for the context window (used for trimming)
@@ -57,14 +64,6 @@ _MAX_TOOL_ITERATIONS = 3
 
 # Wall-clock timeout for the entire tool call loop (seconds)
 _TOOL_LOOP_TIMEOUT = 60
-
-# Patterns that indicate a model is outputting tool calls as text
-# instead of using structured tool_calls (e.g. DeepSeek via incompatible proxy)
-import re
-_TEXT_TOOL_CALL_PATTERNS = re.compile(
-    r"<\|?\s*(?:DSML|tool_call|function_call)|<tool_call>|<function_call>",
-    re.IGNORECASE,
-)
 
 
 class ChatService:
@@ -303,11 +302,18 @@ class ChatService:
 
             await db.commit()
 
-            # 6. Build OpenAI messages payload (no inline RAG -- RAG is a tool)
+            # 6. Build gateway messages payload (no inline RAG -- RAG is a tool)
             system_prompt = self._build_system_prompt(language, symbol)
-            messages: list[dict] = [{"role": "system", "content": system_prompt}]
-            messages.extend(history)
-            messages.append({"role": "user", "content": user_message})
+            gateway_messages: list[Message] = [
+                Message(role=Role.SYSTEM, content=system_prompt),
+            ]
+            for h in history:
+                gateway_messages.append(
+                    Message(role=Role(h["role"]), content=h.get("content") or "")
+                )
+            gateway_messages.append(
+                Message(role=Role.USER, content=user_message)
+            )
 
             # 7. Emit message_start
             yield _sse({
@@ -317,7 +323,14 @@ class ChatService:
             })
 
             # 8. Tool call loop (using synthesis model from LangGraph config)
-            client, model = await get_synthesis_model_config()
+            gateway = get_llm_gateway()
+            model, provider_kwargs = await get_chat_model_config()
+
+            # Read user-specific overrides from context variable
+            user_config = current_user_ai_config.get()
+            user_max_tokens = user_config.max_tokens if user_config else None
+            user_temperature = user_config.temperature if user_config else None
+
             full_content: list[str] = []
             total_completion_tokens = 0
             all_tool_calls_meta: list[dict] = []
@@ -327,7 +340,8 @@ class ChatService:
             # Track whether the model supports native function calling.
             # Some providers (e.g. DeepSeek via third-party proxies) output
             # tool calls as XML text instead of structured tool_calls deltas.
-            # When detected, we disable tools and retry.
+            # When detected, the provider sets FinishEvent.tools_supported=False
+            # and we disable tools and retry.
             tools_supported = True
 
             for iteration in range(_MAX_TOOL_ITERATIONS + 1):
@@ -342,209 +356,112 @@ class ChatService:
                         logger.warning("Rate limit hit during tool loop iteration %d", iteration)
                         break
 
-                # Prepare API call
-                # Only include parameters that the user explicitly configured.
-                # Let the API use its defaults for unset parameters.
-                api_kwargs: dict[str, Any] = {
-                    "model": model,
-                    "messages": messages,
-                    "stream": True,
-                }
-
-                model_lower = model.lower()
-                user_max_tokens = get_openai_max_tokens()
-                user_temperature = get_openai_temperature()
-
-                # Detect reasoning models (o1, o3, gpt-5 series)
-                # These do NOT support temperature parameter
-                is_reasoning_model = any(m in model_lower for m in (
-                    "o1-", "o1", "o3-", "o3", "gpt-5"
-                ))
-
-                # Detect OpenAI models for stream_options support
-                is_openai_model = any(m in model_lower for m in (
-                    "gpt-3.5", "gpt-4", "gpt-5", "o1", "o3", "chatgpt", "davinci", "turbo"
-                ))
-
-                # Add max_tokens only if user set it
-                if user_max_tokens is not None:
-                    if is_reasoning_model:
-                        # Reasoning models require max_completion_tokens
-                        api_kwargs["max_completion_tokens"] = user_max_tokens
-                    else:
-                        api_kwargs["max_tokens"] = user_max_tokens
-
-                # Add temperature only if user set it AND model supports it
-                if user_temperature is not None and not is_reasoning_model:
-                    api_kwargs["temperature"] = user_temperature
-
-                # Add stream_options only for OpenAI models
-                if is_openai_model:
-                    api_kwargs["stream_options"] = {"include_usage": True}
-
-                # Only include tools on non-final iterations and if supported
-                if tools_supported and iteration < _MAX_TOOL_ITERATIONS:
-                    api_kwargs["tools"] = CHAT_TOOLS
-
-                stream = await client.chat.completions.create(**api_kwargs)
+                # Build ChatRequest for this iteration
+                request = ChatRequest(
+                    model=model,
+                    messages=gateway_messages,
+                    tools=CHAT_TOOLS if tools_supported and iteration < _MAX_TOOL_ITERATIONS else None,
+                    max_tokens=user_max_tokens,
+                    temperature=user_temperature,
+                    stream=True,
+                )
 
                 # Accumulate streamed response
-                pending_tool_calls: dict[int, dict] = {}
+                collected_tool_calls: list[ToolCall] = []
                 finish_reason = None
-                iteration_content: list[str] = []
                 iteration_tokens = 0
 
-                async for chunk in stream:
-                    choice = chunk.choices[0] if chunk.choices else None
-                    if choice is None:
-                        # Usage-only chunk at end of stream
-                        if chunk.usage is not None:
-                            iteration_tokens = chunk.usage.completion_tokens
-                        continue
+                async for event in gateway.chat_stream(request, **provider_kwargs):
+                    if isinstance(event, ContentDelta):
+                        full_content.append(event.text)
+                        yield _sse({
+                            "type": "content_delta",
+                            "content": event.text,
+                        })
 
-                    delta = choice.delta
+                    elif isinstance(event, ToolCallDelta):
+                        collected_tool_calls.append(event.tool_call)
 
-                    # Accumulate content
-                    if delta and delta.content:
-                        iteration_content.append(delta.content)
-                        if "tools" not in api_kwargs:
-                            # No tools in this call — stream immediately
-                            full_content.append(delta.content)
-                            yield _sse({
-                                "type": "content_delta",
-                                "content": delta.content,
-                            })
+                    elif isinstance(event, UsageInfo):
+                        iteration_tokens = event.usage.completion_tokens
 
-                    # Accumulate tool call deltas
-                    if delta and delta.tool_calls:
-                        for tc_delta in delta.tool_calls:
-                            idx = tc_delta.index
-                            if idx not in pending_tool_calls:
-                                pending_tool_calls[idx] = {
-                                    "id": None,
-                                    "name": None,
-                                    "arguments_parts": [],
-                                }
-                            if tc_delta.id:
-                                pending_tool_calls[idx]["id"] = tc_delta.id
-                            if tc_delta.function and tc_delta.function.name:
-                                pending_tool_calls[idx]["name"] = tc_delta.function.name
-                            if tc_delta.function and tc_delta.function.arguments:
-                                pending_tool_calls[idx]["arguments_parts"].append(
-                                    tc_delta.function.arguments
-                                )
-
-                    # Track finish reason
-                    if choice.finish_reason:
-                        finish_reason = choice.finish_reason
-
-                    # Usage from final chunk
-                    if chunk.usage is not None:
-                        iteration_tokens = chunk.usage.completion_tokens
+                    elif isinstance(event, FinishEvent):
+                        finish_reason = event.reason
+                        if not event.tools_supported:
+                            # DeepSeek XML detected by provider -- disable
+                            # tools, discard any content (XML garbage was
+                            # already suppressed by the provider), and retry
+                            tools_supported = False
 
                 total_completion_tokens += iteration_tokens
 
-                # When tools were included, content was buffered (not streamed).
-                # Now decide what to do with the buffered content.
-                if "tools" in api_kwargs and iteration_content:
-                    joined_content = "".join(iteration_content)
-
-                    # Detect text-based tool calls from incompatible providers.
-                    if (
-                        not pending_tool_calls
-                        and finish_reason != "tool_calls"
-                        and _TEXT_TOOL_CALL_PATTERNS.search(joined_content)
-                    ):
-                        logger.warning(
-                            "Model %s output text-based tool calls instead of "
-                            "structured tool_calls — disabling function calling "
-                            "and retrying (conversation=%s)",
-                            model, conversation_id,
-                        )
-                        tools_supported = False
-                        # Discard the buffered content (contains XML garbage)
-                        # and retry without tools on next iteration
-                        continue
-
-                    # Normal case: model produced text content alongside tools
-                    # (e.g. "Let me look that up" before tool_calls).
-                    # Flush buffered content to the frontend.
-                    if finish_reason != "tool_calls" or not pending_tool_calls:
-                        for chunk_text in iteration_content:
-                            full_content.append(chunk_text)
-                            yield _sse({
-                                "type": "content_delta",
-                                "content": chunk_text,
-                            })
+                # If tools_supported was just set to False, retry without tools
+                if not tools_supported and finish_reason != "tool_use":
+                    logger.warning(
+                        "Model %s does not support structured tool calls "
+                        "-- retrying without tools (conversation=%s)",
+                        model, conversation_id,
+                    )
+                    continue
 
                 # Check if LLM wants to call tools
-                if finish_reason == "tool_calls" and pending_tool_calls:
+                if finish_reason == "tool_use" and collected_tool_calls:
                     # Parse and execute tool calls
-                    tool_call_messages = []
-                    tool_result_messages = []
-
-                    # Build complete tool calls list
-                    complete_tool_calls = []
-                    for idx in sorted(pending_tool_calls.keys()):
-                        tc = pending_tool_calls[idx]
-                        args_str = "".join(tc["arguments_parts"])
+                    for tc in collected_tool_calls:
                         try:
-                            args = json.loads(args_str)
+                            args = json.loads(tc.arguments)
                         except json.JSONDecodeError:
                             args = {}
                             logger.warning(
                                 "Malformed tool call args for %s: %s",
-                                tc["name"], args_str[:100],
+                                tc.name, tc.arguments[:100],
                             )
 
-                        complete_tool_calls.append({
-                            "id": tc["id"],
-                            "type": "function",
-                            "function": {
-                                "name": tc["name"],
-                                "arguments": args_str,
-                            },
-                        })
-
                         # Emit tool_call_start
-                        label = get_tool_label(tc["name"], args)
+                        label = get_tool_label(tc.name, args)
                         yield _sse({
                             "type": "tool_call_start",
-                            "toolCallId": tc["id"],
-                            "toolName": tc["name"],
+                            "toolCallId": tc.id,
+                            "toolName": tc.name,
                             "toolArguments": args,
                             "toolLabel": label,
                         })
 
                     # Append assistant message with tool_calls to messages array
-                    assistant_tc_msg: dict[str, Any] = {
-                        "role": "assistant",
-                        "content": None,
-                        "tool_calls": complete_tool_calls,
-                    }
-                    messages.append(assistant_tc_msg)
+                    gateway_messages.append(Message(
+                        role=Role.ASSISTANT,
+                        content=None,
+                        tool_calls=[
+                            ToolCall(id=tc.id, name=tc.name, arguments=tc.arguments)
+                            for tc in collected_tool_calls
+                        ],
+                    ))
 
                     # Execute all tool calls in parallel, each with its own
                     # DB session to avoid concurrent use of a single AsyncSession.
-                    async def _run_tool(tc_info: dict) -> tuple[str, str, dict]:
-                        tc_id = tc_info["id"]
-                        name = tc_info["function"]["name"]
+                    async def _run_tool(tc_obj: ToolCall) -> tuple[str, str, dict]:
+                        tc_id = tc_obj.id
+                        name = tc_obj.name
                         try:
-                            args = json.loads(tc_info["function"]["arguments"])
+                            args = json.loads(tc_obj.arguments)
                         except json.JSONDecodeError:
                             args = {}
                         async with AsyncSessionLocal() as tool_db:
                             result = await execute_tool(name, args, user_id, tool_db)
                         return tc_id, name, result
 
-                    tasks = [_run_tool(tc) for tc in complete_tool_calls]
+                    tasks = [_run_tool(tc) for tc in collected_tool_calls]
                     results = await asyncio.gather(*tasks, return_exceptions=True)
 
-                    for res in results:
+                    for idx, res in enumerate(results):
                         if isinstance(res, Exception):
-                            logger.exception("Tool execution raised: %s", res)
-                            tc_id = "unknown"
-                            tc_name = "unknown"
+                            tc = collected_tool_calls[idx]
+                            logger.exception(
+                                "Tool execution raised for %s (id=%s): %s",
+                                tc.name, tc.id, res,
+                            )
+                            tc_id = tc.id
+                            tc_name = tc.name
                             tool_result = {"error": "Tool execution failed"}
                         else:
                             tc_id, tc_name, tool_result = res
@@ -558,11 +475,11 @@ class ChatService:
 
                         # Append tool result to messages array
                         result_str = json.dumps(tool_result, ensure_ascii=False, default=str)
-                        messages.append({
-                            "role": "tool",
-                            "tool_call_id": tc_id,
-                            "content": result_str,
-                        })
+                        gateway_messages.append(Message(
+                            role=Role.TOOL,
+                            content=result_str,
+                            tool_call_id=tc_id,
+                        ))
 
                         # Emit tool_call_result
                         success = "error" not in tool_result
@@ -666,7 +583,8 @@ class ChatService:
             language: Language code ("en" or "zh")
             symbol: Optional stock symbol for context injection
         """
-        custom_prompt = get_openai_system_prompt()
+        user_config = current_user_ai_config.get()
+        custom_prompt = user_config.system_prompt if user_config else None
         if custom_prompt:
             return custom_prompt
 

@@ -152,6 +152,13 @@ class UserSettings(Base):
         comment="新闻筛选模型（用于判断相关性）",
     )
 
+    # Anthropic API Key (user-level override)
+    anthropic_api_key: Mapped[Optional[str]] = mapped_column(
+        Text,
+        nullable=True,
+        comment="用户的 Anthropic API Key（用于 Claude 模型）",
+    )
+
     # === Admin Permission Flags ===
     can_use_custom_api_key: Mapped[bool] = mapped_column(
         Boolean,

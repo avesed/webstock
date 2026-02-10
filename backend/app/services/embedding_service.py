@@ -6,9 +6,9 @@ from typing import List, Optional
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.config import settings
-from app.core.openai_client import get_openai_client
+from app.core.llm import get_llm_gateway, EmbeddingRequest
 from app.core.token_bucket import get_embedding_rate_limiter
+from app.models.document_embedding import EMBEDDING_DIMENSIONS
 
 logger = logging.getLogger(__name__)
 
@@ -19,7 +19,11 @@ CHUNK_OVERLAP_TOKENS = 50
 
 
 async def get_embedding_model_from_db(db: AsyncSession) -> str:
-    """Read embedding model name from system_settings, fallback to env config."""
+    """Read embedding model name from system_settings (database only).
+
+    For backward compat, returns just the model name string.
+    Use get_embedding_config_from_db() for full provider config.
+    """
     try:
         from app.models.system_settings import SystemSettings
         result = await db.execute(
@@ -30,7 +34,30 @@ async def get_embedding_model_from_db(db: AsyncSession) -> str:
             return row
     except Exception as e:
         logger.warning("Failed to read embedding model from DB: %s", e)
-    return settings.OPENAI_EMBEDDING_MODEL
+    raise ValueError(
+        "No embedding model configured. "
+        "Please configure it in Admin Settings."
+    )
+
+
+async def get_embedding_config_from_db(db: AsyncSession):
+    """Resolve full embedding provider config (model + api_key + base_url).
+
+    Returns a ResolvedModelConfig dataclass.
+    """
+    from app.services.settings_service import get_settings_service, ResolvedModelConfig
+    try:
+        settings_service = get_settings_service()
+        return await settings_service.resolve_model_provider(db, "embedding")
+    except Exception:
+        # Fallback: try legacy model name only
+        model = await get_embedding_model_from_db(db)
+        return ResolvedModelConfig(
+            model=model,
+            provider_type="openai",
+            api_key=None,
+            base_url=None,
+        )
 
 
 class EmbeddingService:
@@ -45,13 +72,16 @@ class EmbeddingService:
 
     async def generate_embedding(
         self, text: str, model: Optional[str] = None,
+        *, api_key: Optional[str] = None, base_url: Optional[str] = None,
     ) -> Optional[List[float]]:
         """
         Generate embedding for a single text.
 
         Args:
             text: Text to embed (will be truncated if too long)
-            model: Embedding model name (falls back to env config if None)
+            model: Embedding model name (must be provided or pre-loaded from DB)
+            api_key: Provider API key (falls back to context var / env if None)
+            base_url: Provider base URL (falls back to context var / env if None)
 
         Returns:
             Embedding vector or None on failure
@@ -60,27 +90,32 @@ class EmbeddingService:
             logger.warning("Empty text provided for embedding")
             return None
 
+        if not model:
+            logger.error("No embedding model specified")
+            return None
+
         # Rate limit check
         rate_limiter = await get_embedding_rate_limiter()
         if not await rate_limiter.acquire():
             logger.warning("Embedding rate limit exceeded")
             return None
 
-        resolved_model = model or settings.OPENAI_EMBEDDING_MODEL
-
         try:
-            client = get_openai_client()
-            kwargs: dict = {
-                "model": resolved_model,
-                "input": text[:8000],
-            }
-            if settings.OPENAI_EMBEDDING_DIMENSIONS:
-                kwargs["dimensions"] = settings.OPENAI_EMBEDDING_DIMENSIONS
-            response = await client.embeddings.create(**kwargs)
-            embedding = response.data[0].embedding
+            gateway = get_llm_gateway()
+            request = EmbeddingRequest(
+                input=text[:8000],
+                model=model,
+                dimensions=EMBEDDING_DIMENSIONS,
+            )
+            response = await gateway.embed(
+                request,
+                system_api_key=api_key,
+                system_base_url=base_url,
+            )
+            embedding = response.embeddings[0]
             logger.debug(
                 "Generated embedding (model=%s, dim=%d) for text of length %d",
-                resolved_model,
+                model,
                 len(embedding),
                 len(text),
             )
@@ -93,19 +128,26 @@ class EmbeddingService:
         self,
         texts: List[str],
         model: Optional[str] = None,
+        *, api_key: Optional[str] = None, base_url: Optional[str] = None,
     ) -> List[Optional[List[float]]]:
         """
         Generate embeddings for multiple texts in a single API call.
 
         Args:
             texts: List of texts to embed
-            model: Embedding model name (falls back to env config if None)
+            model: Embedding model name (must be provided or pre-loaded from DB)
+            api_key: Provider API key (falls back to context var / env if None)
+            base_url: Provider base URL (falls back to context var / env if None)
 
         Returns:
             List of embeddings (None for failed items)
         """
         if not texts:
             return []
+
+        if not model:
+            logger.error("No embedding model specified for batch")
+            return [None] * len(texts)
 
         # Filter empty texts
         valid_texts = []
@@ -124,25 +166,27 @@ class EmbeddingService:
             logger.warning("Embedding batch rate limit exceeded")
             return [None] * len(texts)
 
-        resolved_model = model or settings.OPENAI_EMBEDDING_MODEL
-
         try:
-            client = get_openai_client()
-            kwargs: dict = {
-                "model": resolved_model,
-                "input": valid_texts,
-            }
-            if settings.OPENAI_EMBEDDING_DIMENSIONS:
-                kwargs["dimensions"] = settings.OPENAI_EMBEDDING_DIMENSIONS
-            response = await client.embeddings.create(**kwargs)
+            gateway = get_llm_gateway()
+            request = EmbeddingRequest(
+                input=valid_texts,
+                model=model,
+                dimensions=EMBEDDING_DIMENSIONS,
+            )
+            response = await gateway.embed(
+                request,
+                system_api_key=api_key,
+                system_base_url=base_url,
+            )
 
             # Map results back to original indices
             results: List[Optional[List[float]]] = [None] * len(texts)
-            for item in response.data:
-                original_idx = valid_indices[item.index]
-                results[original_idx] = item.embedding
+            for i, embedding in enumerate(response.embeddings):
+                if i < len(valid_indices):
+                    original_idx = valid_indices[i]
+                    results[original_idx] = embedding
 
-            logger.info("Generated %d embeddings in batch (model=%s)", len(response.data), resolved_model)
+            logger.info("Generated %d embeddings in batch (model=%s)", len(response.embeddings), model)
             return results
         except Exception as e:
             logger.error("Failed to generate batch embeddings: %s", e)

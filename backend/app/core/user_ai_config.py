@@ -15,6 +15,7 @@ class UserAIConfig:
     max_tokens: Optional[int] = None
     temperature: Optional[float] = None
     system_prompt: Optional[str] = None
+    anthropic_api_key: Optional[str] = None
 
 
 # Context variable holding user AI config for the current request

@@ -40,15 +40,15 @@ def run_async_task(coro_func: Callable[..., T], *args, **kwargs) -> T:
         loop.close()
         # Reset all singleton clients that may have bound to this event loop
         try:
-            from app.core.openai_client import reset_openai_client
-            reset_openai_client()
-        except Exception:
-            pass
+            from app.core.llm import reset_llm_gateway
+            reset_llm_gateway()
+        except Exception as e:
+            logger.warning("Failed to reset LLM gateway: %s", e)
         try:
             from app.db.redis import reset_redis
             reset_redis()
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning("Failed to reset Redis client: %s", e)
 
 
 @celery_app.task(bind=True, max_retries=3)
@@ -411,17 +411,23 @@ async def _evaluate_news_relevance_async(
         if content_data:
             full_text = content_data.get("full_text")
 
-        # Evaluate relevance (set up AI context for LLM call)
-        async with setup_task_ai_context():
-            filter_service = get_news_filter_service(model=filter_model)
-            should_keep = await filter_service.evaluate_relevance(
-                title=news.title,
-                summary=news.summary,
-                full_text=full_text,
-                source=news.source,
-                symbol=news.symbol,
-                model=filter_model,
-            )
+        # Load news-specific LLM settings for API key passthrough
+        from app.services.two_phase_filter_service import get_news_llm_settings
+
+        llm_settings = await get_news_llm_settings(db)
+
+        # Evaluate relevance
+        filter_service = get_news_filter_service(model=filter_model)
+        should_keep = await filter_service.evaluate_relevance(
+            title=news.title,
+            summary=news.summary,
+            full_text=full_text,
+            source=news.source,
+            symbol=news.symbol,
+            model=filter_model,
+            system_api_key=llm_settings.api_key,
+            system_base_url=llm_settings.base_url,
+        )
 
         if not should_keep:
             # Delete JSON file and mark as deleted
@@ -633,7 +639,7 @@ async def _embed_news_full_content_async(
     from app.models.news import News, ContentStatus
     from app.models.user_settings import UserSettings
     from app.services.news_storage_service import get_news_storage_service
-    from app.services.embedding_service import get_embedding_service, get_embedding_model_from_db
+    from app.services.embedding_service import get_embedding_service, get_embedding_config_from_db
     from app.services.rag_service import get_rag_service
     from app.services.filter_stats_service import get_filter_stats_service
 
@@ -645,8 +651,8 @@ async def _embed_news_full_content_async(
     stats_service = get_filter_stats_service()
 
     async with get_task_session() as db:
-        # Read embedding model from system settings
-        embedding_model = await get_embedding_model_from_db(db)
+        # Read embedding config (model + provider credentials) from DB
+        embed_config = await get_embedding_config_from_db(db)
         # Get news record
         query = select(News).where(News.id == uuid.UUID(news_id))
         result = await db.execute(query)
@@ -702,9 +708,11 @@ async def _embed_news_full_content_async(
         if not chunks:
             return {"status": "skipped", "reason": "no_chunks"}
 
-        # Generate embeddings (set up AI context for API call)
-        async with setup_task_ai_context():
-            embeddings = await embedding_service.generate_embeddings_batch(chunks, model=embedding_model)
+        # Generate embeddings using resolved provider config
+        embeddings = await embedding_service.generate_embeddings_batch(
+            chunks, model=embed_config.model,
+            api_key=embed_config.api_key, base_url=embed_config.base_url,
+        )
 
         # Check for valid embeddings
         valid_pairs = [
@@ -750,7 +758,7 @@ async def _embed_news_full_content_async(
                     embedding=embedding,
                     symbol=news.symbol,
                     chunk_index=i,
-                    model=embedding_model,
+                    model=embed_config.model,
                 )
                 stored_count += 1
 

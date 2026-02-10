@@ -17,6 +17,15 @@ from worker.db_utils import get_task_session
 logger = logging.getLogger(__name__)
 
 
+def _reset_singletons() -> None:
+    """Reset singleton clients after each Celery task event loop closes."""
+    try:
+        from app.core.llm import reset_llm_gateway
+        reset_llm_gateway()
+    except Exception as e:
+        logger.warning("Failed to reset LLM gateway in embedding task: %s", e)
+
+
 @celery_app.task(bind=True, max_retries=3)
 def embed_analysis_report(self, report_data: Dict[str, Any]):
     """
@@ -49,6 +58,7 @@ def embed_analysis_report(self, report_data: Dict[str, Any]):
             return result
         finally:
             loop.close()
+            _reset_singletons()
     except Exception as e:
         logger.exception("Embedding task failed for analysis report: %s", e)
         raise self.retry(exc=e, countdown=30 * (2 ** self.request.retries))
@@ -81,6 +91,7 @@ def embed_news_article(self, news_id: str, content: str, symbol: str = None):
             return result
         finally:
             loop.close()
+            _reset_singletons()
     except Exception as e:
         logger.exception("Embedding task failed for news %s: %s", news_id, e)
         raise self.retry(exc=e, countdown=30 * (2 ** self.request.retries))
@@ -113,6 +124,7 @@ def embed_report(self, report_id: str, content: str, symbol: str = None):
             return result
         finally:
             loop.close()
+            _reset_singletons()
     except Exception as e:
         logger.exception("Embedding task failed for report %s: %s", report_id, e)
         raise self.retry(exc=e, countdown=30 * (2 ** self.request.retries))
@@ -144,7 +156,7 @@ async def _embed_document_async(
 
     from sqlalchemy import text
 
-    from app.services.embedding_service import get_embedding_service, get_embedding_model_from_db
+    from app.services.embedding_service import get_embedding_service
     from app.services.rag_service import get_rag_service
 
     embedding_service = get_embedding_service()
@@ -167,14 +179,16 @@ async def _embed_document_async(
     if not chunks:
         return {"status": "skipped", "reason": "no_chunks"}
 
-    # Read embedding model from system settings before generating
-    # (done inside session block below, but we need it before store too)
-    embedding_model = None
+    # Read embedding config (model + provider credentials) from DB
+    from app.services.embedding_service import get_embedding_config_from_db
     async with get_task_session() as tmp_db:
-        embedding_model = await get_embedding_model_from_db(tmp_db)
+        embed_config = await get_embedding_config_from_db(tmp_db)
 
     # Generate embeddings in batch (handles rate limiting internally)
-    embeddings = await embedding_service.generate_embeddings_batch(chunks, model=embedding_model)
+    embeddings = await embedding_service.generate_embeddings_batch(
+        chunks, model=embed_config.model,
+        api_key=embed_config.api_key, base_url=embed_config.base_url,
+    )
 
     # P0-4: Check that at least one embedding succeeded before replacing old data
     valid_pairs = [
@@ -222,7 +236,7 @@ async def _embed_document_async(
                     embedding=embedding,
                     symbol=symbol,
                     chunk_index=i,
-                    model=embedding_model,
+                    model=embed_config.model,
                 )
                 stored_count += 1
 

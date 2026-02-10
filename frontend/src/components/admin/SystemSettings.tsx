@@ -1,7 +1,7 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useCallback } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { useTranslation } from 'react-i18next'
-import { Loader2, Eye, EyeOff, RotateCcw, Save, Info } from 'lucide-react'
+import { Loader2, RotateCcw, Save, Info } from 'lucide-react'
 
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
@@ -14,22 +14,33 @@ import {
   TooltipProvider,
   TooltipTrigger,
 } from '@/components/ui/tooltip'
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
+import { LlmProviders } from './LlmProviders'
+import { ModelAssignments } from './ModelAssignments'
 import { useToast } from '@/hooks'
 import { adminApi } from '@/api/admin'
 import { cn } from '@/lib/utils'
-import type { SystemConfig } from '@/types'
+import type { SystemConfig, ModelAssignmentsConfig } from '@/types'
+
+const DEFAULT_MODEL_ASSIGNMENTS: ModelAssignmentsConfig = {
+  chat: { providerId: null, model: 'gpt-4o-mini' },
+  analysis: { providerId: null, model: 'gpt-4o-mini' },
+  synthesis: { providerId: null, model: 'gpt-4o' },
+  embedding: { providerId: null, model: 'text-embedding-3-small' },
+}
 
 const DEFAULT_CONFIG: SystemConfig = {
   llm: {
     apiKey: null,
     baseUrl: 'https://api.openai.com/v1',
-    // LangGraph model settings (merged)
     useLocalModels: false,
     localLlmBaseUrl: null,
     analysisModel: 'gpt-4o-mini',
     synthesisModel: 'gpt-4o',
     maxClarificationRounds: 2,
     clarificationConfidenceThreshold: 0.6,
+    anthropicApiKey: null,
+    anthropicBaseUrl: null,
   },
   news: {
     defaultSource: 'scraper',
@@ -50,6 +61,7 @@ const DEFAULT_CONFIG: SystemConfig = {
     requireRegistrationApproval: false,
     useTwoPhaseFilter: false,
   },
+  modelAssignments: DEFAULT_MODEL_ASSIGNMENTS,
 }
 
 interface ToggleSwitchProps {
@@ -90,31 +102,41 @@ export function SystemSettings() {
   const { toast } = useToast()
 
   // State
-  const [showApiKey, setShowApiKey] = useState(false)
   const [formData, setFormData] = useState<SystemConfig>(DEFAULT_CONFIG)
-  const [hasChanges, setHasChanges] = useState(false)
+  const [hasNewsChanges, setHasNewsChanges] = useState(false)
+  const [hasFeaturesChanges, setHasFeaturesChanges] = useState(false)
+  const [hasModelChanges, setHasModelChanges] = useState(false)
 
-  // Query
-  const { data: config, isLoading, error } = useQuery({
+  // Queries
+  const { data: config, isLoading: isConfigLoading, error: configError } = useQuery({
     queryKey: ['admin-system-config'],
     queryFn: adminApi.getSystemConfig,
+  })
+
+  const { data: providers = [] } = useQuery({
+    queryKey: ['admin-llm-providers'],
+    queryFn: adminApi.listLlmProviders,
   })
 
   // Sync form data with fetched config
   useEffect(() => {
     if (config) {
-      setFormData(config)
-      setHasChanges(false)
+      setFormData({
+        ...config,
+        modelAssignments: config.modelAssignments ?? DEFAULT_MODEL_ASSIGNMENTS,
+      })
+      setHasNewsChanges(false)
+      setHasFeaturesChanges(false)
+      setHasModelChanges(false)
     }
   }, [config])
 
-  // Mutation
+  // Mutations
   const updateMutation = useMutation({
     mutationFn: adminApi.updateSystemConfig,
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['admin-system-config'] })
       toast({ title: t('settings.saved') })
-      setHasChanges(false)
     },
     onError: () => {
       toast({ title: tCommon('status.error'), variant: 'destructive' })
@@ -134,21 +156,90 @@ export function SystemSettings() {
         [key]: value,
       },
     }))
-    setHasChanges(true)
+    if (section === 'news') setHasNewsChanges(true)
+    if (section === 'features') setHasFeaturesChanges(true)
+    if (section === 'llm') setHasModelChanges(true)
   }
 
-  const handleSave = () => {
-    updateMutation.mutate(formData)
+  const handleModelAssignmentsChange = useCallback((assignments: ModelAssignmentsConfig) => {
+    setFormData((prev) => ({
+      ...prev,
+      modelAssignments: assignments,
+    }))
+    setHasModelChanges(true)
+  }, [])
+
+  // Per-tab save handlers
+  const handleSaveModels = () => {
+    updateMutation.mutate({
+      llm: formData.llm,
+      modelAssignments: formData.modelAssignments,
+    } as SystemConfig, {
+      onSuccess: () => {
+        queryClient.invalidateQueries({ queryKey: ['admin-system-config'] })
+        toast({ title: t('settings.saved') })
+        setHasModelChanges(false)
+      },
+    })
   }
 
-  const handleReset = () => {
+  const handleSaveNews = () => {
+    updateMutation.mutate({ news: formData.news } as Partial<SystemConfig>, {
+      onSuccess: () => {
+        queryClient.invalidateQueries({ queryKey: ['admin-system-config'] })
+        toast({ title: t('settings.saved') })
+        setHasNewsChanges(false)
+      },
+    })
+  }
+
+  const handleSaveFeatures = () => {
+    updateMutation.mutate({ features: formData.features } as Partial<SystemConfig>, {
+      onSuccess: () => {
+        queryClient.invalidateQueries({ queryKey: ['admin-system-config'] })
+        toast({ title: t('settings.saved') })
+        setHasFeaturesChanges(false)
+      },
+    })
+  }
+
+  // Per-tab reset handlers
+  const handleResetModels = () => {
     if (config) {
-      setFormData(config)
-      setHasChanges(false)
+      setFormData((prev) => ({
+        ...prev,
+        llm: config.llm,
+        modelAssignments: config.modelAssignments ?? DEFAULT_MODEL_ASSIGNMENTS,
+      }))
+      setHasModelChanges(false)
     }
   }
 
-  if (isLoading) {
+  const handleResetNews = () => {
+    if (config) {
+      setFormData((prev) => ({
+        ...prev,
+        news: config.news,
+      }))
+      setHasNewsChanges(false)
+    }
+  }
+
+  const handleResetFeatures = () => {
+    if (config) {
+      setFormData((prev) => ({
+        ...prev,
+        features: config.features,
+      }))
+      setHasFeaturesChanges(false)
+    }
+  }
+
+  const handleRefreshProviders = useCallback(() => {
+    queryClient.invalidateQueries({ queryKey: ['admin-llm-providers'] })
+  }, [queryClient])
+
+  if (isConfigLoading) {
     return (
       <div className="flex items-center justify-center h-64">
         <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
@@ -156,7 +247,7 @@ export function SystemSettings() {
     )
   }
 
-  if (error) {
+  if (configError) {
     return (
       <Card>
         <CardContent className="flex items-center justify-center h-64">
@@ -168,375 +259,312 @@ export function SystemSettings() {
 
   return (
     <TooltipProvider>
-      <div className="space-y-6">
-        {/* AI Model Configuration (LLM + LangGraph merged) */}
-        <Card>
-          <CardHeader>
-            <CardTitle>{t('settings.llmTitle')}</CardTitle>
-            <CardDescription>{t('settings.llmDescription')}</CardDescription>
-          </CardHeader>
-          <CardContent className="space-y-4">
-            {/* Local Model Toggle - at the top for clarity */}
-            <div className="flex items-center justify-between">
-              <div className="space-y-0.5">
-                <Label>{t('settings.useLocalModels')}</Label>
-                <p className="text-sm text-muted-foreground">{t('settings.useLocalModelsDescription')}</p>
-              </div>
-              <ToggleSwitch
-                checked={formData.llm.useLocalModels}
-                onCheckedChange={(checked) => handleChange('llm', 'useLocalModels', checked)}
-              />
+      <Tabs defaultValue="providers" className="space-y-4">
+        <TabsList className="grid w-full grid-cols-4">
+          <TabsTrigger value="providers">{t('settings.tabProviders')}</TabsTrigger>
+          <TabsTrigger value="models">{t('settings.tabModels')}</TabsTrigger>
+          <TabsTrigger value="news">{t('settings.tabNews')}</TabsTrigger>
+          <TabsTrigger value="features">{t('settings.tabFeatures')}</TabsTrigger>
+        </TabsList>
+
+        {/* LLM Providers Tab */}
+        <TabsContent value="providers">
+          <LlmProviders
+            providers={providers}
+            onRefresh={handleRefreshProviders}
+          />
+        </TabsContent>
+
+        {/* Model Configuration Tab */}
+        <TabsContent value="models">
+          <div className="space-y-6">
+            <ModelAssignments
+              providers={providers}
+              assignments={formData.modelAssignments ?? DEFAULT_MODEL_ASSIGNMENTS}
+              onAssignmentsChange={handleModelAssignmentsChange}
+              advancedSettings={{
+                maxClarificationRounds: formData.llm.maxClarificationRounds,
+                clarificationConfidenceThreshold: formData.llm.clarificationConfidenceThreshold,
+              }}
+              onAdvancedChange={(key, value) => handleChange('llm', key as keyof SystemConfig['llm'], value as never)}
+            />
+
+            {/* Save/Reset for Model Configuration */}
+            <div className="flex justify-end gap-2">
+              <Button variant="outline" onClick={handleResetModels} disabled={!hasModelChanges || updateMutation.isPending}>
+                <RotateCcw className="mr-2 h-4 w-4" />
+                {tCommon('actions.reset')}
+              </Button>
+              <Button onClick={handleSaveModels} disabled={!hasModelChanges || updateMutation.isPending}>
+                {updateMutation.isPending ? (
+                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                ) : (
+                  <Save className="mr-2 h-4 w-4" />
+                )}
+                {tCommon('actions.save')}
+              </Button>
             </div>
+          </div>
+        </TabsContent>
 
-            <Separator />
-
-            {/* API Settings - conditional based on local/cloud mode */}
-            {formData.llm.useLocalModels ? (
-              /* Local Model Settings */
-              <div className="space-y-2">
-                <Label htmlFor="llm-local-base-url">{t('settings.localLlmBaseUrl')}</Label>
-                <Input
-                  id="llm-local-base-url"
-                  value={formData.llm.localLlmBaseUrl || ''}
-                  onChange={(e) => handleChange('llm', 'localLlmBaseUrl', e.target.value || null)}
-                  placeholder="http://localhost:8000/v1"
-                />
-                <p className="text-xs text-muted-foreground">{t('settings.localLlmBaseUrlHint')}</p>
-              </div>
-            ) : (
-              /* Cloud API Settings */
-              <>
-                <div className="space-y-2">
-                  <Label htmlFor="llm-api-key">{t('settings.apiKey')}</Label>
-                  <div className="relative">
-                    <Input
-                      id="llm-api-key"
-                      type={showApiKey ? 'text' : 'password'}
-                      value={formData.llm.apiKey === '***' ? '' : (formData.llm.apiKey || '')}
-                      onChange={(e) => handleChange('llm', 'apiKey', e.target.value || null)}
-                      placeholder={formData.llm.apiKey === '***' ? t('settings.apiKeySet') : t('settings.apiKeyPlaceholder')}
-                    />
-                    <Button
-                      variant="ghost"
-                      size="icon"
-                      className="absolute right-2 top-1/2 -translate-y-1/2 h-6 w-6"
-                      onClick={() => setShowApiKey(!showApiKey)}
+        {/* News Processing Tab */}
+        <TabsContent value="news">
+          <div className="space-y-6">
+            <Card>
+              <CardHeader>
+                <CardTitle>{t('settings.newsTitle')}</CardTitle>
+                <CardDescription>{t('settings.newsDescription')}</CardDescription>
+              </CardHeader>
+              <CardContent className="space-y-4">
+                <div className="grid gap-4 sm:grid-cols-2">
+                  <div className="space-y-2">
+                    <Label htmlFor="news-source">{t('settings.defaultSource')}</Label>
+                    <select
+                      id="news-source"
+                      value={formData.news.defaultSource}
+                      onChange={(e) => handleChange('news', 'defaultSource', e.target.value as 'scraper' | 'polygon')}
+                      className="w-full h-10 px-3 rounded-md border border-input bg-background text-sm"
                     >
-                      {showApiKey ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
-                    </Button>
+                      <option value="scraper">{t('settings.sourceScraper')}</option>
+                      <option value="polygon">{t('settings.sourcePolygon')}</option>
+                    </select>
                   </div>
-                  {formData.llm.apiKey === '***' && (
-                    <p className="text-xs text-muted-foreground">{t('settings.apiKeySetHint')}</p>
-                  )}
+
+                  <div className="space-y-2">
+                    <Label htmlFor="news-retention">{t('settings.retentionDays')}</Label>
+                    <Input
+                      id="news-retention"
+                      type="number"
+                      min={1}
+                      max={365}
+                      value={formData.news.retentionDays}
+                      onChange={(e) => handleChange('news', 'retentionDays', parseInt(e.target.value) || 30)}
+                    />
+                  </div>
                 </div>
 
-                <div className="space-y-2">
-                  <Label htmlFor="llm-base-url">{t('settings.baseUrl')}</Label>
-                  <Input
-                    id="llm-base-url"
-                    value={formData.llm.baseUrl}
-                    onChange={(e) => handleChange('llm', 'baseUrl', e.target.value)}
-                    placeholder="https://api.openai.com/v1"
-                  />
+                <div className="grid gap-4 sm:grid-cols-2">
+                  <div className="space-y-2">
+                    <Label htmlFor="news-embedding-model">{t('settings.embeddingModel')}</Label>
+                    <Input
+                      id="news-embedding-model"
+                      value={formData.news.embeddingModel}
+                      onChange={(e) => handleChange('news', 'embeddingModel', e.target.value)}
+                      placeholder="text-embedding-3-small"
+                    />
+                  </div>
+
+                  <div className="space-y-2">
+                    <Label htmlFor="news-filter-model">{t('settings.filterModel')}</Label>
+                    <Input
+                      id="news-filter-model"
+                      value={formData.news.filterModel}
+                      onChange={(e) => handleChange('news', 'filterModel', e.target.value)}
+                      placeholder="gpt-4o-mini"
+                    />
+                  </div>
                 </div>
-              </>
-            )}
 
-            <Separator />
-
-            {/* Model Selection */}
-            <div className="grid gap-4 sm:grid-cols-2">
-              <div className="space-y-2">
-                <Label htmlFor="llm-analysis-model">{t('settings.analysisModel')}</Label>
-                <Input
-                  id="llm-analysis-model"
-                  value={formData.llm.analysisModel}
-                  onChange={(e) => handleChange('llm', 'analysisModel', e.target.value)}
-                  placeholder="gpt-4o-mini"
-                />
-                <p className="text-xs text-muted-foreground">{t('settings.analysisModelHint')}</p>
-              </div>
-
-              <div className="space-y-2">
-                <Label htmlFor="llm-synthesis-model">{t('settings.synthesisModel')}</Label>
-                <Input
-                  id="llm-synthesis-model"
-                  value={formData.llm.synthesisModel}
-                  onChange={(e) => handleChange('llm', 'synthesisModel', e.target.value)}
-                  placeholder="gpt-4o"
-                />
-                <p className="text-xs text-muted-foreground">{t('settings.synthesisModelHint')}</p>
-              </div>
-            </div>
-
-            <Separator />
-
-            {/* Advanced Settings */}
-            <div className="grid gap-4 sm:grid-cols-2">
-              <div className="space-y-2">
-                <Label htmlFor="llm-max-rounds">{t('settings.maxClarificationRounds')}</Label>
-                <Input
-                  id="llm-max-rounds"
-                  type="number"
-                  min={0}
-                  max={5}
-                  value={formData.llm.maxClarificationRounds}
-                  onChange={(e) => handleChange('llm', 'maxClarificationRounds', parseInt(e.target.value) || 0)}
-                />
-              </div>
-
-              <div className="space-y-2">
-                <Label htmlFor="llm-confidence">{t('settings.clarificationThreshold')}</Label>
-                <Input
-                  id="llm-confidence"
-                  type="number"
-                  min={0}
-                  max={1}
-                  step={0.1}
-                  value={formData.llm.clarificationConfidenceThreshold}
-                  onChange={(e) => handleChange('llm', 'clarificationConfidenceThreshold', parseFloat(e.target.value) || 0.6)}
-                />
-                <p className="text-xs text-muted-foreground">{t('settings.clarificationThresholdHint')}</p>
-              </div>
-            </div>
-          </CardContent>
-        </Card>
-
-        {/* News Processing Configuration */}
-        <Card>
-          <CardHeader>
-            <CardTitle>{t('settings.newsTitle')}</CardTitle>
-            <CardDescription>{t('settings.newsDescription')}</CardDescription>
-          </CardHeader>
-          <CardContent className="space-y-4">
-            <div className="grid gap-4 sm:grid-cols-2">
-              <div className="space-y-2">
-                <Label htmlFor="news-source">{t('settings.defaultSource')}</Label>
-                <select
-                  id="news-source"
-                  value={formData.news.defaultSource}
-                  onChange={(e) => handleChange('news', 'defaultSource', e.target.value as 'scraper' | 'polygon')}
-                  className="w-full h-10 px-3 rounded-md border border-input bg-background text-sm"
-                >
-                  <option value="scraper">{t('settings.sourceScraper')}</option>
-                  <option value="polygon">{t('settings.sourcePolygon')}</option>
-                </select>
-              </div>
-
-              <div className="space-y-2">
-                <Label htmlFor="news-retention">{t('settings.retentionDays')}</Label>
-                <Input
-                  id="news-retention"
-                  type="number"
-                  min={1}
-                  max={365}
-                  value={formData.news.retentionDays}
-                  onChange={(e) => handleChange('news', 'retentionDays', parseInt(e.target.value) || 30)}
-                />
-              </div>
-            </div>
-
-            <div className="grid gap-4 sm:grid-cols-2">
-              <div className="space-y-2">
-                <Label htmlFor="news-embedding-model">{t('settings.embeddingModel')}</Label>
-                <Input
-                  id="news-embedding-model"
-                  value={formData.news.embeddingModel}
-                  onChange={(e) => handleChange('news', 'embeddingModel', e.target.value)}
-                  placeholder="text-embedding-3-small"
-                />
-              </div>
-
-              <div className="space-y-2">
-                <Label htmlFor="news-filter-model">{t('settings.filterModel')}</Label>
-                <Input
-                  id="news-filter-model"
-                  value={formData.news.filterModel}
-                  onChange={(e) => handleChange('news', 'filterModel', e.target.value)}
-                  placeholder="gpt-4o-mini"
-                />
-              </div>
-            </div>
-
-            <div className="flex items-center justify-between">
-              <div className="space-y-0.5">
-                <Label>{t('settings.autoFetch')}</Label>
-                <p className="text-sm text-muted-foreground">{t('settings.autoFetchDescription')}</p>
-              </div>
-              <ToggleSwitch
-                checked={formData.news.autoFetchEnabled}
-                onCheckedChange={(checked) => handleChange('news', 'autoFetchEnabled', checked)}
-              />
-            </div>
-
-            <div className="space-y-2">
-              <Label htmlFor="news-finnhub-key">{t('settings.finnhubApiKey')}</Label>
-              <Input
-                id="news-finnhub-key"
-                type="password"
-                value={formData.news.finnhubApiKey === '***' ? '' : (formData.news.finnhubApiKey || '')}
-                onChange={(e) => handleChange('news', 'finnhubApiKey', e.target.value || null)}
-                placeholder={formData.news.finnhubApiKey === '***' ? t('settings.apiKeySet') : t('settings.apiKeyPlaceholder')}
-              />
-              {formData.news.finnhubApiKey === '***' && (
-                <p className="text-xs text-muted-foreground">{t('settings.apiKeySetHint')}</p>
-              )}
-              <p className="text-xs text-muted-foreground">{t('settings.finnhubApiKeyHint')}</p>
-            </div>
-
-            <Separator />
-
-            <div className="flex items-center justify-between">
-              <div className="space-y-0.5">
-                <Label>{t('settings.useLlmConfig')}</Label>
-                <p className="text-sm text-muted-foreground">{t('settings.useLlmConfigDescription')}</p>
-              </div>
-              <ToggleSwitch
-                checked={formData.news.useLlmConfig}
-                onCheckedChange={(checked) => handleChange('news', 'useLlmConfig', checked)}
-              />
-            </div>
-
-            {!formData.news.useLlmConfig && (
-              <div className="grid gap-4 sm:grid-cols-2 pt-2">
-                <div className="space-y-2">
-                  <Label htmlFor="news-api-url">{t('settings.newsApiUrl')}</Label>
-                  <Input
-                    id="news-api-url"
-                    value={formData.news.openaiBaseUrl || ''}
-                    onChange={(e) => handleChange('news', 'openaiBaseUrl', e.target.value || null)}
-                    placeholder="https://api.openai.com/v1"
+                <div className="flex items-center justify-between">
+                  <div className="space-y-0.5">
+                    <Label>{t('settings.autoFetch')}</Label>
+                    <p className="text-sm text-muted-foreground">{t('settings.autoFetchDescription')}</p>
+                  </div>
+                  <ToggleSwitch
+                    checked={formData.news.autoFetchEnabled}
+                    onCheckedChange={(checked) => handleChange('news', 'autoFetchEnabled', checked)}
                   />
                 </div>
 
                 <div className="space-y-2">
-                  <Label htmlFor="news-api-key">{t('settings.newsApiKey')}</Label>
+                  <Label htmlFor="news-finnhub-key">{t('settings.finnhubApiKey')}</Label>
                   <Input
-                    id="news-api-key"
+                    id="news-finnhub-key"
                     type="password"
-                    value={formData.news.openaiApiKey === '***' ? '' : (formData.news.openaiApiKey || '')}
-                    onChange={(e) => handleChange('news', 'openaiApiKey', e.target.value || null)}
-                    placeholder={formData.news.openaiApiKey === '***' ? t('settings.apiKeySet') : t('settings.apiKeyPlaceholder')}
+                    value={formData.news.finnhubApiKey === '***' ? '' : (formData.news.finnhubApiKey || '')}
+                    onChange={(e) => handleChange('news', 'finnhubApiKey', e.target.value || null)}
+                    placeholder={formData.news.finnhubApiKey === '***' ? t('settings.apiKeySet') : t('settings.apiKeyPlaceholder')}
                   />
-                  {formData.news.openaiApiKey === '***' && (
+                  {formData.news.finnhubApiKey === '***' && (
                     <p className="text-xs text-muted-foreground">{t('settings.apiKeySetHint')}</p>
                   )}
+                  <p className="text-xs text-muted-foreground">{t('settings.finnhubApiKeyHint')}</p>
                 </div>
-              </div>
-            )}
-          </CardContent>
-        </Card>
 
-        {/* Feature Toggles */}
-        <Card>
-          <CardHeader>
-            <CardTitle>{t('settings.featuresTitle')}</CardTitle>
-            <CardDescription>{t('settings.featuresDescription')}</CardDescription>
-          </CardHeader>
-          <CardContent className="space-y-4">
-            <div className="flex items-center justify-between">
-              <div className="flex items-center gap-2">
-                <div className="space-y-0.5">
-                  <Label>{t('settings.allowUserApiKeys')}</Label>
-                  <p className="text-sm text-muted-foreground">{t('settings.allowUserApiKeysDescription')}</p>
+                <Separator />
+
+                <div className="flex items-center justify-between">
+                  <div className="space-y-0.5">
+                    <Label>{t('settings.useLlmConfig')}</Label>
+                    <p className="text-sm text-muted-foreground">{t('settings.useLlmConfigDescription')}</p>
+                  </div>
+                  <ToggleSwitch
+                    checked={formData.news.useLlmConfig}
+                    onCheckedChange={(checked) => handleChange('news', 'useLlmConfig', checked)}
+                  />
                 </div>
-                <Tooltip>
-                  <TooltipTrigger asChild>
-                    <Info className="h-4 w-4 text-muted-foreground" />
-                  </TooltipTrigger>
-                  <TooltipContent>{t('settings.allowUserApiKeysTooltip')}</TooltipContent>
-                </Tooltip>
-              </div>
-              <ToggleSwitch
-                checked={formData.features.allowUserApiKeys}
-                onCheckedChange={(checked) => handleChange('features', 'allowUserApiKeys', checked)}
-              />
+
+                {!formData.news.useLlmConfig && (
+                  <div className="grid gap-4 sm:grid-cols-2 pt-2">
+                    <div className="space-y-2">
+                      <Label htmlFor="news-api-url">{t('settings.newsApiUrl')}</Label>
+                      <Input
+                        id="news-api-url"
+                        value={formData.news.openaiBaseUrl || ''}
+                        onChange={(e) => handleChange('news', 'openaiBaseUrl', e.target.value || null)}
+                        placeholder="https://api.openai.com/v1"
+                      />
+                    </div>
+
+                    <div className="space-y-2">
+                      <Label htmlFor="news-api-key">{t('settings.newsApiKey')}</Label>
+                      <Input
+                        id="news-api-key"
+                        type="password"
+                        value={formData.news.openaiApiKey === '***' ? '' : (formData.news.openaiApiKey || '')}
+                        onChange={(e) => handleChange('news', 'openaiApiKey', e.target.value || null)}
+                        placeholder={formData.news.openaiApiKey === '***' ? t('settings.apiKeySet') : t('settings.apiKeyPlaceholder')}
+                      />
+                      {formData.news.openaiApiKey === '***' && (
+                        <p className="text-xs text-muted-foreground">{t('settings.apiKeySetHint')}</p>
+                      )}
+                    </div>
+                  </div>
+                )}
+              </CardContent>
+            </Card>
+
+            {/* Save/Reset for News */}
+            <div className="flex justify-end gap-2">
+              <Button variant="outline" onClick={handleResetNews} disabled={!hasNewsChanges || updateMutation.isPending}>
+                <RotateCcw className="mr-2 h-4 w-4" />
+                {tCommon('actions.reset')}
+              </Button>
+              <Button onClick={handleSaveNews} disabled={!hasNewsChanges || updateMutation.isPending}>
+                {updateMutation.isPending ? (
+                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                ) : (
+                  <Save className="mr-2 h-4 w-4" />
+                )}
+                {tCommon('actions.save')}
+              </Button>
             </div>
+          </div>
+        </TabsContent>
 
-            <Separator />
+        {/* Feature Toggles Tab */}
+        <TabsContent value="features">
+          <div className="space-y-6">
+            <Card>
+              <CardHeader>
+                <CardTitle>{t('settings.featuresTitle')}</CardTitle>
+                <CardDescription>{t('settings.featuresDescription')}</CardDescription>
+              </CardHeader>
+              <CardContent className="space-y-4">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2">
+                    <div className="space-y-0.5">
+                      <Label>{t('settings.allowUserApiKeys')}</Label>
+                      <p className="text-sm text-muted-foreground">{t('settings.allowUserApiKeysDescription')}</p>
+                    </div>
+                    <Tooltip>
+                      <TooltipTrigger asChild>
+                        <Info className="h-4 w-4 text-muted-foreground" />
+                      </TooltipTrigger>
+                      <TooltipContent>{t('settings.allowUserApiKeysTooltip')}</TooltipContent>
+                    </Tooltip>
+                  </div>
+                  <ToggleSwitch
+                    checked={formData.features.allowUserApiKeys}
+                    onCheckedChange={(checked) => handleChange('features', 'allowUserApiKeys', checked)}
+                  />
+                </div>
 
-            <div className="flex items-center justify-between">
-              <div className="space-y-0.5">
-                <Label>{t('settings.allowUserCustomModels')}</Label>
-                <p className="text-sm text-muted-foreground">{t('settings.allowUserCustomModelsDescription')}</p>
-              </div>
-              <ToggleSwitch
-                checked={formData.features.allowUserCustomModels}
-                onCheckedChange={(checked) => handleChange('features', 'allowUserCustomModels', checked)}
-              />
+                <Separator />
+
+                <div className="flex items-center justify-between">
+                  <div className="space-y-0.5">
+                    <Label>{t('settings.allowUserCustomModels')}</Label>
+                    <p className="text-sm text-muted-foreground">{t('settings.allowUserCustomModelsDescription')}</p>
+                  </div>
+                  <ToggleSwitch
+                    checked={formData.features.allowUserCustomModels}
+                    onCheckedChange={(checked) => handleChange('features', 'allowUserCustomModels', checked)}
+                  />
+                </div>
+
+                <Separator />
+
+                <div className="flex items-center justify-between">
+                  <div className="space-y-0.5">
+                    <Label>{t('settings.enableNewsAnalysis')}</Label>
+                    <p className="text-sm text-muted-foreground">{t('settings.enableNewsAnalysisDescription')}</p>
+                  </div>
+                  <ToggleSwitch
+                    checked={formData.features.enableNewsAnalysis}
+                    onCheckedChange={(checked) => handleChange('features', 'enableNewsAnalysis', checked)}
+                  />
+                </div>
+
+                <Separator />
+
+                <div className="flex items-center justify-between">
+                  <div className="space-y-0.5">
+                    <Label>{t('settings.enableStockAnalysis')}</Label>
+                    <p className="text-sm text-muted-foreground">{t('settings.enableStockAnalysisDescription')}</p>
+                  </div>
+                  <ToggleSwitch
+                    checked={formData.features.enableStockAnalysis}
+                    onCheckedChange={(checked) => handleChange('features', 'enableStockAnalysis', checked)}
+                  />
+                </div>
+
+                <Separator />
+
+                <div className="flex items-center justify-between">
+                  <div className="space-y-0.5">
+                    <Label>{t('settings.requireApproval')}</Label>
+                    <p className="text-sm text-muted-foreground">{t('settings.requireApprovalDescription')}</p>
+                  </div>
+                  <ToggleSwitch
+                    checked={formData.features.requireRegistrationApproval}
+                    onCheckedChange={(checked) => handleChange('features', 'requireRegistrationApproval', checked)}
+                  />
+                </div>
+
+                <Separator />
+
+                <div className="flex items-center justify-between">
+                  <div className="space-y-0.5">
+                    <Label>{t('settings.useTwoPhaseFilter')}</Label>
+                    <p className="text-sm text-muted-foreground">{t('settings.useTwoPhaseFilterDescription')}</p>
+                  </div>
+                  <ToggleSwitch
+                    checked={formData.features.useTwoPhaseFilter}
+                    onCheckedChange={(checked) => handleChange('features', 'useTwoPhaseFilter', checked)}
+                  />
+                </div>
+              </CardContent>
+            </Card>
+
+            {/* Save/Reset for Features */}
+            <div className="flex justify-end gap-2">
+              <Button variant="outline" onClick={handleResetFeatures} disabled={!hasFeaturesChanges || updateMutation.isPending}>
+                <RotateCcw className="mr-2 h-4 w-4" />
+                {tCommon('actions.reset')}
+              </Button>
+              <Button onClick={handleSaveFeatures} disabled={!hasFeaturesChanges || updateMutation.isPending}>
+                {updateMutation.isPending ? (
+                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                ) : (
+                  <Save className="mr-2 h-4 w-4" />
+                )}
+                {tCommon('actions.save')}
+              </Button>
             </div>
-
-            <Separator />
-
-            <div className="flex items-center justify-between">
-              <div className="space-y-0.5">
-                <Label>{t('settings.enableNewsAnalysis')}</Label>
-                <p className="text-sm text-muted-foreground">{t('settings.enableNewsAnalysisDescription')}</p>
-              </div>
-              <ToggleSwitch
-                checked={formData.features.enableNewsAnalysis}
-                onCheckedChange={(checked) => handleChange('features', 'enableNewsAnalysis', checked)}
-              />
-            </div>
-
-            <Separator />
-
-            <div className="flex items-center justify-between">
-              <div className="space-y-0.5">
-                <Label>{t('settings.enableStockAnalysis')}</Label>
-                <p className="text-sm text-muted-foreground">{t('settings.enableStockAnalysisDescription')}</p>
-              </div>
-              <ToggleSwitch
-                checked={formData.features.enableStockAnalysis}
-                onCheckedChange={(checked) => handleChange('features', 'enableStockAnalysis', checked)}
-              />
-            </div>
-
-            <Separator />
-
-            <div className="flex items-center justify-between">
-              <div className="space-y-0.5">
-                <Label>{t('settings.requireApproval')}</Label>
-                <p className="text-sm text-muted-foreground">{t('settings.requireApprovalDescription')}</p>
-              </div>
-              <ToggleSwitch
-                checked={formData.features.requireRegistrationApproval}
-                onCheckedChange={(checked) => handleChange('features', 'requireRegistrationApproval', checked)}
-              />
-            </div>
-
-            <Separator />
-
-            <div className="flex items-center justify-between">
-              <div className="space-y-0.5">
-                <Label>{t('settings.useTwoPhaseFilter')}</Label>
-                <p className="text-sm text-muted-foreground">{t('settings.useTwoPhaseFilterDescription')}</p>
-              </div>
-              <ToggleSwitch
-                checked={formData.features.useTwoPhaseFilter}
-                onCheckedChange={(checked) => handleChange('features', 'useTwoPhaseFilter', checked)}
-              />
-            </div>
-
-          </CardContent>
-        </Card>
-
-        {/* Action Buttons */}
-        <div className="flex justify-end gap-2">
-          <Button variant="outline" onClick={handleReset} disabled={!hasChanges || updateMutation.isPending}>
-            <RotateCcw className="mr-2 h-4 w-4" />
-            {tCommon('actions.reset')}
-          </Button>
-          <Button onClick={handleSave} disabled={!hasChanges || updateMutation.isPending}>
-            {updateMutation.isPending ? (
-              <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-            ) : (
-              <Save className="mr-2 h-4 w-4" />
-            )}
-            {tCommon('actions.save')}
-          </Button>
-        </div>
-      </div>
+          </div>
+        </TabsContent>
+      </Tabs>
     </TooltipProvider>
   )
 }

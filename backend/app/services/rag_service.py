@@ -7,7 +7,6 @@ from dataclasses import dataclass
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.config import settings
 from app.models.document_embedding import DocumentEmbedding
 
 logger = logging.getLogger(__name__)
@@ -294,7 +293,7 @@ class RAGService:
             chunk_text=chunk_text,
             chunk_index=chunk_index,
             embedding=embedding,
-            model=model or settings.OPENAI_EMBEDDING_MODEL,
+            model=model or "unknown",
             token_count=token_count,
         )
         db.add(doc)

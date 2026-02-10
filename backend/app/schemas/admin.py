@@ -63,6 +63,10 @@ class SystemSettingsResponse(CamelModel):
     openai_max_tokens: Optional[int] = None
     openai_temperature: Optional[float] = None
 
+    # Anthropic settings
+    anthropic_api_key_set: bool  # Only returns whether set, not actual value
+    anthropic_base_url: Optional[str] = None
+
     # AI processing models
     embedding_model: str = "text-embedding-3-small"
     news_filter_model: str = "gpt-4o-mini"
@@ -102,6 +106,10 @@ class UpdateSystemSettingsRequest(CamelModel):
     openai_model: Optional[str] = Field(None, max_length=100)
     openai_max_tokens: Optional[int] = Field(None, ge=1, le=128000)
     openai_temperature: Optional[float] = Field(None, ge=0.0, le=2.0)
+
+    # Anthropic settings
+    anthropic_api_key: Optional[str] = Field(None, max_length=500)
+    anthropic_base_url: Optional[str] = Field(None, max_length=500)
 
     # AI processing models
     embedding_model: Optional[str] = Field(None, max_length=100)
@@ -161,6 +169,8 @@ class LlmConfig(CamelModel):
     model: str = "gpt-4o-mini"
     max_tokens: Optional[int] = None  # None means use model default
     temperature: Optional[float] = None  # None means use model default
+    anthropic_api_key: Optional[str] = None  # Masked as "***" if set
+    anthropic_base_url: Optional[str] = None
 
 
 class LangGraphConfig(CamelModel):
@@ -202,6 +212,22 @@ class FeaturesConfig(CamelModel):
     use_two_phase_filter: bool = False
 
 
+class ModelAssignment(CamelModel):
+    """A model assignment (provider + model name)."""
+
+    provider_id: Optional[str] = None
+    model: str = ""
+
+
+class ModelAssignmentsConfig(CamelModel):
+    """All model assignments."""
+
+    chat: ModelAssignment = ModelAssignment(model="gpt-4o-mini")
+    analysis: ModelAssignment = ModelAssignment(model="gpt-4o-mini")
+    synthesis: ModelAssignment = ModelAssignment(model="gpt-4o")
+    embedding: ModelAssignment = ModelAssignment(model="text-embedding-3-small")
+
+
 class SystemConfigResponse(CamelModel):
     """System configuration response matching frontend SystemConfig type."""
 
@@ -209,6 +235,7 @@ class SystemConfigResponse(CamelModel):
     news: NewsConfig
     features: FeaturesConfig
     langgraph: LangGraphConfig
+    model_assignments: Optional[ModelAssignmentsConfig] = None
 
 
 class UpdateSystemConfigRequest(CamelModel):
@@ -218,6 +245,7 @@ class UpdateSystemConfigRequest(CamelModel):
     news: Optional[NewsConfig] = None
     features: Optional[FeaturesConfig] = None
     langgraph: Optional[LangGraphConfig] = None
+    model_assignments: Optional[ModelAssignmentsConfig] = None
 
 
 # ============== System Monitor Stats Schemas ==============

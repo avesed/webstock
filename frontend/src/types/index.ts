@@ -503,6 +503,51 @@ export interface UserFilters {
   status: 'all' | 'active' | 'inactive' | 'pending'
 }
 
+// LLM Provider types
+export type LlmProviderType = 'openai' | 'anthropic'
+
+export interface LlmProvider {
+  id: string
+  name: string
+  providerType: LlmProviderType
+  apiKeySet: boolean
+  baseUrl: string | null
+  models: string[]
+  isEnabled: boolean
+  sortOrder: number
+  createdAt: string
+  updatedAt: string
+}
+
+export interface LlmProviderCreate {
+  name: string
+  providerType: LlmProviderType
+  apiKey?: string | null
+  baseUrl?: string | null
+  models?: string[]
+}
+
+export interface LlmProviderUpdate {
+  name?: string
+  apiKey?: string | null  // "***" = no change
+  baseUrl?: string | null  // "" = clear
+  models?: string[]
+  isEnabled?: boolean
+  sortOrder?: number
+}
+
+export interface ModelAssignment {
+  providerId: string | null
+  model: string
+}
+
+export interface ModelAssignmentsConfig {
+  chat: ModelAssignment
+  analysis: ModelAssignment
+  synthesis: ModelAssignment
+  embedding: ModelAssignment
+}
+
 // Admin System Configuration types
 export interface SystemConfig {
   llm: {
@@ -515,6 +560,8 @@ export interface SystemConfig {
     synthesisModel: string  // Synthesis layer model
     maxClarificationRounds: number  // Max clarification rounds (0-5)
     clarificationConfidenceThreshold: number  // Confidence threshold (0.0-1.0)
+    anthropicApiKey: string | null  // Anthropic API Key (masked as "***" if set)
+    anthropicBaseUrl: string | null  // Custom Anthropic API URL (for proxy)
   }
   news: {
     defaultSource: NewsContentSource
@@ -535,6 +582,7 @@ export interface SystemConfig {
     requireRegistrationApproval: boolean
     useTwoPhaseFilter: boolean
   }
+  modelAssignments?: ModelAssignmentsConfig
 }
 
 // Admin System Monitor types

@@ -56,6 +56,8 @@ const FILTER_MODELS: ModelOption[] = [
   { value: 'gpt-4o-mini', label: 'gpt-4o-mini', recommended: true },
   { value: 'gpt-4o', label: 'gpt-4o', descriptionKey: 'smarter' },
   { value: 'gpt-3.5-turbo', label: 'gpt-3.5-turbo', descriptionKey: 'cheapest' },
+  { value: 'claude-3-5-sonnet-latest', label: 'claude-3.5-sonnet' },
+  { value: 'claude-3-5-haiku-latest', label: 'claude-3.5-haiku' },
 ]
 
 const DEFAULT_SETTINGS: NewsContentSettings = {
@@ -416,6 +418,9 @@ export default function NewsSettings({ settings, onUpdate, isLoading = false }: 
                   </span>
                 )}
               </div>
+              <p className="text-xs text-muted-foreground mt-1">
+                {t('newsContent.models.embeddingOpenaiOnly')}
+              </p>
             </div>
 
             {/* Filter Model */}

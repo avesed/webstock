@@ -89,6 +89,7 @@ async def get_settings(
             openai_max_tokens=settings.openai_max_tokens,
             openai_temperature=settings.openai_temperature,
             openai_system_prompt=settings.openai_system_prompt,
+            anthropic_api_key=settings.anthropic_api_key,
         ),
         can_customize_api=can_customize_api,
         is_admin=is_admin,
@@ -182,6 +183,8 @@ async def update_settings(
             settings.openai_temperature = data.api_keys.openai_temperature
         if data.api_keys.openai_system_prompt is not None:
             settings.openai_system_prompt = data.api_keys.openai_system_prompt or None
+        if data.api_keys.anthropic_api_key is not None:
+            settings.anthropic_api_key = data.api_keys.anthropic_api_key or None
 
     # Update news source (admin only)
     if is_admin and data.news_source and data.news_source.source is not None:
@@ -225,6 +228,7 @@ async def update_settings(
             openai_max_tokens=settings.openai_max_tokens,
             openai_temperature=settings.openai_temperature,
             openai_system_prompt=settings.openai_system_prompt,
+            anthropic_api_key=settings.anthropic_api_key,
         ),
         can_customize_api=can_customize_api,
         is_admin=is_admin,

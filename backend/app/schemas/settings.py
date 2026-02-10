@@ -21,6 +21,7 @@ class ApiKeySettings(BaseModel):
     openai_max_tokens: Optional[int] = None
     openai_temperature: Optional[float] = None
     openai_system_prompt: Optional[str] = None
+    anthropic_api_key: Optional[str] = None
 
 
 class NewsSourceSettings(BaseModel):
@@ -70,6 +71,7 @@ class UpdateApiKeySettings(BaseModel):
     openai_max_tokens: Optional[int] = Field(None, ge=1, le=128000)
     openai_temperature: Optional[float] = Field(None, ge=0.0, le=2.0)
     openai_system_prompt: Optional[str] = Field(None, max_length=10000)
+    anthropic_api_key: Optional[str] = Field(None, max_length=1000)
 
 
 class UpdateNewsSourceSettings(BaseModel):

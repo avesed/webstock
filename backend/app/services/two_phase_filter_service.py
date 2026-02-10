@@ -12,11 +12,10 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Dict, List, Literal, Optional, TypedDict
 
-from openai import AsyncOpenAI
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.config import settings as app_settings
+from app.core.llm import get_llm_gateway, ChatRequest, Message, Role
 from app.models.news import FilterStatus
 from app.models.system_settings import SystemSettings
 
@@ -63,7 +62,7 @@ async def get_news_llm_settings(db: AsyncSession) -> NewsLLMSettings:
     """
     Get LLM settings for news filtering.
 
-    Priority: news-specific settings > system LLM settings > environment.
+    Priority: news-specific settings > system LLM settings (database only).
 
     Args:
         db: Database session
@@ -76,22 +75,24 @@ async def get_news_llm_settings(db: AsyncSession) -> NewsLLMSettings:
 
     if system and system.news_use_llm_config:
         # Use main LLM config
-        api_key = system.openai_api_key or app_settings.OPENAI_API_KEY
-        base_url = system.openai_base_url or app_settings.OPENAI_API_BASE
+        api_key = system.openai_api_key
+        base_url = system.openai_base_url
         model = system.news_filter_model or "gpt-4o-mini"
     elif system:
-        # Use news-specific config
-        api_key = system.news_openai_api_key or system.openai_api_key or app_settings.OPENAI_API_KEY
-        base_url = system.news_openai_base_url or system.openai_base_url or app_settings.OPENAI_API_BASE
+        # Use news-specific config, fallback to main LLM config
+        api_key = system.news_openai_api_key or system.openai_api_key
+        base_url = system.news_openai_base_url or system.openai_base_url
         model = system.news_filter_model or "gpt-4o-mini"
     else:
-        # Fallback to environment
-        api_key = app_settings.OPENAI_API_KEY
-        base_url = app_settings.OPENAI_API_BASE
+        api_key = None
+        base_url = None
         model = "gpt-4o-mini"
 
     if not api_key:
-        raise ValueError("No OpenAI API key configured for news filtering")
+        raise ValueError(
+            "No API key configured for news filtering. "
+            "Please configure it in Admin Settings."
+        )
 
     return NewsLLMSettings(api_key=api_key, base_url=base_url, model=model)
 
@@ -237,7 +238,7 @@ class TwoPhaseFilterService:
             return {}
 
         llm_settings = await get_news_llm_settings(db)
-        client = AsyncOpenAI(api_key=llm_settings.api_key, base_url=llm_settings.base_url)
+        gateway = get_llm_gateway()
 
         results: Dict[str, InitialFilterResult] = {}
 
@@ -255,14 +256,19 @@ class TwoPhaseFilterService:
             prompt = self.INITIAL_FILTER_PROMPT.format(news_text=news_text)
 
             try:
-                response = await client.chat.completions.create(
+                chat_request = ChatRequest(
                     model=llm_settings.model,
-                    messages=[{"role": "user", "content": prompt}],
-                    stream=False,
+                    messages=[Message(role=Role.USER, content=prompt)],
+                )
+                response = await gateway.chat(
+                    chat_request,
+                    system_api_key=llm_settings.api_key,
+                    system_base_url=llm_settings.base_url,
+                    use_user_config=False,
                 )
 
                 # Track token usage
-                if hasattr(response, 'usage') and response.usage:
+                if response.usage:
                     from app.services.filter_stats_service import get_filter_stats_service
                     stats_service = get_filter_stats_service()
                     await stats_service.track_tokens(
@@ -271,7 +277,7 @@ class TwoPhaseFilterService:
                         output_tokens=response.usage.completion_tokens,
                     )
 
-                content = response.choices[0].message.content if hasattr(response, 'choices') else str(response)
+                content = response.content or ""
                 parsed = extract_json_from_response(content or "")
 
                 for j, a in enumerate(batch):
@@ -332,7 +338,7 @@ class TwoPhaseFilterService:
             DeepFilterResult with decision and extracted information
         """
         llm_settings = await get_news_llm_settings(db)
-        client = AsyncOpenAI(api_key=llm_settings.api_key, base_url=llm_settings.base_url)
+        gateway = get_llm_gateway()
 
         # Truncate full text to avoid token limits (~8K chars ≈ 2K tokens)
         truncated_text = full_text[:8000] if full_text else ""
@@ -344,14 +350,19 @@ class TwoPhaseFilterService:
         )
 
         try:
-            response = await client.chat.completions.create(
+            chat_request = ChatRequest(
                 model=llm_settings.model,
-                messages=[{"role": "user", "content": prompt}],
-                stream=False,
+                messages=[Message(role=Role.USER, content=prompt)],
+            )
+            response = await gateway.chat(
+                chat_request,
+                system_api_key=llm_settings.api_key,
+                system_base_url=llm_settings.base_url,
+                use_user_config=False,
             )
 
             # Track token usage
-            if hasattr(response, 'usage') and response.usage:
+            if response.usage:
                 from app.services.filter_stats_service import get_filter_stats_service
                 stats_service = get_filter_stats_service()
                 await stats_service.track_tokens(
@@ -360,7 +371,7 @@ class TwoPhaseFilterService:
                     output_tokens=response.usage.completion_tokens,
                 )
 
-            content = response.choices[0].message.content if hasattr(response, 'choices') else str(response)
+            content = response.content or ""
             result = extract_json_from_response(content or "")
 
             decision = result.get("decision", "keep")

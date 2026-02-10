@@ -50,6 +50,7 @@ interface UserSettings {
     openai_max_tokens: number | null
     openai_temperature: number | null
     openai_system_prompt: string | null
+    anthropic_api_key: string | null
   }
   news_source?: {
     source: string
@@ -72,6 +73,7 @@ const DEFAULT_SETTINGS: UserSettings = {
     openai_max_tokens: null,
     openai_temperature: null,
     openai_system_prompt: null,
+    anthropic_api_key: null,
   },
   can_customize_api: false,
 }
@@ -136,6 +138,7 @@ export default function SettingsPage() {
   const [showApiKeys, setShowApiKeys] = useState({
     finnhub: false,
     openai: false,
+    anthropic: false,
   })
 
   // Use settings from backend or defaults
@@ -649,6 +652,34 @@ export default function SettingsPage() {
                     platform.openai.com
                   </a>
                 </p>
+              </div>
+
+              <div className="border-t pt-6">
+                {/* Anthropic API Key */}
+                <div className="space-y-2">
+                  <Label htmlFor="anthropicKey">Anthropic API Key</Label>
+                  <p className="text-sm text-muted-foreground">
+                    Optional: For using Claude models in chat and analysis
+                  </p>
+                  <div className="relative">
+                    <Input
+                      id="anthropicKey"
+                      type={showApiKeys.anthropic ? 'text' : 'password'}
+                      value={apiKeyDraft.anthropic_api_key || ''}
+                      onChange={(e) => handleApiKeyChange('anthropic_api_key', e.target.value)}
+                      onBlur={() => handleApiKeyBlur('anthropic_api_key')}
+                      placeholder="Enter your Anthropic API key"
+                    />
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      className="absolute right-2 top-1/2 -translate-y-1/2 h-6 w-6"
+                      onClick={() => setShowApiKeys({ ...showApiKeys, anthropic: !showApiKeys.anthropic })}
+                    >
+                      {showApiKeys.anthropic ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+                    </Button>
+                  </div>
+                </div>
               </div>
 
               <div className="bg-green-500/10 border border-green-500/20 rounded-lg p-4 mt-4">

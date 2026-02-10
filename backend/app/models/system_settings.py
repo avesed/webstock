@@ -1,9 +1,11 @@
 """System settings SQLAlchemy model for admin-configured global settings."""
 
+import uuid
 from datetime import datetime, timezone
 from typing import Optional
 
 from sqlalchemy import Boolean, DateTime, Float, Integer, String, Text, ForeignKey
+from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.database import Base
@@ -101,6 +103,19 @@ class SystemSettings(Base):
         comment="新闻处理专用 OpenAI API Key",
     )
 
+    # === Anthropic Configuration ===
+    anthropic_api_key: Mapped[Optional[str]] = mapped_column(
+        Text,
+        nullable=True,
+        comment="系统级 Anthropic API Key（加密存储）",
+    )
+
+    anthropic_base_url: Mapped[Optional[str]] = mapped_column(
+        String(500),
+        nullable=True,
+        comment="自定义 Anthropic API 地址（用于代理）",
+    )
+
     # === External API Keys ===
     finnhub_api_key: Mapped[Optional[str]] = mapped_column(
         Text,
@@ -195,6 +210,35 @@ class SystemSettings(Base):
         comment="触发追问的置信度阈值（低于此值时可能触发追问）",
     )
 
+    # === LLM Provider Assignments ===
+    chat_provider_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("llm_providers.id", ondelete="SET NULL"),
+        nullable=True,
+        comment="Provider for chat model (openai_model stores model name)",
+    )
+
+    analysis_provider_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("llm_providers.id", ondelete="SET NULL"),
+        nullable=True,
+        comment="Provider for analysis model (analysis_model stores model name)",
+    )
+
+    synthesis_provider_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("llm_providers.id", ondelete="SET NULL"),
+        nullable=True,
+        comment="Provider for synthesis model (synthesis_model stores model name)",
+    )
+
+    embedding_provider_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("llm_providers.id", ondelete="SET NULL"),
+        nullable=True,
+        comment="Provider for embedding model (embedding_model stores model name)",
+    )
+
     # === Audit Fields ===
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
@@ -210,8 +254,12 @@ class SystemSettings(Base):
         comment="最后更新者（管理员用户 ID）",
     )
 
-    # Relationship
+    # Relationships
     updater = relationship("User", foreign_keys=[updated_by])
+    chat_provider = relationship("LlmProvider", foreign_keys=[chat_provider_id])
+    analysis_provider = relationship("LlmProvider", foreign_keys=[analysis_provider_id])
+    synthesis_provider = relationship("LlmProvider", foreign_keys=[synthesis_provider_id])
+    embedding_provider = relationship("LlmProvider", foreign_keys=[embedding_provider_id])
 
     def __repr__(self) -> str:
         return f"<SystemSettings(id={self.id}, updated_at={self.updated_at})>"

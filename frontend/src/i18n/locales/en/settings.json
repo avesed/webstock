@@ -187,7 +187,8 @@
       "legacy": "legacy",
       "smarter": "smarter",
       "cheapest": "cheapest",
-      "custom": "custom"
+      "custom": "custom",
+      "embeddingOpenaiOnly": "Embedding models are OpenAI-only"
     },
     "info": {
       "title": "Note",

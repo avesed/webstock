@@ -11,7 +11,7 @@ from typing import Any, Dict, List
 
 from app.agents.langgraph.state import AnalysisState
 from app.agents.langgraph.utils.json_extractor import safe_json_extract
-from app.core.llm_config import get_analysis_model
+from app.core.llm import get_analysis_langchain_model
 from app.prompts.loader import load_instructions
 from app.schemas.agent_analysis import (
     AgentAnalysisResult,
@@ -115,7 +115,7 @@ Please provide additional analysis or explanation addressing the above question.
 
     # Call LLM
     try:
-        llm = get_analysis_model()
+        llm = await get_analysis_langchain_model()
         messages = [
             {"role": "system", "content": instructions},
             {"role": "user", "content": user_prompt},

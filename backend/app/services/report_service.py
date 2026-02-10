@@ -7,12 +7,12 @@ from datetime import datetime, time, timedelta, timezone
 from decimal import Decimal
 from typing import Any, Dict, List, Optional
 
-from openai import AsyncOpenAI
 from sqlalchemy import and_, delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.config import settings
+from app.core.llm import get_llm_gateway, ChatRequest, Message, Role
 from app.models.report import (
     Report,
     ReportFormat,
@@ -321,38 +321,28 @@ class ReportGenerator:
 
     def __init__(self, db: AsyncSession):
         self.db = db
-        self._openai_client: Optional[AsyncOpenAI] = None
         self._api_key: Optional[str] = None
         self._base_url: Optional[str] = None
         self._model: Optional[str] = None
+        self._provider_type: Optional[str] = None
 
     async def _load_ai_config(self) -> None:
-        """Load AI config from system settings, falling back to env vars."""
+        """Load AI config from provider table (with fallback to flat columns)."""
         from app.services.settings_service import get_settings_service
 
         try:
             settings_service = get_settings_service()
-            system_settings = await settings_service.get_system_settings(self.db)
-
-            self._api_key = system_settings.openai_api_key or settings.OPENAI_API_KEY
-            self._base_url = system_settings.openai_base_url or settings.OPENAI_API_BASE
-            self._model = system_settings.openai_model or settings.OPENAI_MODEL
+            resolved = await settings_service.resolve_model_provider(self.db, "chat")
+            self._model = resolved.model
+            self._api_key = resolved.api_key
+            self._base_url = resolved.base_url
+            self._provider_type = resolved.provider_type
         except Exception as e:
-            logger.warning(f"Failed to load system AI config, using env vars: {e}")
-            self._api_key = settings.OPENAI_API_KEY
-            self._base_url = settings.OPENAI_API_BASE
-            self._model = settings.OPENAI_MODEL
-
-    async def _get_openai_client(self) -> AsyncOpenAI:
-        """Get OpenAI client using system settings."""
-        if self._openai_client is None:
-            if self._api_key is None:
-                await self._load_ai_config()
-            self._openai_client = AsyncOpenAI(
-                api_key=self._api_key,
-                base_url=self._base_url,
-            )
-        return self._openai_client
+            logger.warning(f"Failed to load AI config via provider: {e}")
+            self._api_key = None
+            self._base_url = None
+            self._model = None
+            self._provider_type = None
 
     async def generate_report(
         self,
@@ -665,15 +655,19 @@ class ReportGenerator:
     ) -> Optional[str]:
         """Generate AI summary of the report."""
         # Load AI config if not already loaded
-        if self._api_key is None:
+        if self._api_key is None and self._model is None:
             await self._load_ai_config()
 
+        model = self._model
+        if not model:
+            logger.warning("No LLM model configured in Admin Settings, skipping AI summary")
+            return None
         if not self._api_key:
-            logger.warning("OpenAI API key not configured, skipping AI summary")
+            logger.warning("No API key configured for model %s, skipping AI summary", model)
             return None
 
         try:
-            client = await self._get_openai_client()
+            gateway = get_llm_gateway()
 
             # Build context
             context_parts = []
@@ -724,28 +718,35 @@ class ReportGenerator:
             context = "\n\n".join(context_parts)
 
             # Generate summary
-            # Don't pass max_tokens/temperature for compatibility with reasoning models
-            response = await client.chat.completions.create(
-                model=settings.OPENAI_MODEL,
+            chat_request = ChatRequest(
+                model=model,
                 messages=[
-                    {
-                        "role": "system",
-                        "content": (
+                    Message(
+                        role=Role.SYSTEM,
+                        content=(
                             "You are a financial analyst providing brief market summaries. "
                             "Provide a concise 2-3 sentence summary of the market data. "
                             "Focus on key trends and actionable insights. "
                             "Be objective and avoid making specific buy/sell recommendations."
                         ),
-                    },
-                    {
-                        "role": "user",
-                        "content": f"Summarize this market data:\n\n{context}",
-                    },
+                    ),
+                    Message(
+                        role=Role.USER,
+                        content=f"Summarize this market data:\n\n{context}",
+                    ),
                 ],
             )
+            # Route to the correct gateway kwargs based on provider type
+            gateway_kwargs: dict = {"use_user_config": False}
+            if self._provider_type == "anthropic":
+                gateway_kwargs["system_anthropic_key"] = self._api_key
+                gateway_kwargs["system_anthropic_base_url"] = self._base_url
+            else:
+                gateway_kwargs["system_api_key"] = self._api_key
+                gateway_kwargs["system_base_url"] = self._base_url
+            response = await gateway.chat(chat_request, **gateway_kwargs)
 
-            summary = response.choices[0].message.content
-            return summary
+            return response.content
 
         except Exception as e:
             logger.warning(f"Error generating AI summary: {e}")

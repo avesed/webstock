@@ -12,9 +12,13 @@ import type {
   SystemConfig,
   SystemMonitorStats,
   UserRole,
+  LlmProvider,
+  LlmProviderCreate,
+  LlmProviderUpdate,
+  ModelAssignmentsConfig,
 } from '@/types'
 
-// Backend API format (has separate langgraph section)
+// Backend API format (has separate langgraph section + modelAssignments)
 interface BackendSystemConfig {
   llm: {
     apiKey: string | null
@@ -22,6 +26,8 @@ interface BackendSystemConfig {
     model: string
     maxTokens: number | null
     temperature: number | null
+    anthropicApiKey: string | null
+    anthropicBaseUrl: string | null
   }
   news: SystemConfig['news']
   features: SystemConfig['features']
@@ -33,6 +39,7 @@ interface BackendSystemConfig {
     maxClarificationRounds: number
     clarificationConfidenceThreshold: number
   }
+  modelAssignments?: ModelAssignmentsConfig | null
 }
 
 // Transform backend format to frontend format (merge langgraph into llm)
@@ -48,9 +55,12 @@ function transformConfigFromBackend(backend: BackendSystemConfig): SystemConfig 
       synthesisModel: backend.langgraph.synthesisModel,
       maxClarificationRounds: backend.langgraph.maxClarificationRounds,
       clarificationConfidenceThreshold: backend.langgraph.clarificationConfidenceThreshold,
+      anthropicApiKey: backend.llm.anthropicApiKey,
+      anthropicBaseUrl: backend.llm.anthropicBaseUrl,
     },
     news: backend.news,
     features: backend.features,
+    ...(backend.modelAssignments ? { modelAssignments: backend.modelAssignments } : {}),
   }
 }
 
@@ -60,9 +70,11 @@ function transformConfigToBackend(frontend: SystemConfig): BackendSystemConfig {
     llm: {
       apiKey: frontend.llm.apiKey,
       baseUrl: frontend.llm.baseUrl,
-      model: frontend.llm.analysisModel, // Use analysis model as default
-      maxTokens: null, // Not used by LangGraph anymore
-      temperature: null, // Not used by LangGraph anymore
+      model: frontend.modelAssignments?.chat?.model ?? frontend.llm.analysisModel,
+      maxTokens: null,
+      temperature: null,
+      anthropicApiKey: frontend.llm.anthropicApiKey,
+      anthropicBaseUrl: frontend.llm.anthropicBaseUrl,
     },
     news: frontend.news,
     features: frontend.features,
@@ -74,6 +86,7 @@ function transformConfigToBackend(frontend: SystemConfig): BackendSystemConfig {
       maxClarificationRounds: frontend.llm.maxClarificationRounds,
       clarificationConfidenceThreshold: frontend.llm.clarificationConfidenceThreshold,
     },
+    modelAssignments: frontend.modelAssignments ?? null,
   }
 }
 
@@ -222,6 +235,27 @@ export const adminApi = {
       password,
       role,
     })
+    return response.data
+  },
+
+  // LLM Provider CRUD
+  listLlmProviders: async (): Promise<LlmProvider[]> => {
+    const response = await apiClient.get<{ providers: LlmProvider[] }>('/admin/llm-providers')
+    return response.data.providers
+  },
+
+  createLlmProvider: async (data: LlmProviderCreate): Promise<LlmProvider> => {
+    const response = await apiClient.post<LlmProvider>('/admin/llm-providers', data)
+    return response.data
+  },
+
+  updateLlmProvider: async (id: string, data: LlmProviderUpdate): Promise<LlmProvider> => {
+    const response = await apiClient.put<LlmProvider>(`/admin/llm-providers/${id}`, data)
+    return response.data
+  },
+
+  deleteLlmProvider: async (id: string): Promise<{ message: string }> => {
+    const response = await apiClient.delete<{ message: string }>(`/admin/llm-providers/${id}`)
     return response.data
   },
 

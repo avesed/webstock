@@ -16,7 +16,7 @@ from app.agents.langgraph.utils.conflict_detection import (
     detect_missing_critical_data,
 )
 from app.agents.langgraph.utils.json_extractor import safe_json_extract
-from app.core.llm_config import get_synthesis_model_from_settings
+from app.core.llm import get_synthesis_langchain_model
 from app.prompts.loader import load_instructions
 from app.schemas.agent_analysis import (
     ActionRecommendation,
@@ -350,7 +350,7 @@ Please synthesize the above analyses and write a comprehensive investment analys
 
     # 5. Call synthesis LLM
     try:
-        llm = await get_synthesis_model_from_settings()
+        llm = await get_synthesis_langchain_model()
         messages = [
             {"role": "system", "content": instructions},
             {"role": "user", "content": user_prompt},

@@ -73,13 +73,6 @@ class Settings(BaseSettings):
     # CORS - 允许所有来源（生产环境应限制为特定域名）
     CORS_ORIGINS: list[str] = ["*"]
 
-    # External APIs
-    OPENAI_API_KEY: Optional[str] = None
-    OPENAI_API_BASE: Optional[str] = None  # For OpenAI-compatible APIs
-    OPENAI_MODEL: str = "gpt-4o-mini"
-    OPENAI_EMBEDDING_MODEL: str = "text-embedding-3-small"
-    OPENAI_EMBEDDING_DIMENSIONS: int = 1536
-    OPENAI_MAX_TOKENS: int = 2000
     FINNHUB_API_KEY: Optional[str] = None
     TUSHARE_TOKEN: Optional[str] = None
     ALPHA_VANTAGE_API_KEY: Optional[str] = None

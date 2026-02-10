@@ -521,7 +521,7 @@ async def analyze_news(
         build_news_analysis_prompt,
         get_news_analysis_system_prompt,
     )
-    from openai import AsyncOpenAI
+    from app.core.llm import get_llm_gateway, ChatRequest, Message, Role
     from app.services.settings_service import get_settings_service
 
     # Get resolved AI configuration using SettingsService
@@ -529,22 +529,17 @@ async def analyze_news(
     settings_service = get_settings_service()
     ai_config = await settings_service.get_user_ai_config(db, current_user.id)
 
-    api_key = ai_config.api_key
-    base_url = ai_config.base_url
     model = ai_config.model or "gpt-4o-mini"
 
     # Check if we have an API key
-    if not api_key:
+    if not ai_config.api_key:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="AI analysis is not available. Please configure your OpenAI API key in Settings.",
         )
 
     try:
-        client = AsyncOpenAI(
-            api_key=api_key,
-            base_url=base_url if base_url else None,
-        )
+        gateway = get_llm_gateway()
 
         # Determine language (from request, default to "en")
         language = data.language or "en"
@@ -565,15 +560,20 @@ async def analyze_news(
 
         # Don't pass max_tokens/temperature - let API use defaults
         # This ensures compatibility with reasoning models (o1, gpt-5, etc.)
-        response = await client.chat.completions.create(
+        chat_request = ChatRequest(
             model=model,
             messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_prompt},
+                Message(role=Role.SYSTEM, content=system_prompt),
+                Message(role=Role.USER, content=user_prompt),
             ],
         )
+        response = await gateway.chat(
+            chat_request,
+            system_api_key=ai_config.api_key,
+            system_base_url=ai_config.base_url,
+        )
 
-        content = response.choices[0].message.content
+        content = response.content or ""
 
         # Parse JSON from response
         try:

@@ -6,12 +6,28 @@ from typing import Optional
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
-from app.config import settings as app_settings
+from app.models.llm_provider import LlmProvider
 from app.models.system_settings import SystemSettings
 from app.models.user_settings import UserSettings
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass
+class ResolvedModelConfig:
+    """
+    Fully resolved configuration for a single model purpose.
+
+    Returned by resolve_model_provider() after looking up the provider
+    table and falling back to legacy flat columns.
+    """
+
+    model: str
+    provider_type: str  # "openai" or "anthropic"
+    api_key: Optional[str]
+    base_url: Optional[str]
 
 
 @dataclass
@@ -35,6 +51,10 @@ class LangGraphConfig:
     # API keys for cloud models (fallback when not using local)
     openai_api_key: Optional[str]
     openai_base_url: Optional[str]
+
+    # Anthropic settings
+    anthropic_api_key: Optional[str]
+    anthropic_base_url: Optional[str]
 
 
 @dataclass
@@ -158,23 +178,20 @@ class SettingsService:
                 or system.allow_user_custom_api_keys
             )
 
-        # Resolve each setting with priority
+        # Resolve each setting with priority (user > system DB, no env fallback)
         if can_customize and user_settings:
-            # User can customize - apply user > system > env priority
+            # User can customize - apply user > system priority
             api_key = (
                 user_settings.openai_api_key
                 or system.openai_api_key
-                or app_settings.OPENAI_API_KEY
             )
             base_url = (
                 user_settings.openai_base_url
                 or system.openai_base_url
-                or app_settings.OPENAI_API_BASE
             )
             model = (
                 user_settings.openai_model
                 or system.openai_model
-                or app_settings.OPENAI_MODEL
             )
             max_tokens = (
                 user_settings.openai_max_tokens or system.openai_max_tokens
@@ -186,10 +203,10 @@ class SettingsService:
                 temperature = system.openai_temperature
             system_prompt = user_settings.openai_system_prompt
         else:
-            # User cannot customize - use system/env only
-            api_key = system.openai_api_key or app_settings.OPENAI_API_KEY
-            base_url = system.openai_base_url or app_settings.OPENAI_API_BASE
-            model = system.openai_model or app_settings.OPENAI_MODEL
+            # User cannot customize - use system DB only
+            api_key = system.openai_api_key
+            base_url = system.openai_base_url
+            model = system.openai_model
             max_tokens = system.openai_max_tokens
             temperature = system.openai_temperature
             system_prompt = None
@@ -253,6 +270,104 @@ class SettingsService:
 
         return can_customize
 
+    async def resolve_model_provider(
+        self, db: AsyncSession, purpose: str
+    ) -> ResolvedModelConfig:
+        """
+        Resolve model assignment to a complete provider configuration.
+
+        Priority: provider_id FK -> fallback to legacy flat columns.
+
+        Args:
+            db: Async database session
+            purpose: One of 'chat', 'analysis', 'synthesis', 'embedding'
+
+        Returns:
+            ResolvedModelConfig with model, provider_type, api_key, base_url
+
+        Raises:
+            ValueError: If no configuration can be resolved
+        """
+        system = await self.get_system_settings(db)
+
+        # Map purpose to FK column and model column
+        purpose_map = {
+            "chat": ("chat_provider_id", "openai_model"),
+            "analysis": ("analysis_provider_id", "analysis_model"),
+            "synthesis": ("synthesis_provider_id", "synthesis_model"),
+            "embedding": ("embedding_provider_id", "embedding_model"),
+        }
+
+        if purpose not in purpose_map:
+            raise ValueError(f"Unknown purpose: {purpose}")
+
+        provider_id_attr, model_attr = purpose_map[purpose]
+        provider_id = getattr(system, provider_id_attr, None)
+        model_name = getattr(system, model_attr, None)
+
+        # Try provider FK first
+        if provider_id:
+            result = await db.execute(
+                select(LlmProvider).where(
+                    LlmProvider.id == provider_id,
+                    LlmProvider.is_enabled == True,
+                )
+            )
+            provider = result.scalar_one_or_none()
+            if provider:
+                logger.debug(
+                    "Resolved %s via provider '%s' (type=%s, model=%s)",
+                    purpose, provider.name, provider.provider_type, model_name,
+                )
+                return ResolvedModelConfig(
+                    model=model_name or "",
+                    provider_type=provider.provider_type,
+                    api_key=provider.api_key,
+                    base_url=provider.base_url,
+                )
+            else:
+                logger.warning(
+                    "Provider %s for purpose '%s' not found or disabled, "
+                    "falling back to legacy columns",
+                    provider_id, purpose,
+                )
+
+        # Fallback to legacy flat columns
+        logger.debug(
+            "Resolving %s via legacy flat columns (no provider_id set)",
+            purpose,
+        )
+
+        # Detect provider type from model name
+        from app.core.llm.config import detect_provider, ProviderType
+
+        if not model_name:
+            raise ValueError(
+                f"No model configured for '{purpose}'. "
+                f"Please configure it in Admin Settings."
+            )
+
+        provider_type = detect_provider(model_name)
+
+        if provider_type == ProviderType.ANTHROPIC:
+            api_key = system.anthropic_api_key
+            base_url = system.anthropic_base_url
+        else:
+            # Check local model override
+            if system.use_local_models and system.local_llm_base_url:
+                api_key = "not-needed"
+                base_url = system.local_llm_base_url
+            else:
+                api_key = system.openai_api_key
+                base_url = system.openai_base_url
+
+        return ResolvedModelConfig(
+            model=model_name,
+            provider_type=provider_type.value,
+            api_key=api_key,
+            base_url=base_url,
+        )
+
     async def get_langgraph_config(self, db: AsyncSession) -> LangGraphConfig:
         """
         Get LangGraph workflow configuration.
@@ -271,9 +386,11 @@ class SettingsService:
         """
         system = await self.get_system_settings(db)
 
-        # Get API key/base URL with fallback to environment
-        openai_api_key = system.openai_api_key or app_settings.OPENAI_API_KEY
-        openai_base_url = system.openai_base_url or app_settings.OPENAI_API_BASE
+        # Get API key/base URL from database only (no env fallback)
+        openai_api_key = system.openai_api_key
+        openai_base_url = system.openai_base_url
+        anthropic_api_key = system.anthropic_api_key
+        anthropic_base_url = system.anthropic_base_url
 
         # Get model configurations with fallbacks
         analysis_model = system.analysis_model or "gpt-4o-mini"
@@ -288,6 +405,8 @@ class SettingsService:
             clarification_confidence_threshold=system.clarification_confidence_threshold,
             openai_api_key=openai_api_key,
             openai_base_url=openai_base_url,
+            anthropic_api_key=anthropic_api_key,
+            anthropic_base_url=anthropic_base_url,
         )
 
         logger.debug(

@@ -186,30 +186,26 @@ async def extract_related_entities(
     Returns:
         Mapping of URL to list of RelatedEntity with scores
     """
-    from openai import AsyncOpenAI
-
-    from app.config import settings as app_settings
+    from app.core.llm import get_llm_gateway, ChatRequest, Message, Role
     from app.services.settings_service import SettingsService
 
     # Get system settings for LLM configuration
     settings_service = SettingsService()
     system_settings = await settings_service.get_system_settings(db)
 
-    # Use news-specific LLM configuration
+    # Use news-specific LLM configuration (database only, no env fallback)
     if system_settings.news_use_llm_config:
         api_key = (
             system_settings.news_openai_api_key
             or system_settings.openai_api_key
-            or app_settings.OPENAI_API_KEY
         )
         base_url = (
             system_settings.news_openai_base_url
             or system_settings.openai_base_url
-            or app_settings.OPENAI_API_BASE
         )
     else:
-        api_key = system_settings.openai_api_key or app_settings.OPENAI_API_KEY
-        base_url = system_settings.openai_base_url or app_settings.OPENAI_API_BASE
+        api_key = system_settings.openai_api_key
+        base_url = system_settings.openai_base_url
 
     model = system_settings.news_filter_model or "gpt-4o-mini"
 
@@ -217,7 +213,7 @@ async def extract_related_entities(
         logger.warning("No OpenAI API key configured, skipping entity extraction")
         return {a.get("url", ""): [] for a in articles}
 
-    client = AsyncOpenAI(api_key=api_key, base_url=base_url)
+    gateway = get_llm_gateway()
     results: Dict[str, List[RelatedEntity]] = {}
 
     # Process in batches to reduce API calls
@@ -256,14 +252,20 @@ async def extract_related_entities(
 {news_text}"""
 
         try:
-            response = await client.chat.completions.create(
+            chat_request = ChatRequest(
                 model=model,
-                messages=[{"role": "user", "content": prompt}],
+                messages=[Message(role=Role.USER, content=prompt)],
                 temperature=0,
                 max_tokens=1500,
             )
+            response = await gateway.chat(
+                chat_request,
+                system_api_key=api_key,
+                system_base_url=base_url,
+                use_user_config=False,
+            )
 
-            content = response.choices[0].message.content or ""
+            content = response.content or ""
             start = content.find("{")
             end = content.rfind("}") + 1
 

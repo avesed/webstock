@@ -75,10 +75,8 @@ async def get_system_ai_config(db: AsyncSession) -> UserAIConfig:
     For Celery tasks that don't have a user context, this loads
     the system-level settings configured by admin.
 
-    Priority: system_settings > environment variables
-
     Returns:
-        UserAIConfig with system-level settings
+        UserAIConfig with system-level settings (no env fallback)
     """
     from app.models.system_settings import SystemSettings
 
@@ -88,15 +86,15 @@ async def get_system_ai_config(db: AsyncSession) -> UserAIConfig:
     system = result.scalar_one_or_none()
 
     if system:
-        api_key = system.openai_api_key or settings.OPENAI_API_KEY
-        base_url = system.openai_base_url or settings.OPENAI_API_BASE
-        model = system.openai_model or settings.OPENAI_MODEL
+        api_key = system.openai_api_key
+        base_url = system.openai_base_url
+        model = system.openai_model
         max_tokens = system.openai_max_tokens
         temperature = system.openai_temperature
     else:
-        api_key = settings.OPENAI_API_KEY
-        base_url = settings.OPENAI_API_BASE
-        model = settings.OPENAI_MODEL
+        api_key = None
+        base_url = None
+        model = None
         max_tokens = None
         temperature = None
 

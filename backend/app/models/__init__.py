@@ -17,6 +17,7 @@ from app.models.report import (
 )
 from app.models.document_embedding import DocumentEmbedding
 from app.models.chat import Conversation, ChatMessage
+from app.models.llm_provider import LlmProvider
 
 __all__ = [
     "User",
@@ -44,4 +45,5 @@ __all__ = [
     "DocumentEmbedding",
     "Conversation",
     "ChatMessage",
+    "LlmProvider",
 ]

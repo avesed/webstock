@@ -70,15 +70,15 @@ def run_async_task(coro_func: Callable[..., T], *args, **kwargs) -> T:
         loop.close()
         # Reset all singleton clients that may have bound to this event loop
         try:
-            from app.core.openai_client import reset_openai_client
-            reset_openai_client()
-        except Exception:
-            pass
+            from app.core.llm import reset_llm_gateway
+            reset_llm_gateway()
+        except Exception as e:
+            logger.warning("Failed to reset LLM gateway: %s", e)
         try:
             from app.db.redis import reset_redis
             reset_redis()
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning("Failed to reset Redis client: %s", e)
 
 
 async def _run_initial_filter_if_enabled(
@@ -661,14 +661,18 @@ async def _analyze_news_async(news_id: str) -> Dict[str, Any]:
         get_news_analysis_system_prompt,
     )
 
-    if not settings.OPENAI_API_KEY:
-        logger.warning("OpenAI API key not configured, skipping analysis")
-        return {"status": "skipped", "reason": "no_api_key"}
-
     # Use shared database engine and session factory from backend
 
     try:
         async with get_task_session() as db:
+            # Load system AI config from DB (fallback to env)
+            from worker.db_utils import get_system_ai_config
+            sys_config = await get_system_ai_config(db)
+
+            if not sys_config.api_key:
+                logger.warning("OpenAI API key not configured, skipping analysis")
+                return {"status": "skipped", "reason": "no_api_key"}
+
             # Get news article
             query = select(News).where(News.id == news_id)
             result = await db.execute(query)
@@ -701,21 +705,34 @@ async def _analyze_news_async(news_id: str) -> Dict[str, Any]:
                 logger.warning("Background rate limit reached, will retry news analysis for %s", news_id)
                 raise RuntimeError(f"Background rate limit exceeded for news {news_id}")
 
-            # Use shared OpenAI client manager
-            from app.core.openai_client import get_openai_client, get_openai_model
-            client = get_openai_client()
-
-            response = await client.chat.completions.create(
-                model=get_openai_model(),
-                messages=[
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_prompt},
-                ],
-                max_tokens=1000,
-                temperature=0.3,
+            # Use LLM gateway for news analysis
+            from app.core.llm import (
+                get_llm_gateway,
+                ChatRequest as _ChatRequest,
+                Message as _Message,
+                Role as _Role,
+            )
+            gateway = get_llm_gateway()
+            model = sys_config.model
+            if not model:
+                logger.warning("No LLM model configured in Admin Settings, skipping analysis")
+                return {"status": "skipped", "reason": "no_model_configured"}
+            response = await gateway.chat(
+                _ChatRequest(
+                    model=model,
+                    messages=[
+                        _Message(role=_Role.SYSTEM, content=system_prompt),
+                        _Message(role=_Role.USER, content=user_prompt),
+                    ],
+                    max_tokens=1000,
+                    temperature=0.3,
+                ),
+                system_api_key=sys_config.api_key,
+                system_base_url=sys_config.base_url,
+                use_user_config=False,
             )
 
-            content = response.choices[0].message.content
+            content = response.content
 
             # Parse sentiment score from response
             sentiment_score = 0.0

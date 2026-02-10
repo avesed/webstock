@@ -187,7 +187,8 @@
       "legacy": "旧版",
       "smarter": "更智能",
       "cheapest": "最便宜",
-      "custom": "自定义"
+      "custom": "自定义",
+      "embeddingOpenaiOnly": "向量化模型仅支持 OpenAI 模型"
     },
     "info": {
       "title": "提示",

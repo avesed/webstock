@@ -1,4 +1,11 @@
-"""Chat agent tool definitions and executor for OpenAI function calling."""
+"""Chat agent tool definitions and executor for function calling.
+
+Tool definitions use the provider-agnostic ToolDefinition type from the
+LLM Gateway.  The gateway's OpenAI provider converts them to OpenAI format
+internally; Anthropic provider converts to Anthropic format, etc.
+
+All database operations use async SQLAlchemy ORM to prevent SQL injection.
+"""
 
 import asyncio
 import json
@@ -8,6 +15,7 @@ from typing import Any, Dict, List, Optional
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from fastapi import HTTPException
+from app.core.llm import ToolDefinition
 from app.prompts.analysis.sanitizer import sanitize_input, sanitize_symbol
 from app.utils.symbol_validation import validate_symbol as _validate_symbol
 
@@ -39,192 +47,165 @@ VALID_INTERVALS = {"1m", "5m", "15m", "1h", "1d", "1wk", "1mo"}
 
 
 # ---------------------------------------------------------------------------
-# Tool definitions (OpenAI function calling schema)
+# Tool definitions (provider-agnostic ToolDefinition)
 # ---------------------------------------------------------------------------
 
-CHAT_TOOLS: List[Dict[str, Any]] = [
-    {
-        "type": "function",
-        "function": {
-            "name": "get_stock_quote",
-            "description": (
-                "Get real-time stock quote including price, change, volume, "
-                "and market cap. Use when the user asks about current price."
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "symbol": {
-                        "type": "string",
-                        "description": "Stock ticker (e.g. AAPL, 0700.HK, 600519.SS)",
-                    }
+CHAT_TOOLS: List[ToolDefinition] = [
+    ToolDefinition(
+        name="get_stock_quote",
+        description=(
+            "Get real-time stock quote including price, change, volume, "
+            "and market cap. Use when the user asks about current price."
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "symbol": {
+                    "type": "string",
+                    "description": "Stock ticker (e.g. AAPL, 0700.HK, 600519.SS)",
+                }
+            },
+            "required": ["symbol"],
+            "additionalProperties": False,
+        },
+    ),
+    ToolDefinition(
+        name="get_stock_history",
+        description=(
+            "Get historical OHLCV price data. Use for trend analysis "
+            "or when the user asks about past performance."
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "symbol": {"type": "string", "description": "Stock ticker"},
+                "period": {
+                    "type": "string",
+                    "enum": sorted(VALID_PERIODS),
+                    "description": "Time period (default 1y)",
                 },
-                "required": ["symbol"],
-                "additionalProperties": False,
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "get_stock_history",
-            "description": (
-                "Get historical OHLCV price data. Use for trend analysis "
-                "or when the user asks about past performance."
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "symbol": {"type": "string", "description": "Stock ticker"},
-                    "period": {
-                        "type": "string",
-                        "enum": sorted(VALID_PERIODS),
-                        "description": "Time period (default 1y)",
-                    },
-                    "interval": {
-                        "type": "string",
-                        "enum": sorted(VALID_INTERVALS),
-                        "description": "Data interval (default 1d)",
-                    },
+                "interval": {
+                    "type": "string",
+                    "enum": sorted(VALID_INTERVALS),
+                    "description": "Data interval (default 1d)",
                 },
-                "required": ["symbol"],
-                "additionalProperties": False,
             },
+            "required": ["symbol"],
+            "additionalProperties": False,
         },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "get_stock_info",
-            "description": (
-                "Get company information: description, sector, industry, "
-                "website, employee count. Use when the user asks about a company."
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "symbol": {"type": "string", "description": "Stock ticker"}
+    ),
+    ToolDefinition(
+        name="get_stock_info",
+        description=(
+            "Get company information: description, sector, industry, "
+            "website, employee count. Use when the user asks about a company."
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "symbol": {"type": "string", "description": "Stock ticker"}
+            },
+            "required": ["symbol"],
+            "additionalProperties": False,
+        },
+    ),
+    ToolDefinition(
+        name="get_stock_financials",
+        description=(
+            "Get financial metrics: PE ratio, EPS, margins, ROE, "
+            "debt ratios, dividend data. Use for fundamental analysis."
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "symbol": {"type": "string", "description": "Stock ticker"}
+            },
+            "required": ["symbol"],
+            "additionalProperties": False,
+        },
+    ),
+    ToolDefinition(
+        name="search_stocks",
+        description=(
+            "Search for stocks by name or ticker across US, HK, "
+            "and China A-share markets."
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "description": "Company name or partial ticker",
+                }
+            },
+            "required": ["query"],
+            "additionalProperties": False,
+        },
+    ),
+    ToolDefinition(
+        name="get_news",
+        description=(
+            "Get news for a stock from two sources: (1) realtime API headlines "
+            "with sentiment, (2) embedded full-content articles from knowledge base. "
+            "Use when the user asks about news, events, or wants detailed coverage."
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "symbol": {"type": "string", "description": "Stock ticker"}
+            },
+            "required": ["symbol"],
+            "additionalProperties": False,
+        },
+    ),
+    ToolDefinition(
+        name="get_portfolio",
+        description=(
+            "Get the user's portfolio summary including holdings, "
+            "total value, and performance. Use when the user asks "
+            "about their portfolio."
+        ),
+        parameters={
+            "type": "object",
+            "properties": {},
+            "additionalProperties": False,
+        },
+    ),
+    ToolDefinition(
+        name="get_watchlist",
+        description=(
+            "Get the user's watchlist symbols. Use when the user "
+            "asks about stocks they are watching."
+        ),
+        parameters={
+            "type": "object",
+            "properties": {},
+            "additionalProperties": False,
+        },
+    ),
+    ToolDefinition(
+        name="search_knowledge_base",
+        description=(
+            "Search the internal knowledge base of past analysis reports, "
+            "news articles, and research. Use for context about past analyses "
+            "or when the user references previous reports."
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "description": "Natural language search query",
                 },
-                "required": ["symbol"],
-                "additionalProperties": False,
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "get_stock_financials",
-            "description": (
-                "Get financial metrics: PE ratio, EPS, margins, ROE, "
-                "debt ratios, dividend data. Use for fundamental analysis."
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "symbol": {"type": "string", "description": "Stock ticker"}
+                "symbol": {
+                    "type": "string",
+                    "description": "Optional: filter to a specific stock symbol",
                 },
-                "required": ["symbol"],
-                "additionalProperties": False,
             },
+            "required": ["query"],
+            "additionalProperties": False,
         },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "search_stocks",
-            "description": (
-                "Search for stocks by name or ticker across US, HK, "
-                "and China A-share markets."
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "query": {
-                        "type": "string",
-                        "description": "Company name or partial ticker",
-                    }
-                },
-                "required": ["query"],
-                "additionalProperties": False,
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "get_news",
-            "description": (
-                "Get news for a stock from two sources: (1) realtime API headlines "
-                "with sentiment, (2) embedded full-content articles from knowledge base. "
-                "Use when the user asks about news, events, or wants detailed coverage."
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "symbol": {"type": "string", "description": "Stock ticker"}
-                },
-                "required": ["symbol"],
-                "additionalProperties": False,
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "get_portfolio",
-            "description": (
-                "Get the user's portfolio summary including holdings, "
-                "total value, and performance. Use when the user asks "
-                "about their portfolio."
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {},
-                "additionalProperties": False,
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "get_watchlist",
-            "description": (
-                "Get the user's watchlist symbols. Use when the user "
-                "asks about stocks they are watching."
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {},
-                "additionalProperties": False,
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "search_knowledge_base",
-            "description": (
-                "Search the internal knowledge base of past analysis reports, "
-                "news articles, and research. Use for context about past analyses "
-                "or when the user references previous reports."
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "query": {
-                        "type": "string",
-                        "description": "Natural language search query",
-                    },
-                    "symbol": {
-                        "type": "string",
-                        "description": "Optional: filter to a specific stock symbol",
-                    },
-                },
-                "required": ["query"],
-                "additionalProperties": False,
-            },
-        },
-    },
+    ),
 ]
 
 

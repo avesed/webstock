@@ -4,7 +4,7 @@ import logging
 from typing import Optional
 
 from app.config import settings
-from app.core.openai_client import get_openai_client
+from app.core.llm import get_llm_gateway, ChatRequest, Message, Role
 from app.prompts import NEWS_FILTER_SYSTEM_PROMPT, NEWS_FILTER_USER_PROMPT
 
 logger = logging.getLogger(__name__)
@@ -38,6 +38,8 @@ class NewsFilterService:
         source: Optional[str] = None,
         symbol: Optional[str] = None,
         model: Optional[str] = None,
+        system_api_key: Optional[str] = None,
+        system_base_url: Optional[str] = None,
     ) -> bool:
         """
         Evaluate whether a news article is relevant for investors.
@@ -82,16 +84,22 @@ class NewsFilterService:
                 full_text_section=full_text_section,
             )
 
-            # Call OpenAI API
-            client = get_openai_client()
-            response = await client.chat.completions.create(
+            # Call LLM Gateway
+            gateway = get_llm_gateway()
+            chat_request = ChatRequest(
                 model=use_model,
                 messages=[
-                    {"role": "system", "content": NEWS_FILTER_SYSTEM_PROMPT},
-                    {"role": "user", "content": user_prompt},
+                    Message(role=Role.SYSTEM, content=NEWS_FILTER_SYSTEM_PROMPT),
+                    Message(role=Role.USER, content=user_prompt),
                 ],
                 max_tokens=10,  # We only need KEEP or DELETE
                 temperature=0.0,  # Deterministic output
+            )
+            response = await gateway.chat(
+                chat_request,
+                system_api_key=system_api_key,
+                system_base_url=system_base_url,
+                use_user_config=False,
             )
 
             # Log token usage
@@ -104,7 +112,7 @@ class NewsFilterService:
                 )
 
             # Parse response
-            result = response.choices[0].message.content.strip().upper()
+            result = (response.content or "").strip().upper()
 
             if result == "KEEP":
                 logger.debug("News filtered: KEEP - %s", title[:50])

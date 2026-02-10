@@ -856,14 +856,34 @@ async def get_langgraph_info(
     """
     try:
         from app.agents.langgraph import get_workflow_info
-        from app.core.llm_config import get_langgraph_settings, get_model_info
+        from app.services.settings_service import get_settings_service
+        from app.db.database import get_async_session
 
         workflow_info = get_workflow_info()
-        model_info = get_model_info()
 
-        # Try to get database settings
+        # Get database settings
         try:
-            langgraph_settings = await get_langgraph_settings()
+            async with get_async_session() as db:
+                service = get_settings_service()
+                config = await service.get_langgraph_config(db)
+
+            langgraph_settings = {
+                "max_clarification_rounds": config.max_clarification_rounds,
+                "clarification_confidence_threshold": config.clarification_confidence_threshold,
+                "use_local_models": config.use_local_models,
+                "analysis_model": config.analysis_model,
+                "synthesis_model": config.synthesis_model,
+            }
+            model_info = {
+                "analysis": {
+                    "model": config.analysis_model,
+                    "is_local": config.use_local_models,
+                },
+                "synthesis": {
+                    "model": config.synthesis_model,
+                    "is_local": config.use_local_models,
+                },
+            }
         except Exception as e:
             logger.warning(f"Could not get LangGraph settings from database: {e}")
             langgraph_settings = {
@@ -872,6 +892,10 @@ async def get_langgraph_info(
                 "use_local_models": False,
                 "analysis_model": "gpt-4o-mini",
                 "synthesis_model": "gpt-4o",
+            }
+            model_info = {
+                "analysis": {"model": "gpt-4o-mini", "is_local": False},
+                "synthesis": {"model": "gpt-4o", "is_local": False},
             }
 
         return {

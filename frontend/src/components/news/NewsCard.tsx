@@ -21,11 +21,16 @@ import {
   DialogTitle,
 } from '@/components/ui/dialog'
 import { ScrollArea } from '@/components/ui/scroll-area'
-import { cn } from '@/lib/utils'
-import { formatRelativeTime, truncate } from '@/lib/utils'
+import { cn, formatRelativeTime, truncate } from '@/lib/utils'
 import { newsApi } from '@/api'
 import { useToast } from '@/hooks'
 import type { NewsArticle, NewsSentiment } from '@/types'
+
+function decodeEntities(text: string): string {
+  const el = document.createElement('textarea')
+  el.innerHTML = text
+  return el.value
+}
 
 interface NewsCardProps {
   article: NewsArticle
@@ -97,7 +102,7 @@ export default function NewsCard({ article, compact = false, className, onSymbol
           />
         )}
         <div className="flex-1 min-w-0">
-          <h4 className="font-medium text-sm line-clamp-2 mb-1">{article.title}</h4>
+          <h4 className="font-medium text-sm line-clamp-2 mb-1">{decodeEntities(article.title)}</h4>
           <div className="flex items-center gap-2 text-xs text-muted-foreground">
             <span>{article.source}</span>
             <span>-</span>
@@ -143,7 +148,7 @@ export default function NewsCard({ article, compact = false, className, onSymbol
         <CardHeader className={article.imageUrl ? 'pt-4' : ''}>
           <div className="flex items-start justify-between gap-2">
             <div className="flex-1">
-              <CardTitle className="text-lg line-clamp-2 mb-2">{article.title}</CardTitle>
+              <CardTitle className="text-lg line-clamp-2 mb-2">{decodeEntities(article.title)}</CardTitle>
               <div className="flex items-center gap-2 text-sm text-muted-foreground">
                 <span className="font-medium">{article.source}</span>
                 <span>-</span>
@@ -207,7 +212,7 @@ export default function NewsCard({ article, compact = false, className, onSymbol
         {article.summary && (
           <CardContent className="pt-0">
             <CardDescription className="line-clamp-3">
-              {article.summary}
+              {decodeEntities(article.summary)}
             </CardDescription>
           </CardContent>
         )}
@@ -241,7 +246,7 @@ export default function NewsCard({ article, compact = false, className, onSymbol
               {t('news.aiAnalysis', 'AI Analysis')}
             </DialogTitle>
             <DialogDescription>
-              {truncate(article.title, 100)}
+              {truncate(decodeEntities(article.title), 100)}
             </DialogDescription>
           </DialogHeader>
           <ScrollArea className="max-h-[60vh]">
