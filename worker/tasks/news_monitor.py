@@ -504,30 +504,41 @@ async def _monitor_news_async() -> Dict[str, Any]:
                         importance,
                     )
 
-            await _update_progress("dispatch", f"Dispatching news pipeline for {len(all_new_articles)} articles...", 92)
-            # Dispatch LangGraph news pipeline for ALL newly stored articles
+            await _update_progress("dispatch", f"Dispatching batch fetch for {len(all_new_articles)} articles...", 92)
+            # Dispatch Layer 1.5: batch fetch content with controlled concurrency
+            batch = []
             for news_obj in all_new_articles:
                 try:
                     await db.refresh(news_obj)
                     if news_obj.id and news_obj.url:
-                        from worker.tasks.full_content_tasks import process_news_article
-                        process_news_article.delay(
-                            news_id=str(news_obj.id),
-                            url=news_obj.url,
-                            market=news_obj.market or "US",
-                            symbol=news_obj.symbol or "",
-                            title=news_obj.title or "",
-                            summary=news_obj.summary or "",
-                            published_at=news_obj.published_at.isoformat() if news_obj.published_at else None,
-                            use_two_phase=use_two_phase,
-                        )
-                        logger.debug(
-                            "Dispatched news pipeline for news_id=%s (two_phase=%s)",
-                            news_obj.id,
-                            use_two_phase,
-                        )
+                        batch.append({
+                            "news_id": str(news_obj.id),
+                            "url": news_obj.url,
+                            "market": news_obj.market or "US",
+                            "symbol": news_obj.symbol or "",
+                            "title": news_obj.title or "",
+                            "summary": news_obj.summary or "",
+                            "source": news_obj.source or "",
+                            "published_at": news_obj.published_at.isoformat() if news_obj.published_at else None,
+                            "use_two_phase": use_two_phase,
+                            "content_source": "scraper",
+                        })
                 except Exception as e:
-                    logger.warning("Failed to dispatch news pipeline: %s", e)
+                    logger.warning("Failed to prepare article for batch fetch: %s", e)
+
+            if batch:
+                from worker.tasks.full_content_tasks import batch_fetch_content, BATCH_CHUNK_SIZE
+                # Split large batches into chunks to keep task duration reasonable
+                for i in range(0, len(batch), BATCH_CHUNK_SIZE):
+                    chunk = batch[i:i + BATCH_CHUNK_SIZE]
+                    batch_fetch_content.delay(chunk)
+                    logger.info(
+                        "Dispatched batch_fetch_content: chunk %d/%d (%d articles, two_phase=%s)",
+                        i // BATCH_CHUNK_SIZE + 1,
+                        (len(batch) + BATCH_CHUNK_SIZE - 1) // BATCH_CHUNK_SIZE,
+                        len(chunk),
+                        use_two_phase,
+                    )
 
             # Check news alerts
             alerts_triggered = await _check_news_alerts(db, stats["articles_stored"])

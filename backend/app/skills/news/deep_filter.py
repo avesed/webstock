@@ -79,7 +79,7 @@ class DeepFilterNewsSkill(BaseSkill):
             return SkillResult(success=False, error="title parameter is required")
         if not full_text:
             return SkillResult(success=False, error="full_text parameter is required")
-        if not source:
+        if source is None:
             return SkillResult(success=False, error="source parameter is required")
         if not url:
             return SkillResult(success=False, error="url parameter is required")

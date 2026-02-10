@@ -34,12 +34,12 @@ celery_app.conf.update(
     timezone="UTC",
     enable_utc=True,
 
-    # Task routing - route scraping tasks to dedicated queue
+    # Task routing
+    # - scraping queue: I/O-bound tasks (HTTP fetching with controlled concurrency)
+    # - default queue: LLM-bound tasks (can safely scale concurrency)
     task_routes={
-        "worker.tasks.full_content_tasks.fetch_news_content": {"queue": "scraping"},
-        "worker.tasks.full_content_tasks.fetch_batch_content": {"queue": "scraping"},
-        "worker.tasks.full_content_tasks.evaluate_news_relevance": {"queue": "scraping"},
-        "worker.tasks.full_content_tasks.embed_news_full_content": {"queue": "default"},
+        "worker.tasks.full_content_tasks.batch_fetch_content": {"queue": "scraping"},
+        "worker.tasks.full_content_tasks.process_news_article": {"queue": "default"},
         "worker.tasks.full_content_tasks.cleanup_expired_news": {"queue": "default"},
     },
 

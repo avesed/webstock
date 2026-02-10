@@ -1,27 +1,22 @@
 """Celery tasks for news full content fetching, filtering, and embedding.
 
-This module implements the full news content pipeline:
-1. process_news_article - LangGraph pipeline: fetch -> filter -> embed (primary)
-2. cleanup_expired_news - Periodic cleanup of old news content
-
-Deprecated tasks (kept for backward compatibility with in-flight tasks):
-- fetch_news_content - Replaced by process_news_article
-- fetch_batch_content - Replaced by process_news_article
-- evaluate_news_relevance - Replaced by process_news_article
-- deep_filter_news - Replaced by process_news_article
-- embed_news_full_content - Replaced by process_news_article
+3-layer news pipeline architecture:
+  Layer 1   - news_monitor (discovery + initial filter, every 15min)
+  Layer 1.5 - batch_fetch_content (HTTP fetch with Semaphore(3) + 1.0s delay)
+  Layer 2   - process_news_article (LangGraph: read_file -> filter -> embed -> update_db)
+  Cleanup   - cleanup_expired_news (periodic, daily at 4:00 AM)
 """
 
 import asyncio
 import logging
 import uuid
 from datetime import datetime, timedelta, timezone
-from typing import Any, Callable, Dict, List, Optional, TypeVar
+from typing import Any, Callable, Dict, List, TypeVar
 
 from worker.celery_app import celery_app
 
 # Use Celery-safe database utilities (avoids event loop conflicts)
-from worker.db_utils import get_task_session, setup_task_ai_context
+from worker.db_utils import get_task_session
 
 logger = logging.getLogger(__name__)
 
@@ -66,32 +61,34 @@ def process_news_article(
     summary: str = "",
     published_at: str = None,
     use_two_phase: bool = False,
-    content_source: str = "scraper",
-    polygon_api_key: str = None,
+    source: str = "",
+    file_path: str = None,
 ):
     """
-    Process a single news article through the LangGraph pipeline.
+    Process a single news article through the LangGraph pipeline (Layer 2).
 
-    Replaces the old task chain: fetch_news_content -> deep_filter/evaluate -> embed.
-    Runs the complete pipeline in a single task using LangGraph workflow.
+    Content is pre-fetched by Layer 1.5 (batch_fetch_content). This task
+    reads the content from file, runs LLM filtering, and embeds for RAG.
+
+    Pipeline: read_file -> deep_filter/single_filter -> embed -> update_db
 
     Args:
         news_id: UUID of the news article
-        url: Article URL to fetch
+        url: Article URL (for reference/logging)
         market: Market identifier (US, HK, SH, SZ)
         symbol: Stock symbol
         title: Article title
         summary: Article summary
         published_at: ISO 8601 publish date
         use_two_phase: Whether to use two-phase filtering
-        content_source: 'scraper' or 'polygon'
-        polygon_api_key: Optional Polygon.io API key
+        source: News source name (e.g. 'reuters', 'eastmoney')
+        file_path: Path to pre-fetched content JSON file (set by Layer 1.5)
     """
     try:
         return run_async_task(
             _process_news_article_async,
             news_id, url, market, symbol, title, summary,
-            published_at, use_two_phase, content_source, polygon_api_key,
+            published_at, use_two_phase, source, file_path,
         )
     except Exception as e:
         logger.exception("process_news_article failed for news_id=%s: %s", news_id, e)
@@ -107,11 +104,16 @@ async def _process_news_article_async(
     summary: str,
     published_at: str,
     use_two_phase: bool,
-    content_source: str,
-    polygon_api_key: str,
+    source: str,
+    file_path: str,
 ) -> Dict[str, Any]:
-    """Async implementation: run the LangGraph news pipeline."""
+    """Async implementation: run the LangGraph news pipeline (Layer 2)."""
     from app.agents.langgraph.workflows.news_pipeline import run_news_pipeline
+
+    logger.info(
+        "Layer 2 starting: news_id=%s, file_path=%s, two_phase=%s",
+        news_id, file_path, use_two_phase,
+    )
 
     final_state = await run_news_pipeline(
         news_id=news_id,
@@ -122,11 +124,11 @@ async def _process_news_article_async(
         summary=summary,
         published_at=published_at,
         use_two_phase=use_two_phase,
-        content_source=content_source,
-        polygon_api_key=polygon_api_key,
+        source=source,
+        file_path=file_path,
     )
 
-    return {
+    result = {
         "status": final_state.get("final_status", "unknown"),
         "news_id": news_id,
         "chunks_stored": final_state.get("chunks_stored", 0),
@@ -134,759 +136,213 @@ async def _process_news_article_async(
         "error": final_state.get("error"),
     }
 
-
-# DEPRECATED: This task is replaced by process_news_article which uses LangGraph pipeline.
-# Kept for backward compatibility with in-flight tasks.
-@celery_app.task(bind=True, max_retries=3)
-def fetch_news_content(
-    self,
-    news_id: str,
-    url: str,
-    market: str,
-    symbol: str,
-    user_id: Optional[int] = None,
-    use_two_phase: bool = False,
-):
-    """
-    DEPRECATED: Use process_news_article instead.
-
-    Fetch full content for a single news article.
-
-    Workflow:
-    1. Use FullContentService to scrape article content
-    2. Save content to JSON file using NewsStorageService
-    3. Update News record with file path and status
-    4. Dispatch evaluate_news_relevance (legacy) or deep_filter_news (two-phase)
-
-    Args:
-        news_id: UUID of the news article
-        url: Article URL to fetch
-        market: Market identifier (US, HK, SH, SZ)
-        symbol: Stock symbol
-        user_id: Optional user ID for personalized settings
-        use_two_phase: Whether to use two-phase filtering (dispatch deep_filter_news)
-    """
-    try:
-        return run_async_task(
-            _fetch_news_content_async, news_id, url, market, symbol, user_id, use_two_phase
-        )
-    except Exception as e:
-        logger.exception("fetch_news_content failed for news_id=%s: %s", news_id, e)
-        # Retry with exponential backoff
-        raise self.retry(exc=e, countdown=30 * (2 ** self.request.retries))
-
-
-async def _fetch_news_content_async(
-    news_id: str,
-    url: str,
-    market: str,
-    symbol: str,
-    user_id: Optional[int] = None,
-    use_two_phase: bool = False,
-) -> Dict[str, Any]:
-    """Async implementation of fetch_news_content."""
-    from sqlalchemy import select
-
-    from app.models.news import News, ContentStatus
-    from app.models.user_settings import UserSettings
-    from app.services.full_content_service import (
-        get_full_content_service,
-        ContentSource,
+    logger.info(
+        "Layer 2 completed: news_id=%s, status=%s, filter=%s, chunks=%d",
+        news_id, result["status"], result["filter_decision"], result["chunks_stored"],
     )
-    from app.services.news_storage_service import get_news_storage_service
 
-    logger.info("Fetching content for news_id=%s, url=%s", news_id, url[:100])
-
-    async with get_task_session() as db:
-        # Get news record
-        query = select(News).where(News.id == uuid.UUID(news_id))
-        result = await db.execute(query)
-        news = result.scalar_one_or_none()
-
-        if not news:
-            logger.warning("News record not found: %s", news_id)
-            return {"status": "error", "reason": "not_found"}
-
-        # Skip if already processed
-        if news.content_status in [
-            ContentStatus.FETCHED.value,
-            ContentStatus.EMBEDDED.value,
-        ]:
-            logger.info("News already processed: %s (status=%s)", news_id, news.content_status)
-            return {"status": "skipped", "reason": "already_processed"}
-
-        # Get user settings for content source preference
-        content_source = ContentSource.SCRAPER
-        polygon_api_key = None
-
-        if user_id:
-            settings_query = select(UserSettings).where(UserSettings.user_id == user_id)
-            settings_result = await db.execute(settings_query)
-            user_settings = settings_result.scalar_one_or_none()
-
-            if user_settings:
-                if user_settings.full_content_source == "polygon":
-                    content_source = ContentSource.POLYGON
-                polygon_api_key = user_settings.polygon_api_key
-
-        # Fetch content
-        content_service = get_full_content_service(
-            default_source=content_source,
-            polygon_api_key=polygon_api_key,
-        )
-
-        # Detect language from market
-        language = "zh" if market in ["SH", "SZ"] else "en"
-
-        fetch_result = await content_service.fetch_with_fallback(
-            url=url,
-            primary_source=content_source,
-            language=language,
-            polygon_api_key=polygon_api_key,
-        )
-
-        now = datetime.now(timezone.utc)
-
-        if not fetch_result.success:
-            # Update status to failed or blocked
-            if "blocked" in (fetch_result.error or "").lower():
-                news.content_status = ContentStatus.BLOCKED.value
-            else:
-                news.content_status = ContentStatus.FAILED.value
-            news.content_error = fetch_result.error
-            news.content_fetched_at = now
-            await db.commit()
-
-            logger.warning(
-                "Failed to fetch content for news_id=%s: %s",
-                news_id,
-                fetch_result.error,
-            )
-            return {
-                "status": "failed",
-                "news_id": news_id,
-                "error": fetch_result.error,
-            }
-
-        # Determine content status
-        if fetch_result.is_partial:
-            content_status = ContentStatus.PARTIAL.value
-        else:
-            content_status = ContentStatus.FETCHED.value
-
-        # Prepare content for storage
-        content_data = {
-            "url": url,
-            "title": news.title,
-            "full_text": fetch_result.full_text,
-            "authors": fetch_result.authors,
-            "keywords": fetch_result.keywords,
-            "top_image": fetch_result.top_image,
-            "language": fetch_result.language,
-            "word_count": fetch_result.word_count,
-            "fetched_at": now.isoformat(),
-            "source": fetch_result.source.value if fetch_result.source else None,
-            "metadata": fetch_result.metadata,
-        }
-
-        # Save to JSON file
-        storage_service = get_news_storage_service()
-        try:
-            file_path = storage_service.save_content(
-                news_id=uuid.UUID(news_id),
-                symbol=symbol,
-                content=content_data,
-                published_at=news.published_at,
-            )
-        except IOError as e:
-            logger.error("Failed to save content file for news_id=%s: %s", news_id, e)
-            news.content_status = ContentStatus.FAILED.value
-            news.content_error = f"Storage error: {str(e)[:200]}"
-            news.content_fetched_at = now
-            await db.commit()
-            return {"status": "failed", "news_id": news_id, "error": str(e)}
-
-        # Update news record
-        news.content_file_path = file_path
-        news.content_status = content_status
-        news.content_fetched_at = now
-        news.content_error = None
-        news.language = fetch_result.language
-        news.authors = fetch_result.authors
-        news.keywords = fetch_result.keywords
-        news.top_image = fetch_result.top_image
-
-        await db.commit()
-
-        logger.info(
-            "Fetched content for news_id=%s: %d words, status=%s",
-            news_id,
-            fetch_result.word_count,
-            content_status,
-        )
-
-        # Dispatch evaluation task based on mode
-        if use_two_phase:
-            # Two-phase mode: use deep filter for entity extraction + filtering
-            deep_filter_news.delay(news_id, user_id)
-            logger.debug("Dispatched deep_filter_news for news_id=%s", news_id)
-        else:
-            # Legacy mode: use single-stage relevance evaluation
-            evaluate_news_relevance.delay(news_id, user_id)
-            logger.debug("Dispatched evaluate_news_relevance for news_id=%s", news_id)
-
-        return {
-            "status": "success",
-            "news_id": news_id,
-            "word_count": fetch_result.word_count,
-            "content_status": content_status,
-            "file_path": file_path,
-            "use_two_phase": use_two_phase,
-        }
+    return result
 
 
-# DEPRECATED: This task is replaced by process_news_article which uses LangGraph pipeline.
-# Kept for backward compatibility with in-flight tasks.
+BATCH_CHUNK_SIZE = 30  # Max articles per batch task
+
+
 @celery_app.task(bind=True, max_retries=2)
-def fetch_batch_content(self, news_items: List[Dict[str, Any]]):
-    """
-    DEPRECATED: Use process_news_article instead.
+def batch_fetch_content(self, articles: List[Dict[str, Any]]):
+    """Batch fetch content for news articles with controlled concurrency.
 
-    Batch fetch content for multiple news articles.
-
-    Fetches 10-20 URLs in parallel using asyncio.gather.
+    Layer 1.5: Bridges news discovery (Layer 1) and LLM processing (Layer 2).
+    Uses asyncio.Semaphore to limit concurrent HTTP fetches to 3, with 1.0s
+    delay between fetches for rate limit protection.
 
     Args:
-        news_items: List of dicts with keys: news_id, url, market, symbol, user_id
+        articles: List of dicts with keys: news_id, url, market, symbol,
+                  title, summary, source, published_at, use_two_phase,
+                  content_source
     """
     try:
-        return run_async_task(_fetch_batch_content_async, news_items)
+        return run_async_task(_batch_fetch_content_async, articles)
     except Exception as e:
-        logger.exception("fetch_batch_content failed: %s", e)
+        logger.exception("batch_fetch_content failed: %s", e)
         raise self.retry(exc=e, countdown=60 * (2 ** self.request.retries))
 
 
-async def _fetch_batch_content_async(
-    news_items: List[Dict[str, Any]],
-) -> Dict[str, Any]:
-    """Async implementation of batch content fetching."""
-    if not news_items:
+async def _batch_fetch_content_async(articles: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """Async implementation of batch content fetching with controlled concurrency."""
+    if not articles:
+        logger.info("batch_fetch: empty batch, skipping")
         return {"status": "skipped", "reason": "empty_batch"}
 
-    # Check if two-phase filtering is enabled
-    from sqlalchemy import select
-    from app.models.system_settings import SystemSettings
+    sem = asyncio.Semaphore(3)
+    FETCH_DELAY = 1.0
 
-    use_two_phase = False
-    async with get_task_session() as db:
-        result = await db.execute(select(SystemSettings).where(SystemSettings.id == 1))
-        system_settings = result.scalar_one_or_none()
-        if system_settings:
-            use_two_phase = system_settings.use_two_phase_filter
+    async def fetch_one(article: Dict[str, Any]) -> Dict[str, Any]:
+        async with sem:
+            result = await _fetch_single_article(article)
+            await asyncio.sleep(FETCH_DELAY)
+            return result
 
-    # Limit batch size
-    batch = news_items[:20]
+    logger.info(
+        "Starting batch fetch for %d articles (semaphore=3, delay=%.1fs)",
+        len(articles), FETCH_DELAY,
+    )
 
-    logger.info("Starting batch fetch for %d news items (two_phase=%s)", len(batch), use_two_phase)
+    results = await asyncio.gather(
+        *[fetch_one(a) for a in articles],
+        return_exceptions=True,
+    )
 
-    # Create tasks for parallel execution
-    tasks = []
-    for item in batch:
-        task = _fetch_news_content_async(
-            news_id=item["news_id"],
-            url=item["url"],
-            market=item.get("market", "US"),
-            symbol=item.get("symbol", "UNKNOWN"),
-            user_id=item.get("user_id"),
-            use_two_phase=use_two_phase,
-        )
-        tasks.append(task)
-
-    # Execute in parallel with timeout
-    results = await asyncio.gather(*tasks, return_exceptions=True)
-
-    # Summarize results
+    # Dispatch Layer 2 for successful fetches
     success_count = 0
     failed_count = 0
-    for result in results:
+    dispatched_count = 0
+
+    for article, result in zip(articles, results):
         if isinstance(result, Exception):
             failed_count += 1
-            logger.error("Batch item failed: %s", result)
-        elif isinstance(result, dict) and result.get("status") == "success":
+            logger.error(
+                "batch_fetch: exception for news_id=%s: %s",
+                article.get("news_id"), result,
+            )
+            continue
+
+        if not isinstance(result, dict):
+            failed_count += 1
+            continue
+
+        if result.get("success"):
             success_count += 1
+            try:
+                process_news_article.delay(
+                    news_id=article["news_id"],
+                    url=article["url"],
+                    source=article.get("source", ""),
+                    file_path=result.get("file_path"),
+                    market=article.get("market", "US"),
+                    symbol=article.get("symbol", ""),
+                    title=article.get("title", ""),
+                    summary=article.get("summary", ""),
+                    published_at=article.get("published_at"),
+                    use_two_phase=article.get("use_two_phase", False),
+                )
+                dispatched_count += 1
+            except Exception as e:
+                logger.error(
+                    "batch_fetch: failed to dispatch Layer 2 for news_id=%s: %s",
+                    article.get("news_id"), e,
+                )
         else:
             failed_count += 1
 
     logger.info(
-        "Batch fetch completed: %d success, %d failed out of %d",
-        success_count,
-        failed_count,
-        len(batch),
+        "Batch fetch completed: total=%d, success=%d, failed=%d, dispatched=%d",
+        len(articles), success_count, failed_count, dispatched_count,
     )
 
     return {
         "status": "completed",
-        "total": len(batch),
+        "total": len(articles),
         "success": success_count,
         "failed": failed_count,
+        "dispatched": dispatched_count,
     }
 
 
-# DEPRECATED: This task is replaced by process_news_article which uses LangGraph pipeline.
-# Kept for backward compatibility with in-flight tasks.
-@celery_app.task(bind=True, max_retries=2)
-def evaluate_news_relevance(self, news_id: str, user_id: Optional[int] = None):
+async def _fetch_single_article(article: Dict[str, Any]) -> Dict[str, Any]:
+    """Fetch content for a single article and update DB.
+
+    Uses FetchFullContentSkill for fetching, then updates the News record
+    with content status and file path.
+
+    Returns:
+        Dict with 'success', 'file_path', and optional 'error' keys.
     """
-    DEPRECATED: Use process_news_article instead.
-
-    Evaluate news relevance using LLM.
-
-    Workflow:
-    1. Load news record and full content from JSON file
-    2. Get user's filter model preference
-    3. Call NewsFilterService.evaluate_relevance
-    4. If DELETE: delete JSON file and mark news as deleted
-    5. If KEEP: dispatch embed_news_full_content task
-
-    Args:
-        news_id: UUID of the news article
-        user_id: Optional user ID for personalized settings
-    """
-    try:
-        return run_async_task(_evaluate_news_relevance_async, news_id, user_id)
-    except Exception as e:
-        logger.exception("evaluate_news_relevance failed for news_id=%s: %s", news_id, e)
-        raise self.retry(exc=e, countdown=30 * (2 ** self.request.retries))
-
-
-async def _evaluate_news_relevance_async(
-    news_id: str,
-    user_id: Optional[int] = None,
-) -> Dict[str, Any]:
-    """Async implementation of news relevance evaluation."""
+    from app.skills.registry import get_skill_registry
+    from app.models.news import News, ContentStatus
     from sqlalchemy import select
 
-    from app.models.news import News, ContentStatus
-    from app.services.news_filter_service import get_news_filter_service
-    from app.services.news_storage_service import get_news_storage_service
+    news_id = article["news_id"]
+    url = article["url"]
 
-    logger.info("Evaluating relevance for news_id=%s", news_id)
+    # Get the fetch skill
+    registry = get_skill_registry()
+    skill = registry.get("fetch_full_content")
+    if skill is None:
+        logger.error("fetch_full_content skill not found in registry")
+        return {"success": False, "error": "fetch_full_content skill not found"}
 
-    async with get_task_session() as db:
-        # Get news record
-        query = select(News).where(News.id == uuid.UUID(news_id))
-        result = await db.execute(query)
-        news = result.scalar_one_or_none()
+    # Execute fetch
+    result = await skill.safe_execute(
+        timeout=60.0,
+        url=url,
+        news_id=news_id,
+        symbol=article.get("symbol", ""),
+        market=article.get("market", "US"),
+        content_source=article.get("content_source", "scraper"),
+        polygon_api_key=article.get("polygon_api_key"),
+        published_at=article.get("published_at"),
+        title=article.get("title", ""),
+    )
 
-        if not news:
-            logger.warning("News record not found: %s", news_id)
-            return {"status": "error", "reason": "not_found"}
+    # Update DB with result
+    try:
+        async with get_task_session() as db:
+            query = select(News).where(News.id == uuid.UUID(news_id))
+            res = await db.execute(query)
+            news = res.scalar_one_or_none()
+            if not news:
+                logger.warning("_fetch_single_article: news record not found: %s", news_id)
+                return {"success": False, "error": "news record not found"}
 
-        # Skip if no content file
-        if not news.content_file_path:
-            logger.info("No content file for news_id=%s, skipping evaluation", news_id)
-            # Still dispatch embedding for title/summary
-            embed_news_full_content.delay(news_id, user_id)
-            return {"status": "skipped", "reason": "no_content_file"}
+            now = datetime.now(timezone.utc)
 
-        # Read full content from JSON file
-        storage_service = get_news_storage_service()
-        content_data = storage_service.read_content(news.content_file_path)
+            if not result.success:
+                error_msg = result.error or "Unknown fetch error"
+                if "blocked" in error_msg.lower():
+                    news.content_status = ContentStatus.BLOCKED.value
+                else:
+                    news.content_status = ContentStatus.FAILED.value
+                news.content_error = error_msg[:500]
+                news.content_fetched_at = now
+                await db.commit()
 
-        full_text = None
-        if content_data:
-            full_text = content_data.get("full_text")
+                logger.warning(
+                    "batch_fetch: fetch failed for news_id=%s: %s",
+                    news_id, error_msg[:100],
+                )
+                return {"success": False, "error": error_msg}
 
-        # Load news filter LLM settings via unified provider system
-        from app.services.two_phase_filter_service import get_news_llm_settings
+            data = result.data
 
-        llm_settings = await get_news_llm_settings(db)
-
-        # Evaluate relevance using the resolved filter model
-        filter_service = get_news_filter_service(model=llm_settings.model)
-        should_keep = await filter_service.evaluate_relevance(
-            title=news.title,
-            summary=news.summary,
-            full_text=full_text,
-            source=news.source,
-            symbol=news.symbol,
-            model=llm_settings.model,
-            system_api_key=llm_settings.api_key,
-            system_base_url=llm_settings.base_url,
-        )
-
-        if not should_keep:
-            # Delete JSON file and mark as deleted
-            logger.info("Filtering out irrelevant news_id=%s", news_id)
-
-            if news.content_file_path:
-                storage_service.delete_content(news.content_file_path)
-
-            news.content_status = ContentStatus.DELETED.value
-            news.content_file_path = None
+            # Update News record with fetched content metadata
+            if data.get("is_partial"):
+                news.content_status = ContentStatus.PARTIAL.value
+            else:
+                news.content_status = ContentStatus.FETCHED.value
+            news.content_file_path = data.get("file_path")
+            news.content_fetched_at = now
+            news.content_error = None
+            news.language = data.get("language")
+            news.authors = data.get("authors")
+            news.keywords = data.get("keywords")
             await db.commit()
 
-            return {
-                "status": "deleted",
-                "news_id": news_id,
-                "reason": "filtered_by_llm",
-            }
-
-        # Article is relevant, dispatch embedding task
-        logger.info("Keeping relevant news_id=%s, dispatching embedding", news_id)
-        embed_news_full_content.delay(news_id, user_id)
-
-        return {
-            "status": "kept",
-            "news_id": news_id,
-        }
-
-
-# DEPRECATED: This task is replaced by process_news_article which uses LangGraph pipeline.
-# Kept for backward compatibility with in-flight tasks.
-@celery_app.task(bind=True, max_retries=2)
-def deep_filter_news(self, news_id: str, user_id: Optional[int] = None):
-    """
-    DEPRECATED: Use process_news_article instead.
-
-    Deep filter task for two-phase news filtering.
-
-    Replaces evaluate_news_relevance when two-phase mode is enabled.
-    Uses TwoPhaseFilterService to:
-    1. Analyze full text with LLM
-    2. Extract entities, tags, sentiment, investment summary
-    3. Make KEEP/DELETE decision
-    4. Update news record with extracted data
-    5. Dispatch embedding for KEEP articles
-
-    Args:
-        news_id: UUID of the news article
-        user_id: Optional user ID for personalized settings
-    """
-    try:
-        return run_async_task(_deep_filter_news_async, news_id, user_id)
-    except Exception as e:
-        logger.exception("deep_filter_news failed for news_id=%s: %s", news_id, e)
-        raise self.retry(exc=e, countdown=30 * (2 ** self.request.retries))
-
-
-async def _deep_filter_news_async(
-    news_id: str,
-    user_id: Optional[int] = None,
-) -> Dict[str, Any]:
-    """Async implementation of deep_filter_news."""
-    from sqlalchemy import select
-
-    from app.models.news import News, ContentStatus, FilterStatus
-    from app.services.two_phase_filter_service import get_two_phase_filter_service
-    from app.services.filter_stats_service import get_filter_stats_service
-    from app.services.news_storage_service import get_news_storage_service
-
-    logger.info("Deep filtering news_id=%s", news_id)
-
-    async with get_task_session() as db:
-        # Get news record
-        query = select(News).where(News.id == uuid.UUID(news_id))
-        result = await db.execute(query)
-        news = result.scalar_one_or_none()
-
-        if not news:
-            logger.warning("News record not found: %s", news_id)
-            return {"status": "error", "reason": "not_found"}
-
-        # Skip if no content file
-        if not news.content_file_path:
-            logger.info("No content file for news_id=%s, skipping deep filter", news_id)
-            # Still dispatch embedding for title/summary
-            embed_news_full_content.delay(news_id, user_id)
-            return {"status": "skipped", "reason": "no_content_file"}
-
-        # Read full content from JSON file
-        storage_service = get_news_storage_service()
-        content_data = storage_service.read_content(news.content_file_path)
-
-        full_text = None
-        if content_data:
-            full_text = content_data.get("full_text")
-
-        # Get services
-        filter_service = get_two_phase_filter_service()
-        stats_service = get_filter_stats_service()
-
-        # Run deep filter with AI context
-        async with setup_task_ai_context():
-            deep_result = await filter_service.deep_filter_article(
-                db=db,
-                title=news.title or "",
-                full_text=full_text or news.summary or "",
-                source=news.source or "",
-                url=news.url,
+            logger.info(
+                "batch_fetch: fetched news_id=%s, %d words, status=%s",
+                news_id, data.get("word_count", 0), news.content_status,
             )
 
-        if deep_result["decision"] == "delete":
-            # Delete JSON file and mark as deleted
-            logger.info("Deep filter: deleting irrelevant news_id=%s", news_id)
-
-            if news.content_file_path:
-                storage_service.delete_content(news.content_file_path)
-
-            news.content_status = ContentStatus.DELETED.value
-            news.content_file_path = None
-            news.filter_status = FilterStatus.FINE_DELETE.value
-            await db.commit()
-
-            # Track stats
-            await stats_service.increment("fine_delete")
-
             return {
-                "status": "deleted",
-                "news_id": news_id,
-                "reason": "deep_filter_delete",
+                "success": True,
+                "file_path": data.get("file_path"),
+                "word_count": data.get("word_count", 0),
             }
 
-        # Article is kept - update with extracted data
-        logger.info("Deep filter: keeping news_id=%s", news_id)
-
-        # Update entities
-        entities = deep_result.get("entities", [])
-        news.related_entities = entities if entities else None
-
-        # Calculate RAG helper fields from entities
-        if entities:
-            news.has_stock_entities = any(e["type"] == "stock" for e in entities)
-            news.has_macro_entities = any(e["type"] == "macro" for e in entities)
-            news.max_entity_score = max((e["score"] for e in entities), default=None)
-
-            # Determine primary entity (prefer stock)
-            stock_entities = [e for e in entities if e["type"] == "stock"]
-            if stock_entities:
-                news.primary_entity = stock_entities[0]["entity"]
-                news.primary_entity_type = "stock"
-            elif entities:
-                news.primary_entity = entities[0]["entity"]
-                news.primary_entity_type = entities[0]["type"]
-
-        # Update tags and summary
-        news.industry_tags = deep_result.get("industry_tags", [])
-        news.event_tags = deep_result.get("event_tags", [])
-        news.sentiment_tag = deep_result.get("sentiment", "neutral")
-        news.investment_summary = deep_result.get("investment_summary", "")
-
-        # Update filter status
-        news.filter_status = FilterStatus.FINE_KEEP.value
-
-        await db.commit()
-
-        # Track stats
-        await stats_service.increment("fine_keep")
-
-        # Dispatch embedding task
-        embed_news_full_content.delay(news_id, user_id)
-        logger.info(
-            "Deep filter kept news_id=%s: entities=%d, sentiment=%s",
-            news_id,
-            len(entities),
-            news.sentiment_tag,
-        )
-
-        return {
-            "status": "kept",
-            "news_id": news_id,
-            "entities_count": len(entities),
-            "sentiment": news.sentiment_tag,
-            "has_summary": bool(news.investment_summary),
-        }
-
-
-# DEPRECATED: This task is replaced by process_news_article which uses LangGraph pipeline.
-# Kept for backward compatibility with in-flight tasks.
-@celery_app.task(bind=True, max_retries=3)
-def embed_news_full_content(self, news_id: str, user_id: Optional[int] = None):
-    """
-    DEPRECATED: Use process_news_article instead.
-
-    Generate embeddings for news full content.
-
-    Uses the full text from JSON file for embedding, falling back to
-    title + summary if no full content is available.
-
-    Args:
-        news_id: UUID of the news article
-        user_id: Optional user ID for personalized settings
-    """
-    try:
-        return run_async_task(_embed_news_full_content_async, news_id, user_id)
     except Exception as e:
-        logger.exception("embed_news_full_content failed for news_id=%s: %s", news_id, e)
-        raise self.retry(exc=e, countdown=30 * (2 ** self.request.retries))
-
-
-async def _embed_news_full_content_async(
-    news_id: str,
-    user_id: Optional[int] = None,
-) -> Dict[str, Any]:
-    """Async implementation of news embedding."""
-    import hashlib
-
-    from sqlalchemy import select, text
-
-    from app.models.news import News, ContentStatus
-    from app.services.news_storage_service import get_news_storage_service
-    from app.services.embedding_service import get_embedding_service, get_embedding_config_from_db
-    from app.services.rag_service import get_rag_service
-    from app.services.filter_stats_service import get_filter_stats_service
-
-    logger.info("Embedding news_id=%s", news_id)
-
-    embedding_service = get_embedding_service()
-    rag_service = get_rag_service()
-    storage_service = get_news_storage_service()
-    stats_service = get_filter_stats_service()
-
-    async with get_task_session() as db:
-        # Read embedding config (model + provider credentials) from DB
-        embed_config = await get_embedding_config_from_db(db)
-        # Get news record
-        query = select(News).where(News.id == uuid.UUID(news_id))
-        result = await db.execute(query)
-        news = result.scalar_one_or_none()
-
-        if not news:
-            logger.warning("News record not found: %s", news_id)
-            return {"status": "error", "reason": "not_found"}
-
-        # Skip if already embedded or deleted
-        if news.content_status == ContentStatus.EMBEDDED.value:
-            logger.info("News already embedded: %s", news_id)
-            return {"status": "skipped", "reason": "already_embedded"}
-        if news.content_status == ContentStatus.DELETED.value:
-            logger.info("News is deleted: %s", news_id)
-            return {"status": "skipped", "reason": "deleted"}
-
-        # Build content for embedding
-        content_parts = []
-
-        # Add title
-        if news.title:
-            content_parts.append(news.title)
-
-        # Try to get full text from JSON file
-        full_text = None
-        if news.content_file_path:
-            content_data = storage_service.read_content(news.content_file_path)
-            if content_data:
-                full_text = content_data.get("full_text")
-
-        if full_text:
-            content_parts.append(full_text)
-        elif news.summary:
-            # Fall back to summary
-            content_parts.append(news.summary)
-
-        content = "\n\n".join(content_parts)
-
-        if not content.strip():
-            logger.warning("Empty content for embedding: %s", news_id)
-            return {"status": "skipped", "reason": "empty_content"}
-
-        # Chunk the text
-        chunks = embedding_service.chunk_text(content)
-        logger.info(
-            "Chunked news_id=%s into %d chunks (total %d chars)",
-            news_id,
-            len(chunks),
-            len(content),
+        logger.error(
+            "batch_fetch: DB update failed for news_id=%s: %s", news_id, e,
         )
-
-        if not chunks:
-            return {"status": "skipped", "reason": "no_chunks"}
-
-        # Generate embeddings using resolved provider config
-        embeddings = await embedding_service.generate_embeddings_batch(
-            chunks, model=embed_config.model,
-            api_key=embed_config.api_key, base_url=embed_config.base_url,
-        )
-
-        # Check for valid embeddings
-        valid_pairs = [
-            (i, chunk, emb)
-            for i, (chunk, emb) in enumerate(zip(chunks, embeddings))
-            if emb is not None
-        ]
-
-        if not valid_pairs:
-            logger.error("All embeddings failed for news_id=%s", news_id)
-            # Update status to EMBEDDING_FAILED
-            news.content_status = ContentStatus.EMBEDDING_FAILED.value
-            await db.commit()
-            # Track stats
-            await stats_service.increment("embedding_error")
-            return {
-                "status": "error",
-                "reason": "all_embeddings_failed",
-                "chunks_total": len(chunks),
-            }
-
-        # Use advisory lock to prevent concurrent embedding
-        lock_key = int.from_bytes(
-            hashlib.md5(f"news:{news_id}".encode()).digest()[:8],
-            byteorder="big",
-            signed=True,
-        )
-
-        await db.execute(text("SELECT pg_advisory_lock(:key)"), {"key": lock_key})
-
-        try:
-            # Delete existing embeddings
-            await rag_service.delete_embeddings(db, "news", news_id)
-
-            # Store new embeddings
-            stored_count = 0
-            for i, chunk, embedding in valid_pairs:
-                await rag_service.store_embedding(
-                    db=db,
-                    source_type="news",
-                    source_id=news_id,
-                    chunk_text=chunk,
-                    embedding=embedding,
-                    symbol=news.symbol,
-                    chunk_index=i,
-                    model=embed_config.model,
-                )
-                stored_count += 1
-
-            # Update news status
-            news.content_status = ContentStatus.EMBEDDED.value
-            await db.commit()
-
-            # Track stats
-            await stats_service.increment("embedding_success")
-
-        finally:
-            try:
-                if db.in_transaction():
-                    await db.rollback()
-                await db.execute(
-                    text("SELECT pg_advisory_unlock(:key)"), {"key": lock_key}
-                )
-            except Exception as unlock_err:
-                logger.warning(
-                    "Failed to release advisory lock %d: %s", lock_key, unlock_err
-                )
-
-        logger.info(
-            "Embedded news_id=%s: %d/%d chunks stored",
-            news_id,
-            stored_count,
-            len(chunks),
-        )
-
-        return {
-            "status": "success",
-            "news_id": news_id,
-            "chunks_total": len(chunks),
-            "chunks_stored": stored_count,
-        }
+        return {"success": False, "error": f"DB update failed: {e}"}
 
 
 @celery_app.task

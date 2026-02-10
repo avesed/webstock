@@ -659,16 +659,18 @@ async def get_news_full_content(
     # Check if we need to trigger fetch
     is_fetching = False
     if force_refresh or news.content_status == ContentStatus.PENDING.value:
-        # Trigger async fetch
+        # Trigger async fetch via Layer 1.5 (single article batch)
         try:
-            from worker.tasks.full_content_tasks import fetch_news_content
-            fetch_news_content.delay(
-                str(news.id),
-                news.url,
-                news.market,
-                news.symbol,
-                current_user.id,
-            )
+            from worker.tasks.full_content_tasks import batch_fetch_content
+            batch_fetch_content.delay([{
+                "news_id": str(news.id),
+                "url": news.url,
+                "market": news.market or "US",
+                "symbol": news.symbol or "",
+                "title": news.title or "",
+                "summary": news.summary or "",
+                "source": news.source or "",
+            }])
             is_fetching = True
             logger.info("Triggered content fetch for news_id=%s", news_id)
         except Exception as e:
@@ -761,10 +763,10 @@ async def batch_fetch_content(
             "user_id": current_user.id,
         })
 
-    # Dispatch batch task
+    # Dispatch batch task via Layer 1.5
     try:
-        from worker.tasks.full_content_tasks import fetch_batch_content
-        fetch_batch_content.delay(batch_items)
+        from worker.tasks.full_content_tasks import batch_fetch_content
+        batch_fetch_content.delay(batch_items)
         logger.info(
             "Queued batch content fetch for %d news articles",
             len(batch_items),

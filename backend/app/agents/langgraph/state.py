@@ -170,13 +170,14 @@ def all_agents_failed(state: AnalysisState) -> bool:
 
 
 class NewsProcessingState(TypedDict):
-    """State for the per-article news processing pipeline.
+    """State for the per-article news processing pipeline (Layer 2).
 
-    This state is passed between nodes in the LangGraph workflow
-    for fetching, filtering, and embedding a single news article.
+    Content is pre-fetched by Layer 1.5 (batch_fetch_content) and saved
+    to file storage. This state tracks file reading, LLM filtering,
+    embedding, and final DB update for a single article.
     """
 
-    # Input parameters (set by caller)
+    # Input parameters (set by caller / Layer 1.5)
     news_id: str
     url: str
     market: str
@@ -185,18 +186,15 @@ class NewsProcessingState(TypedDict):
     summary: str
     published_at: Optional[str]  # ISO 8601
     use_two_phase: bool
-    content_source: str  # 'scraper' or 'polygon'
-    polygon_api_key: Optional[str]
+    source: Optional[str]  # News source name (e.g. 'reuters', 'eastmoney')
+    file_path: Optional[str]  # Path to pre-fetched content JSON file
 
-    # Fetch results
+    # Content read results (populated by read_file_node)
     full_text: Optional[str]
     word_count: int
-    file_path: Optional[str]
-    is_partial: bool
     language: Optional[str]
     authors: Optional[List[str]]
     keywords: Optional[List[str]]
-    fetch_error: Optional[str]
 
     # Filter results
     filter_decision: str  # 'keep', 'delete', 'pending', 'skip'
@@ -224,8 +222,8 @@ def create_news_processing_state(
     summary: str = "",
     published_at: Optional[str] = None,
     use_two_phase: bool = False,
-    content_source: str = "scraper",
-    polygon_api_key: Optional[str] = None,
+    source: str = "",
+    file_path: Optional[str] = None,
 ) -> NewsProcessingState:
     """Create initial state for the news processing pipeline."""
     return NewsProcessingState(
@@ -237,16 +235,13 @@ def create_news_processing_state(
         summary=summary,
         published_at=published_at,
         use_two_phase=use_two_phase,
-        content_source=content_source,
-        polygon_api_key=polygon_api_key,
+        source=source,
+        file_path=file_path,
         full_text=None,
         word_count=0,
-        file_path=None,
-        is_partial=False,
         language=None,
         authors=None,
         keywords=None,
-        fetch_error=None,
         filter_decision="pending",
         entities=None,
         industry_tags=None,
