@@ -12,6 +12,7 @@ Handles all OpenAI-specific concerns internally:
 import json
 import logging
 import re
+from dataclasses import replace
 from typing import Any, AsyncIterator, Dict, List, Optional
 
 from openai import AsyncOpenAI
@@ -168,48 +169,35 @@ class OpenAIProvider(LLMProvider):
     # ------------------------------------------------------------------
 
     async def chat(self, request: ChatRequest) -> ChatResponse:
-        """Non-streaming chat completion."""
-        client = self._get_client()
-        kwargs = self._build_api_kwargs(request)
-        try:
-            response = await client.chat.completions.create(**kwargs)
-        except Exception as e:
-            logger.error(
-                "OpenAI chat failed: model=%s, base_url=%s, error=%s",
-                request.model, self._base_url or "default", e,
-            )
-            raise
+        """Non-streaming chat completion.
 
-        choice = response.choices[0]
-        tool_calls = None
-        if choice.message.tool_calls:
-            tool_calls = [
-                ToolCall(
-                    id=tc.id,
-                    name=tc.function.name,
-                    arguments=tc.function.arguments,
-                )
-                for tc in choice.message.tool_calls
-            ]
+        Internally uses streaming to support API proxies (e.g. x86a.com)
+        that always return SSE format regardless of the stream parameter.
+        """
+        stream_request = replace(request, stream=True)
 
-        usage = None
-        if response.usage:
-            usage = TokenUsage(
-                prompt_tokens=response.usage.prompt_tokens,
-                completion_tokens=response.usage.completion_tokens,
-                total_tokens=response.usage.total_tokens,
-            )
+        content_parts: List[str] = []
+        tool_calls: Optional[List[ToolCall]] = None
+        usage: Optional[TokenUsage] = None
+        finish_reason: Optional[str] = None
 
-        # Normalize finish_reason
-        finish = choice.finish_reason
-        if finish == "tool_calls":
-            finish = "tool_use"
+        async for event in self.chat_stream(stream_request):
+            if isinstance(event, ContentDelta):
+                content_parts.append(event.text)
+            elif isinstance(event, ToolCallDelta):
+                if tool_calls is None:
+                    tool_calls = []
+                tool_calls.append(event.tool_call)
+            elif isinstance(event, UsageInfo):
+                usage = event.usage
+            elif isinstance(event, FinishEvent):
+                finish_reason = event.reason
 
         return ChatResponse(
-            content=choice.message.content,
+            content="".join(content_parts) if content_parts else None,
             tool_calls=tool_calls,
-            finish_reason=finish,
-            model=response.model,
+            finish_reason=finish_reason,
+            model=request.model,
             usage=usage,
         )
 
