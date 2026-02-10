@@ -124,34 +124,6 @@ class UserSettings(Base):
         comment="新闻内容保留天数",
     )
 
-    # === 新闻AI处理设置 ===
-    # 自定义API配置（用于embedding和filter）
-    news_openai_base_url: Mapped[Optional[str]] = mapped_column(
-        String(500),
-        nullable=True,
-        comment="新闻处理的自定义OpenAI兼容API地址",
-    )
-
-    news_openai_api_key: Mapped[Optional[str]] = mapped_column(
-        Text,
-        nullable=True,
-        comment="新闻处理的自定义API Key",
-    )
-
-    news_embedding_model: Mapped[Optional[str]] = mapped_column(
-        String(100),
-        nullable=True,
-        default="text-embedding-3-small",
-        comment="新闻向量模型",
-    )
-
-    news_filter_model: Mapped[Optional[str]] = mapped_column(
-        String(100),
-        nullable=True,
-        default="gpt-4o-mini",
-        comment="新闻筛选模型（用于判断相关性）",
-    )
-
     # Anthropic API Key (user-level override)
     anthropic_api_key: Mapped[Optional[str]] = mapped_column(
         Text,

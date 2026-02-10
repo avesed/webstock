@@ -1,11 +1,15 @@
 """Celery tasks for news full content fetching, filtering, and embedding.
 
 This module implements the full news content pipeline:
-1. fetch_news_content - Fetches full article text using FullContentService
-2. fetch_batch_content - Batch fetch multiple URLs in parallel
-3. evaluate_news_relevance - Uses LLM to filter irrelevant news
-4. embed_news_full_content - Generates embeddings for full text
-5. cleanup_expired_news - Periodic cleanup of old news content
+1. process_news_article - LangGraph pipeline: fetch -> filter -> embed (primary)
+2. cleanup_expired_news - Periodic cleanup of old news content
+
+Deprecated tasks (kept for backward compatibility with in-flight tasks):
+- fetch_news_content - Replaced by process_news_article
+- fetch_batch_content - Replaced by process_news_article
+- evaluate_news_relevance - Replaced by process_news_article
+- deep_filter_news - Replaced by process_news_article
+- embed_news_full_content - Replaced by process_news_article
 """
 
 import asyncio
@@ -52,6 +56,88 @@ def run_async_task(coro_func: Callable[..., T], *args, **kwargs) -> T:
 
 
 @celery_app.task(bind=True, max_retries=3)
+def process_news_article(
+    self,
+    news_id: str,
+    url: str,
+    market: str = "US",
+    symbol: str = "",
+    title: str = "",
+    summary: str = "",
+    published_at: str = None,
+    use_two_phase: bool = False,
+    content_source: str = "scraper",
+    polygon_api_key: str = None,
+):
+    """
+    Process a single news article through the LangGraph pipeline.
+
+    Replaces the old task chain: fetch_news_content -> deep_filter/evaluate -> embed.
+    Runs the complete pipeline in a single task using LangGraph workflow.
+
+    Args:
+        news_id: UUID of the news article
+        url: Article URL to fetch
+        market: Market identifier (US, HK, SH, SZ)
+        symbol: Stock symbol
+        title: Article title
+        summary: Article summary
+        published_at: ISO 8601 publish date
+        use_two_phase: Whether to use two-phase filtering
+        content_source: 'scraper' or 'polygon'
+        polygon_api_key: Optional Polygon.io API key
+    """
+    try:
+        return run_async_task(
+            _process_news_article_async,
+            news_id, url, market, symbol, title, summary,
+            published_at, use_two_phase, content_source, polygon_api_key,
+        )
+    except Exception as e:
+        logger.exception("process_news_article failed for news_id=%s: %s", news_id, e)
+        raise self.retry(exc=e, countdown=30 * (2 ** self.request.retries))
+
+
+async def _process_news_article_async(
+    news_id: str,
+    url: str,
+    market: str,
+    symbol: str,
+    title: str,
+    summary: str,
+    published_at: str,
+    use_two_phase: bool,
+    content_source: str,
+    polygon_api_key: str,
+) -> Dict[str, Any]:
+    """Async implementation: run the LangGraph news pipeline."""
+    from app.agents.langgraph.workflows.news_pipeline import run_news_pipeline
+
+    final_state = await run_news_pipeline(
+        news_id=news_id,
+        url=url,
+        market=market,
+        symbol=symbol,
+        title=title,
+        summary=summary,
+        published_at=published_at,
+        use_two_phase=use_two_phase,
+        content_source=content_source,
+        polygon_api_key=polygon_api_key,
+    )
+
+    return {
+        "status": final_state.get("final_status", "unknown"),
+        "news_id": news_id,
+        "chunks_stored": final_state.get("chunks_stored", 0),
+        "filter_decision": final_state.get("filter_decision", "pending"),
+        "error": final_state.get("error"),
+    }
+
+
+# DEPRECATED: This task is replaced by process_news_article which uses LangGraph pipeline.
+# Kept for backward compatibility with in-flight tasks.
+@celery_app.task(bind=True, max_retries=3)
 def fetch_news_content(
     self,
     news_id: str,
@@ -62,6 +148,8 @@ def fetch_news_content(
     use_two_phase: bool = False,
 ):
     """
+    DEPRECATED: Use process_news_article instead.
+
     Fetch full content for a single news article.
 
     Workflow:
@@ -257,9 +345,13 @@ async def _fetch_news_content_async(
         }
 
 
+# DEPRECATED: This task is replaced by process_news_article which uses LangGraph pipeline.
+# Kept for backward compatibility with in-flight tasks.
 @celery_app.task(bind=True, max_retries=2)
 def fetch_batch_content(self, news_items: List[Dict[str, Any]]):
     """
+    DEPRECATED: Use process_news_article instead.
+
     Batch fetch content for multiple news articles.
 
     Fetches 10-20 URLs in parallel using asyncio.gather.
@@ -340,9 +432,13 @@ async def _fetch_batch_content_async(
     }
 
 
+# DEPRECATED: This task is replaced by process_news_article which uses LangGraph pipeline.
+# Kept for backward compatibility with in-flight tasks.
 @celery_app.task(bind=True, max_retries=2)
 def evaluate_news_relevance(self, news_id: str, user_id: Optional[int] = None):
     """
+    DEPRECATED: Use process_news_article instead.
+
     Evaluate news relevance using LLM.
 
     Workflow:
@@ -371,7 +467,6 @@ async def _evaluate_news_relevance_async(
     from sqlalchemy import select
 
     from app.models.news import News, ContentStatus
-    from app.models.user_settings import UserSettings
     from app.services.news_filter_service import get_news_filter_service
     from app.services.news_storage_service import get_news_storage_service
 
@@ -394,15 +489,6 @@ async def _evaluate_news_relevance_async(
             embed_news_full_content.delay(news_id, user_id)
             return {"status": "skipped", "reason": "no_content_file"}
 
-        # Get user's filter model preference
-        filter_model = "gpt-4o-mini"  # Default
-        if user_id:
-            settings_query = select(UserSettings).where(UserSettings.user_id == user_id)
-            settings_result = await db.execute(settings_query)
-            user_settings = settings_result.scalar_one_or_none()
-            if user_settings and user_settings.news_filter_model:
-                filter_model = user_settings.news_filter_model
-
         # Read full content from JSON file
         storage_service = get_news_storage_service()
         content_data = storage_service.read_content(news.content_file_path)
@@ -411,20 +497,20 @@ async def _evaluate_news_relevance_async(
         if content_data:
             full_text = content_data.get("full_text")
 
-        # Load news-specific LLM settings for API key passthrough
+        # Load news filter LLM settings via unified provider system
         from app.services.two_phase_filter_service import get_news_llm_settings
 
         llm_settings = await get_news_llm_settings(db)
 
-        # Evaluate relevance
-        filter_service = get_news_filter_service(model=filter_model)
+        # Evaluate relevance using the resolved filter model
+        filter_service = get_news_filter_service(model=llm_settings.model)
         should_keep = await filter_service.evaluate_relevance(
             title=news.title,
             summary=news.summary,
             full_text=full_text,
             source=news.source,
             symbol=news.symbol,
-            model=filter_model,
+            model=llm_settings.model,
             system_api_key=llm_settings.api_key,
             system_base_url=llm_settings.base_url,
         )
@@ -456,9 +542,13 @@ async def _evaluate_news_relevance_async(
         }
 
 
+# DEPRECATED: This task is replaced by process_news_article which uses LangGraph pipeline.
+# Kept for backward compatibility with in-flight tasks.
 @celery_app.task(bind=True, max_retries=2)
 def deep_filter_news(self, news_id: str, user_id: Optional[int] = None):
     """
+    DEPRECATED: Use process_news_article instead.
+
     Deep filter task for two-phase news filtering.
 
     Replaces evaluate_news_relevance when two-phase mode is enabled.
@@ -608,9 +698,13 @@ async def _deep_filter_news_async(
         }
 
 
+# DEPRECATED: This task is replaced by process_news_article which uses LangGraph pipeline.
+# Kept for backward compatibility with in-flight tasks.
 @celery_app.task(bind=True, max_retries=3)
 def embed_news_full_content(self, news_id: str, user_id: Optional[int] = None):
     """
+    DEPRECATED: Use process_news_article instead.
+
     Generate embeddings for news full content.
 
     Uses the full text from JSON file for embedding, falling back to
@@ -637,7 +731,6 @@ async def _embed_news_full_content_async(
     from sqlalchemy import select, text
 
     from app.models.news import News, ContentStatus
-    from app.models.user_settings import UserSettings
     from app.services.news_storage_service import get_news_storage_service
     from app.services.embedding_service import get_embedding_service, get_embedding_config_from_db
     from app.services.rag_service import get_rag_service

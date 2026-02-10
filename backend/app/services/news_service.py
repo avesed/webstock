@@ -187,31 +187,18 @@ async def extract_related_entities(
         Mapping of URL to list of RelatedEntity with scores
     """
     from app.core.llm import get_llm_gateway, ChatRequest, Message, Role
-    from app.services.settings_service import SettingsService
+    from app.services.two_phase_filter_service import get_news_llm_settings
 
-    # Get system settings for LLM configuration
-    settings_service = SettingsService()
-    system_settings = await settings_service.get_system_settings(db)
-
-    # Use news-specific LLM configuration (database only, no env fallback)
-    if system_settings.news_use_llm_config:
-        api_key = (
-            system_settings.news_openai_api_key
-            or system_settings.openai_api_key
-        )
-        base_url = (
-            system_settings.news_openai_base_url
-            or system_settings.openai_base_url
-        )
-    else:
-        api_key = system_settings.openai_api_key
-        base_url = system_settings.openai_base_url
-
-    model = system_settings.news_filter_model or "gpt-4o-mini"
-
-    if not api_key:
-        logger.warning("No OpenAI API key configured, skipping entity extraction")
+    # Use unified provider system for news filter LLM config
+    try:
+        llm_settings = await get_news_llm_settings(db)
+    except ValueError:
+        logger.warning("No API key configured for news filtering, skipping entity extraction")
         return {a.get("url", ""): [] for a in articles}
+
+    api_key = llm_settings.api_key
+    base_url = llm_settings.base_url
+    model = llm_settings.model
 
     gateway = get_llm_gateway()
     results: Dict[str, List[RelatedEntity]] = {}

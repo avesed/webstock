@@ -465,13 +465,6 @@ export interface NewsContentSettings {
   source: NewsContentSource
   polygonApiKey: string | null
   retentionDays: number
-  // Custom AI API settings (for self-hosted LLMs or other OpenAI-compatible providers)
-  openaiBaseUrl: string | null
-  openaiApiKey: string | null
-  embeddingModel: string
-  filterModel: string
-  // Whether the user is allowed to customize API settings (controlled by admin)
-  canCustomizeApi: boolean
 }
 
 // Admin User Management types (for paginated list)
@@ -546,6 +539,7 @@ export interface ModelAssignmentsConfig {
   analysis: ModelAssignment
   synthesis: ModelAssignment
   embedding: ModelAssignment
+  newsFilter: ModelAssignment
 }
 
 // Admin System Configuration types
@@ -569,9 +563,6 @@ export interface SystemConfig {
     embeddingModel: string
     filterModel: string
     autoFetchEnabled: boolean
-    useLlmConfig: boolean  // Use LLM config's API settings
-    openaiBaseUrl: string | null  // Custom API URL (when useLlmConfig=false)
-    openaiApiKey: string | null  // Custom API key (when useLlmConfig=false)
     finnhubApiKey: string | null  // Finnhub API key for news data
   }
   features: {

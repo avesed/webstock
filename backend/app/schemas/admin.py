@@ -195,9 +195,6 @@ class NewsConfig(CamelModel):
     embedding_model: str = "text-embedding-3-small"
     filter_model: str = "gpt-4o-mini"
     auto_fetch_enabled: bool = True
-    use_llm_config: bool = True  # Use LLM config's API settings
-    openai_base_url: Optional[str] = None  # Custom API URL (when use_llm_config=False)
-    openai_api_key: Optional[str] = None  # Custom API key (when use_llm_config=False)
     finnhub_api_key: Optional[str] = None  # Finnhub API key for news data
 
 
@@ -226,6 +223,7 @@ class ModelAssignmentsConfig(CamelModel):
     analysis: ModelAssignment = ModelAssignment(model="gpt-4o-mini")
     synthesis: ModelAssignment = ModelAssignment(model="gpt-4o")
     embedding: ModelAssignment = ModelAssignment(model="text-embedding-3-small")
+    news_filter: ModelAssignment = ModelAssignment(model="gpt-4o-mini")
 
 
 class SystemConfigResponse(CamelModel):

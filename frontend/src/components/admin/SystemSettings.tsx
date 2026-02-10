@@ -27,6 +27,7 @@ const DEFAULT_MODEL_ASSIGNMENTS: ModelAssignmentsConfig = {
   analysis: { providerId: null, model: 'gpt-4o-mini' },
   synthesis: { providerId: null, model: 'gpt-4o' },
   embedding: { providerId: null, model: 'text-embedding-3-small' },
+  newsFilter: { providerId: null, model: 'gpt-4o-mini' },
 }
 
 const DEFAULT_CONFIG: SystemConfig = {
@@ -48,9 +49,6 @@ const DEFAULT_CONFIG: SystemConfig = {
     embeddingModel: 'text-embedding-3-small',
     filterModel: 'gpt-4o-mini',
     autoFetchEnabled: true,
-    useLlmConfig: true,
-    openaiBaseUrl: null,
-    openaiApiKey: null,
     finnhubApiKey: null,
   },
   features: {
@@ -391,46 +389,6 @@ export function SystemSettings() {
                   <p className="text-xs text-muted-foreground">{t('settings.finnhubApiKeyHint')}</p>
                 </div>
 
-                <Separator />
-
-                <div className="flex items-center justify-between">
-                  <div className="space-y-0.5">
-                    <Label>{t('settings.useLlmConfig')}</Label>
-                    <p className="text-sm text-muted-foreground">{t('settings.useLlmConfigDescription')}</p>
-                  </div>
-                  <ToggleSwitch
-                    checked={formData.news.useLlmConfig}
-                    onCheckedChange={(checked) => handleChange('news', 'useLlmConfig', checked)}
-                  />
-                </div>
-
-                {!formData.news.useLlmConfig && (
-                  <div className="grid gap-4 sm:grid-cols-2 pt-2">
-                    <div className="space-y-2">
-                      <Label htmlFor="news-api-url">{t('settings.newsApiUrl')}</Label>
-                      <Input
-                        id="news-api-url"
-                        value={formData.news.openaiBaseUrl || ''}
-                        onChange={(e) => handleChange('news', 'openaiBaseUrl', e.target.value || null)}
-                        placeholder="https://api.openai.com/v1"
-                      />
-                    </div>
-
-                    <div className="space-y-2">
-                      <Label htmlFor="news-api-key">{t('settings.newsApiKey')}</Label>
-                      <Input
-                        id="news-api-key"
-                        type="password"
-                        value={formData.news.openaiApiKey === '***' ? '' : (formData.news.openaiApiKey || '')}
-                        onChange={(e) => handleChange('news', 'openaiApiKey', e.target.value || null)}
-                        placeholder={formData.news.openaiApiKey === '***' ? t('settings.apiKeySet') : t('settings.apiKeyPlaceholder')}
-                      />
-                      {formData.news.openaiApiKey === '***' && (
-                        <p className="text-xs text-muted-foreground">{t('settings.apiKeySetHint')}</p>
-                      )}
-                    </div>
-                  </div>
-                )}
               </CardContent>
             </Card>
 

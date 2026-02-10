@@ -12,12 +12,10 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Dict, List, Literal, Optional, TypedDict
 
-from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.llm import get_llm_gateway, ChatRequest, Message, Role
 from app.models.news import FilterStatus
-from app.models.system_settings import SystemSettings
 
 logger = logging.getLogger(__name__)
 
@@ -60,9 +58,9 @@ class NewsLLMSettings:
 
 async def get_news_llm_settings(db: AsyncSession) -> NewsLLMSettings:
     """
-    Get LLM settings for news filtering.
+    Get LLM settings for news filtering via unified provider system.
 
-    Priority: news-specific settings > system LLM settings (database only).
+    Uses resolve_model_provider() with "news_filter" purpose.
 
     Args:
         db: Database session
@@ -70,31 +68,28 @@ async def get_news_llm_settings(db: AsyncSession) -> NewsLLMSettings:
     Returns:
         NewsLLMSettings with API key, base URL, and model
     """
-    result = await db.execute(select(SystemSettings).where(SystemSettings.id == 1))
-    system = result.scalar_one_or_none()
+    from app.services.settings_service import get_settings_service
 
-    if system and system.news_use_llm_config:
-        # Use main LLM config
-        api_key = system.openai_api_key
-        base_url = system.openai_base_url
-        model = system.news_filter_model or "gpt-4o-mini"
-    elif system:
-        # Use news-specific config, fallback to main LLM config
-        api_key = system.news_openai_api_key or system.openai_api_key
-        base_url = system.news_openai_base_url or system.openai_base_url
-        model = system.news_filter_model or "gpt-4o-mini"
-    else:
-        api_key = None
-        base_url = None
-        model = "gpt-4o-mini"
+    settings_service = get_settings_service()
+    try:
+        resolved = await settings_service.resolve_model_provider(db, "news_filter")
+    except ValueError as e:
+        raise ValueError(
+            "No API key configured for news filtering. "
+            "Please configure a news_filter model assignment in Admin Settings."
+        ) from e
 
-    if not api_key:
+    if not resolved.api_key:
         raise ValueError(
             "No API key configured for news filtering. "
             "Please configure it in Admin Settings."
         )
 
-    return NewsLLMSettings(api_key=api_key, base_url=base_url, model=model)
+    return NewsLLMSettings(
+        api_key=resolved.api_key,
+        base_url=resolved.base_url,
+        model=resolved.model or "gpt-4o-mini",
+    )
 
 
 def extract_json_from_response(text: str) -> Dict[str, Any]:

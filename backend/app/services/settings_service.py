@@ -280,7 +280,7 @@ class SettingsService:
 
         Args:
             db: Async database session
-            purpose: One of 'chat', 'analysis', 'synthesis', 'embedding'
+            purpose: One of 'chat', 'analysis', 'synthesis', 'embedding', 'news_filter'
 
         Returns:
             ResolvedModelConfig with model, provider_type, api_key, base_url
@@ -296,6 +296,7 @@ class SettingsService:
             "analysis": ("analysis_provider_id", "analysis_model"),
             "synthesis": ("synthesis_provider_id", "synthesis_model"),
             "embedding": ("embedding_provider_id", "embedding_model"),
+            "news_filter": ("news_filter_provider_id", "news_filter_model"),
         }
 
         if purpose not in purpose_map:

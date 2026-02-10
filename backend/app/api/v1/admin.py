@@ -851,6 +851,10 @@ async def get_system_config(
             provider_id=str(settings.embedding_provider_id) if settings.embedding_provider_id else None,
             model=settings.embedding_model or "text-embedding-3-small",
         ),
+        news_filter=ModelAssignment(
+            provider_id=str(settings.news_filter_provider_id) if settings.news_filter_provider_id else None,
+            model=settings.news_filter_model or "gpt-4o-mini",
+        ),
     )
 
     return SystemConfigResponse(
@@ -869,9 +873,6 @@ async def get_system_config(
             embedding_model=settings.embedding_model or "text-embedding-3-small",
             filter_model=settings.news_filter_model or "gpt-4o-mini",
             auto_fetch_enabled=True,
-            use_llm_config=settings.news_use_llm_config,
-            openai_base_url=settings.news_openai_base_url,
-            openai_api_key="***" if settings.news_openai_api_key else None,
             finnhub_api_key="***" if settings.finnhub_api_key else None,
         ),
         features=FeaturesConfig(
@@ -936,14 +937,6 @@ async def update_system_config(
             settings.embedding_model = data.news.embedding_model
         if data.news.filter_model:
             settings.news_filter_model = data.news.filter_model
-        if data.news.use_llm_config is not None:
-            settings.news_use_llm_config = data.news.use_llm_config
-        # Handle openai_base_url - allow clearing by passing empty string
-        if data.news.openai_base_url is not None:
-            settings.news_openai_base_url = data.news.openai_base_url or None
-        # Handle openai_api_key - only update if not masked
-        if data.news.openai_api_key and data.news.openai_api_key != "***":
-            settings.news_openai_api_key = data.news.openai_api_key or None
         # Handle finnhub_api_key - only update if not masked
         if data.news.finnhub_api_key and data.news.finnhub_api_key != "***":
             settings.finnhub_api_key = data.news.finnhub_api_key or None
@@ -991,6 +984,9 @@ async def update_system_config(
         if ma.embedding:
             settings.embedding_model = ma.embedding.model or None
             settings.embedding_provider_id = UUID(ma.embedding.provider_id) if ma.embedding.provider_id else None
+        if ma.news_filter:
+            settings.news_filter_model = ma.news_filter.model or None
+            settings.news_filter_provider_id = UUID(ma.news_filter.provider_id) if ma.news_filter.provider_id else None
 
     settings.updated_at = datetime.now(timezone.utc)
     settings.updated_by = admin.id
@@ -1266,6 +1262,8 @@ async def delete_llm_provider(
         active_assignments.append("synthesis")
     if settings.embedding_provider_id == provider_id:
         active_assignments.append("embedding")
+    if settings.news_filter_provider_id == provider_id:
+        active_assignments.append("news_filter")
 
     if active_assignments:
         raise HTTPException(

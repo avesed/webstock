@@ -84,25 +84,6 @@ class SystemSettings(Base):
         comment="新闻内容保留天数",
     )
 
-    news_use_llm_config: Mapped[bool] = mapped_column(
-        Boolean,
-        nullable=False,
-        default=True,
-        comment="新闻处理是否使用 LLM 配置的 API 设置",
-    )
-
-    news_openai_base_url: Mapped[Optional[str]] = mapped_column(
-        String(500),
-        nullable=True,
-        comment="新闻处理专用 OpenAI API 地址",
-    )
-
-    news_openai_api_key: Mapped[Optional[str]] = mapped_column(
-        Text,
-        nullable=True,
-        comment="新闻处理专用 OpenAI API Key",
-    )
-
     # === Anthropic Configuration ===
     anthropic_api_key: Mapped[Optional[str]] = mapped_column(
         Text,
@@ -239,6 +220,13 @@ class SystemSettings(Base):
         comment="Provider for embedding model (embedding_model stores model name)",
     )
 
+    news_filter_provider_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("llm_providers.id", ondelete="SET NULL"),
+        nullable=True,
+        comment="Provider for news filter model (news_filter_model stores model name)",
+    )
+
     # === Audit Fields ===
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
@@ -260,6 +248,7 @@ class SystemSettings(Base):
     analysis_provider = relationship("LlmProvider", foreign_keys=[analysis_provider_id])
     synthesis_provider = relationship("LlmProvider", foreign_keys=[synthesis_provider_id])
     embedding_provider = relationship("LlmProvider", foreign_keys=[embedding_provider_id])
+    news_filter_provider = relationship("LlmProvider", foreign_keys=[news_filter_provider_id])
 
     def __repr__(self) -> str:
         return f"<SystemSettings(id={self.id}, updated_at={self.updated_at})>"

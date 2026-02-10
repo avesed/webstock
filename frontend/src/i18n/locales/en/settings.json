@@ -148,7 +148,7 @@
   "configuredByAdmin": "This setting is configured by the system administrator.",
   "newsContent": {
     "title": "News Content Settings",
-    "description": "Configure news scraping source, retention period, and AI processing models",
+    "description": "Configure news scraping source and retention period",
     "source": {
       "label": "Data Source",
       "description": "Choose how to fetch full news content",
@@ -167,28 +167,6 @@
       "label": "News Retention Days",
       "description": "How long news content is kept in the database before automatic cleanup",
       "days": "days"
-    },
-    "customApi": {
-      "title": "Custom API Configuration (Optional)",
-      "baseUrl": "API Base URL",
-      "baseUrlPlaceholder": "https://api.openai.com/v1",
-      "baseUrlHint": "Leave empty to use default OpenAI API, or enter self-hosted LLM URL (e.g., Ollama, vLLM)",
-      "apiKey": "API Key",
-      "apiKeyPlaceholder": "sk-...",
-      "apiKeyHint": "If using a custom API URL, enter the corresponding API key"
-    },
-    "models": {
-      "title": "AI Processing Models",
-      "description": "Select or enter AI models for news vectorization and filtering",
-      "embedding": "Embedding Model",
-      "filter": "Filter Model",
-      "recommended": "recommended",
-      "more accurate": "more accurate",
-      "legacy": "legacy",
-      "smarter": "smarter",
-      "cheapest": "cheapest",
-      "custom": "custom",
-      "embeddingOpenaiOnly": "Embedding models are OpenAI-only"
     },
     "info": {
       "title": "Note",

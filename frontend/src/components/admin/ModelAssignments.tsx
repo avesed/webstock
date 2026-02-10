@@ -6,15 +6,16 @@ import { Input } from '@/components/ui/input'
 import { Separator } from '@/components/ui/separator'
 import type { LlmProvider, ModelAssignmentsConfig, ModelAssignment } from '@/types'
 
-type Purpose = 'analysis' | 'synthesis' | 'chat' | 'embedding'
+type Purpose = 'analysis' | 'synthesis' | 'chat' | 'embedding' | 'newsFilter'
 
-const PURPOSES: Purpose[] = ['analysis', 'synthesis', 'chat', 'embedding']
+const PURPOSES: Purpose[] = ['analysis', 'synthesis', 'chat', 'embedding', 'newsFilter']
 
 const PURPOSE_LABEL_KEYS: Record<Purpose, string> = {
   analysis: 'settings.models.analysisModel',
   synthesis: 'settings.models.synthesisModel',
   chat: 'settings.models.chatModel',
   embedding: 'settings.models.embeddingModel',
+  newsFilter: 'settings.models.newsFilterModel',
 }
 
 interface ModelAssignmentsProps {

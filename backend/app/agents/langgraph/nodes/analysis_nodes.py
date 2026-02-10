@@ -8,7 +8,7 @@ This module contains the four primary analysis nodes:
 
 Each node:
 1. Loads instructions from prompt templates
-2. Prepares data using existing services
+2. Prepares data using the Skills system
 3. Calls LLM via llm_config
 4. Extracts and validates structured output
 5. Returns AgentAnalysisResult
@@ -19,8 +19,6 @@ import logging
 import time
 from datetime import datetime
 from typing import Any, Dict, List, Optional
-
-import pandas as pd
 
 from app.agents.langgraph.state import AnalysisState
 from app.agents.langgraph.utils.json_extractor import (
@@ -49,6 +47,7 @@ from app.schemas.agent_analysis import (
     ValuationAssessment,
 )
 from app.services.token_service import count_tokens
+from app.skills.base import SkillResult
 
 logger = logging.getLogger(__name__)
 
@@ -98,122 +97,155 @@ def _format_price(value: Optional[float]) -> str:
 
 
 # =============================================================================
-# Fundamental Analysis Node
+# Skills infrastructure
 # =============================================================================
 
+# Agent -> Skills pre-configuration mapping
+AGENT_SKILLS: Dict[str, List[str]] = {
+    "fundamental": [
+        "get_stock_quote", "get_stock_info", "get_stock_financials",
+        "get_institutional_holders", "get_fund_holdings_cn",
+        "get_northbound_holding", "get_sector_industry",
+    ],
+    "technical": [
+        "get_stock_quote", "get_stock_history",
+    ],
+    "sentiment": [
+        "get_stock_quote", "get_stock_history", "get_analyst_ratings",
+        "get_news", "get_market_context",
+    ],
+    "news": [
+        "get_news", "get_stock_quote",
+    ],
+}
 
-async def _prepare_fundamental_data(
+# Skills to skip based on market type
+_CN_ONLY_SKILLS = {"get_fund_holdings_cn", "get_northbound_holding"}
+_NON_CN_ONLY_SKILLS = {"get_institutional_holders"}
+
+
+def _build_skill_kwargs(
+    name: str,
     symbol: str,
     market: str,
+    agent_type: str,
 ) -> Dict[str, Any]:
-    """
-    Prepare data for fundamental analysis.
-
-    Fetches company info, financials, quote, and institutional holdings.
-    """
-    from app.services.providers import get_provider_router
-    from app.services.stock_service import get_stock_service
-
-    logger.debug(f"Preparing fundamental data for {symbol} ({market})")
-
-    stock_service = await get_stock_service()
-    router = await get_provider_router()
-
-    # Fetch basic data in parallel
-    info_task = stock_service.get_info(symbol)
-    financials_task = stock_service.get_financials(symbol)
-    quote_task = stock_service.get_quote(symbol)
-
-    data = {
-        "info": None,
-        "financials": None,
-        "quote": None,
-        "institutional_holders": None,
-        "fund_holdings": None,
-        "northbound_holding": None,
-        "sector_industry": None,
-    }
-
-    # Market-specific data fetching
-    if market == "US":
-        inst_task = router.yfinance.get_institutional_holders(symbol)
-        sector_task = router.yfinance.get_sector_industry(symbol)
-
-        results = await asyncio.gather(
-            info_task, financials_task, quote_task, inst_task, sector_task,
-            return_exceptions=True,
-        )
-
-        keys = ["info", "financials", "quote", "institutional_holders", "sector_industry"]
-        success_count = 0
-        for i, key in enumerate(keys):
-            if not isinstance(results[i], Exception):
-                data[key] = results[i]
-                success_count += 1
-            else:
-                logger.warning(f"Failed to get {key} for {symbol}: {results[i]}")
-
-        logger.debug(f"Fundamental data preparation complete for {symbol}: {success_count}/{len(keys)} sources succeeded")
-
-    elif market in ("CN", "A"):
-        stock_code = symbol.split(".")[0]
-        fund_task = router.akshare.get_fund_holdings_cn(stock_code)
-        northbound_task = router.akshare.get_northbound_holding(stock_code, days=30)
-        industry_task = router.akshare.get_stock_industry_cn(stock_code)
-
-        results = await asyncio.gather(
-            info_task, financials_task, quote_task,
-            fund_task, northbound_task, industry_task,
-            return_exceptions=True,
-        )
-
-        keys = ["info", "financials", "quote", "fund_holdings", "northbound_holding", "sector_industry"]
-        success_count = 0
-        for i, key in enumerate(keys):
-            if not isinstance(results[i], Exception):
-                data[key] = results[i]
-                success_count += 1
-            else:
-                logger.warning(f"Failed to get {key} for {symbol}: {results[i]}")
-
-        logger.debug(f"Fundamental data preparation complete for {symbol}: {success_count}/{len(keys)} sources succeeded")
-        return data
+    """Build kwargs for a specific skill based on skill name and agent context."""
+    if name == "get_stock_history":
+        if agent_type == "sentiment":
+            return {"symbol": symbol, "period": "3mo", "interval": "1d"}
+        return {"symbol": symbol, "period": "1y", "interval": "1d"}
+    elif name == "get_market_context":
+        return {}
+    elif name == "get_news":
+        return {"symbol": symbol, "limit": 10}
+    elif name == "get_sector_industry":
+        return {"symbol": symbol, "market": market}
+    elif name in ("get_fund_holdings_cn", "get_northbound_holding"):
+        return {"symbol": symbol}
     else:
-        # HK or other markets
-        inst_task = router.yfinance.get_institutional_holders(symbol)
-        sector_task = router.yfinance.get_sector_industry(symbol)
+        return {"symbol": symbol}
 
-        results = await asyncio.gather(
-            info_task, financials_task, quote_task, inst_task, sector_task,
-            return_exceptions=True,
-        )
 
-        keys = ["info", "financials", "quote", "institutional_holders", "sector_industry"]
-        success_count = 0
-        for i, key in enumerate(keys):
-            if not isinstance(results[i], Exception):
-                data[key] = results[i]
-                success_count += 1
+async def _execute_agent_skills(
+    agent_type: str,
+    symbol: str,
+    market: str,
+) -> Dict[str, SkillResult]:
+    """Execute all pre-configured skills for an agent in parallel."""
+    from app.skills.registry import get_skill_registry
+
+    registry = get_skill_registry()
+    skill_names = list(AGENT_SKILLS.get(agent_type, []))
+
+    # Market-aware filtering
+    if market in ("CN", "A"):
+        skill_names = [s for s in skill_names if s not in _NON_CN_ONLY_SKILLS]
+    else:
+        skill_names = [s for s in skill_names if s not in _CN_ONLY_SKILLS]
+
+    # Build kwargs for each skill
+    tasks = {}
+    for name in skill_names:
+        skill = registry.get(name)
+        if skill is None:
+            continue
+        kwargs = _build_skill_kwargs(name, symbol, market, agent_type)
+        tasks[name] = skill.safe_execute(timeout=15.0, **kwargs)
+
+    # Execute in parallel
+    results: Dict[str, SkillResult] = {}
+    if tasks:
+        task_names = list(tasks.keys())
+        task_coros = list(tasks.values())
+        done = await asyncio.gather(*task_coros, return_exceptions=True)
+        for name, result in zip(task_names, done):
+            if isinstance(result, Exception):
+                results[name] = SkillResult(success=False, error=str(result))
             else:
-                logger.warning(f"Failed to get {key} for {symbol}: {results[i]}")
+                results[name] = result
 
-        logger.debug(f"Fundamental data preparation complete for {symbol}: {success_count}/{len(keys)} sources succeeded")
+    # Post-processing: chain dependent skills
+    if agent_type == "technical":
+        history_result = results.get("get_stock_history")
+        if history_result and history_result.success and history_result.data:
+            bars = history_result.data.get("bars", [])
+            if bars:
+                indicator_skill = registry.get("calculate_technical_indicators")
+                summary_skill = registry.get("calculate_history_summary")
 
-    return data
+                post_tasks = {}
+                if indicator_skill:
+                    post_tasks["calculate_technical_indicators"] = indicator_skill.safe_execute(bars=bars)
+                if summary_skill:
+                    post_tasks["calculate_history_summary"] = summary_skill.safe_execute(bars=bars)
+
+                if post_tasks:
+                    post_names = list(post_tasks.keys())
+                    post_coros = list(post_tasks.values())
+                    post_done = await asyncio.gather(*post_coros, return_exceptions=True)
+                    for n, r in zip(post_names, post_done):
+                        if isinstance(r, Exception):
+                            results[n] = SkillResult(success=False, error=str(r))
+                        else:
+                            results[n] = r
+
+    elif agent_type == "news":
+        news_result = results.get("get_news")
+        if news_result and news_result.success and news_result.data:
+            scoring_skill = registry.get("score_news_articles")
+            if scoring_skill:
+                scored = await scoring_skill.safe_execute(articles=news_result.data)
+                results["score_news_articles"] = scored
+
+    logger.debug(
+        "Agent %s skills completed: %d/%d succeeded",
+        agent_type,
+        sum(1 for r in results.values() if r.success),
+        len(results),
+    )
+
+    return results
+
+
+# =============================================================================
+# Fundamental Analysis Node
+# =============================================================================
 
 
 def _build_fundamental_data_prompt(
     symbol: str,
     market: str,
-    data: Dict[str, Any],
+    skill_results: Dict[str, SkillResult],
     language: str,
 ) -> str:
     """Build data section for fundamental analysis prompt."""
     sections = []
 
     # Quote section
-    quote = data.get("quote")
-    if quote:
+    quote_result = skill_results.get("get_stock_quote")
+    if quote_result and quote_result.success and quote_result.data:
+        quote = quote_result.data
         if language == "zh":
             sections.append(f"""## 当前市场数据
 - 当前价格: {_format_price(quote.get('price'))}
@@ -230,8 +262,9 @@ def _build_fundamental_data_prompt(
 """)
 
     # Financials section
-    financials = data.get("financials")
-    if financials:
+    financials_result = skill_results.get("get_stock_financials")
+    if financials_result and financials_result.success and financials_result.data:
+        financials = financials_result.data
         if language == "zh":
             sections.append(f"""## 财务指标
 ### 估值
@@ -272,8 +305,9 @@ def _build_fundamental_data_prompt(
 """)
 
     # Company info section
-    info = data.get("info")
-    if info:
+    info_result = skill_results.get("get_stock_info")
+    if info_result and info_result.success and info_result.data:
+        info = info_result.data
         if language == "zh":
             sections.append(f"""## 公司信息
 - 名称: {info.get('name', 'N/A')}
@@ -324,11 +358,11 @@ async def fundamental_node(state: AnalysisState) -> Dict[str, Any]:
 Analyze the given stock data, evaluate its valuation, profitability, and financial health.
 Output results in JSON format."""
 
-        # 2. Prepare data
-        data = await _prepare_fundamental_data(symbol, market)
+        # 2. Prepare data via Skills
+        skill_results = await _execute_agent_skills("fundamental", symbol, market)
 
         # 3. Build prompt
-        data_section = _build_fundamental_data_prompt(symbol, market, data, language)
+        data_section = _build_fundamental_data_prompt(symbol, market, skill_results, language)
 
         if language == "zh":
             user_prompt = f"""# 基本面分析请求
@@ -438,175 +472,19 @@ Please analyze the fundamentals of this stock and output results in JSON format.
 # =============================================================================
 
 
-async def _prepare_technical_data(
-    symbol: str,
-    market: str,
-) -> Dict[str, Any]:
-    """Prepare data for technical analysis."""
-    from app.services.stock_service import (
-        HistoryInterval,
-        HistoryPeriod,
-        get_stock_service,
-    )
-
-    logger.debug(f"Preparing technical data for {symbol} ({market})")
-
-    stock_service = await get_stock_service()
-
-    quote_task = stock_service.get_quote(symbol)
-    history_task = stock_service.get_history(
-        symbol,
-        period=HistoryPeriod.ONE_YEAR,
-        interval=HistoryInterval.DAILY,
-    )
-
-    quote, history = await asyncio.gather(
-        quote_task, history_task,
-        return_exceptions=True,
-    )
-
-    quote_success = not isinstance(quote, Exception)
-    history_success = not isinstance(history, Exception)
-
-    if isinstance(quote, Exception):
-        logger.warning(f"Failed to get quote for {symbol}: {quote}")
-    if isinstance(history, Exception):
-        logger.warning(f"Failed to get history for {symbol}: {history}")
-
-    data = {
-        "quote": quote if quote_success else None,
-        "history": history if history_success else None,
-        "indicators": {},
-        "summary": {},
-    }
-
-    # Calculate indicators if we have history
-    if data["history"] and data["history"].get("bars"):
-        bars = data["history"]["bars"]
-        data["indicators"] = _calculate_technical_indicators(bars)
-        data["summary"] = _calculate_history_summary(bars)
-
-    success_count = sum([quote_success, history_success])
-    logger.debug(f"Technical data preparation complete for {symbol}: {success_count}/2 sources succeeded")
-
-    return data
-
-
-def _calculate_technical_indicators(bars: List[Dict[str, Any]]) -> Dict[str, Any]:
-    """Calculate technical indicators from price history."""
-    if not bars or len(bars) < 20:
-        return {}
-
-    try:
-        df = pd.DataFrame(bars)
-        df["date"] = pd.to_datetime(df["date"])
-        df.set_index("date", inplace=True)
-        df = df.sort_index()
-
-        for col in ["open", "high", "low", "close", "volume"]:
-            df[col] = pd.to_numeric(df[col], errors="coerce")
-
-        indicators = {}
-
-        # Moving Averages
-        if len(df) >= 20:
-            indicators["sma_20"] = float(df["close"].tail(20).mean())
-        if len(df) >= 50:
-            indicators["sma_50"] = float(df["close"].tail(50).mean())
-        if len(df) >= 200:
-            indicators["sma_200"] = float(df["close"].tail(200).mean())
-
-        # RSI (14-period)
-        if len(df) >= 15:
-            delta = df["close"].diff()
-            gain = delta.where(delta > 0, 0.0)
-            loss = (-delta).where(delta < 0, 0.0)
-            avg_gain = gain.ewm(alpha=1/14, adjust=False).mean()
-            avg_loss = loss.ewm(alpha=1/14, adjust=False).mean()
-            rs = avg_gain / avg_loss
-            rsi = 100 - (100 / (1 + rs))
-            indicators["rsi_14"] = float(rsi.iloc[-1])
-
-        # MACD
-        if len(df) >= 35:
-            ema_12 = df["close"].ewm(span=12, adjust=False).mean()
-            ema_26 = df["close"].ewm(span=26, adjust=False).mean()
-            macd_line = ema_12 - ema_26
-            signal_line = macd_line.ewm(span=9, adjust=False).mean()
-            histogram = macd_line - signal_line
-
-            indicators["macd"] = float(macd_line.iloc[-1])
-            indicators["macd_signal"] = float(signal_line.iloc[-1])
-            indicators["macd_histogram"] = float(histogram.iloc[-1])
-
-        # Volume ratio
-        if len(df) >= 20:
-            avg_vol = df["volume"].tail(20).mean()
-            current_vol = df["volume"].iloc[-1]
-            if avg_vol > 0:
-                indicators["volume_ratio"] = float(current_vol / avg_vol)
-
-        # Volatility
-        if len(df) >= 20:
-            returns = df["close"].pct_change().tail(20)
-            indicators["volatility_20d"] = float(returns.std() * 100 * (252 ** 0.5))
-
-        return indicators
-
-    except Exception as e:
-        logger.error(f"Error calculating technical indicators: {e}")
-        return {}
-
-
-def _calculate_history_summary(bars: List[Dict[str, Any]]) -> Dict[str, Any]:
-    """Calculate price history summary."""
-    if not bars:
-        return {}
-
-    try:
-        df = pd.DataFrame(bars)
-        df["date"] = pd.to_datetime(df["date"])
-        df.set_index("date", inplace=True)
-        df = df.sort_index()
-
-        for col in ["open", "high", "low", "close", "volume"]:
-            df[col] = pd.to_numeric(df[col], errors="coerce")
-
-        current_price = df["close"].iloc[-1]
-        summary = {}
-
-        # 52-week high/low
-        year_data = df.tail(252) if len(df) >= 252 else df
-        summary["high_52w"] = float(year_data["high"].max())
-        summary["low_52w"] = float(year_data["low"].min())
-
-        # Price changes
-        if len(df) >= 5:
-            summary["change_1w"] = ((current_price - df["close"].iloc[-5]) / df["close"].iloc[-5]) * 100
-        if len(df) >= 22:
-            summary["change_1m"] = ((current_price - df["close"].iloc[-22]) / df["close"].iloc[-22]) * 100
-        if len(df) >= 66:
-            summary["change_3m"] = ((current_price - df["close"].iloc[-66]) / df["close"].iloc[-66]) * 100
-
-        return summary
-
-    except Exception as e:
-        logger.error(f"Error calculating history summary: {e}")
-        return {}
-
-
 def _build_technical_data_prompt(
     symbol: str,
     market: str,
-    data: Dict[str, Any],
+    skill_results: Dict[str, SkillResult],
     language: str,
 ) -> str:
     """Build data section for technical analysis prompt."""
     sections = []
 
     # Quote
-    quote = data.get("quote")
-    if quote:
+    quote_result = skill_results.get("get_stock_quote")
+    if quote_result and quote_result.success and quote_result.data:
+        quote = quote_result.data
         if language == "zh":
             sections.append(f"""## 当前行情
 - 价格: {_format_price(quote.get('price'))}
@@ -621,8 +499,9 @@ def _build_technical_data_prompt(
 """)
 
     # Indicators
-    indicators = data.get("indicators", {})
-    if indicators:
+    indicators_result = skill_results.get("calculate_technical_indicators")
+    if indicators_result and indicators_result.success and indicators_result.data:
+        indicators = indicators_result.data
         if language == "zh":
             sections.append(f"""## 技术指标
 - SMA(20): {_format_price(indicators.get('sma_20'))}
@@ -647,8 +526,9 @@ def _build_technical_data_prompt(
 """)
 
     # Summary
-    summary = data.get("summary", {})
-    if summary:
+    summary_result = skill_results.get("calculate_history_summary")
+    if summary_result and summary_result.success and summary_result.data:
+        summary = summary_result.data
         if language == "zh":
             sections.append(f"""## 价格区间
 - 52周高点: {_format_price(summary.get('high_52w'))}
@@ -699,11 +579,11 @@ async def technical_node(state: AnalysisState) -> Dict[str, Any]:
 Analyze the given price data and technical indicators, evaluate trends, support/resistance levels, and momentum.
 Output results in JSON format."""
 
-        # 2. Prepare data
-        data = await _prepare_technical_data(symbol, market)
+        # 2. Prepare data via Skills
+        skill_results = await _execute_agent_skills("technical", symbol, market)
 
         # 3. Build prompt
-        data_section = _build_technical_data_prompt(symbol, market, data, language)
+        data_section = _build_technical_data_prompt(symbol, market, skill_results, language)
 
         if language == "zh":
             user_prompt = f"""# 技术分析请求
@@ -811,98 +691,19 @@ Please analyze the technicals of this stock and output results in JSON format.
 # =============================================================================
 
 
-async def _prepare_sentiment_data(
-    symbol: str,
-    market: str,
-) -> Dict[str, Any]:
-    """Prepare data for sentiment analysis."""
-    from app.services.providers import get_provider_router
-    from app.services.stock_service import (
-        HistoryInterval,
-        HistoryPeriod,
-        get_stock_service,
-    )
-
-    logger.debug(f"Preparing sentiment data for {symbol} ({market})")
-
-    stock_service = await get_stock_service()
-    router = await get_provider_router()
-
-    # Fetch data in parallel
-    quote_task = stock_service.get_quote(symbol)
-    history_task = stock_service.get_history(
-        symbol,
-        period=HistoryPeriod.THREE_MONTHS,
-        interval=HistoryInterval.DAILY,
-    )
-    analyst_task = router.yfinance.get_analyst_ratings(symbol)
-
-    quote, history, analyst_ratings = await asyncio.gather(
-        quote_task, history_task, analyst_task,
-        return_exceptions=True,
-    )
-
-    # Track data source results
-    sources_status = {
-        "quote": not isinstance(quote, Exception),
-        "history": not isinstance(history, Exception),
-        "analyst_ratings": not isinstance(analyst_ratings, Exception),
-        "news": False,
-        "market_context": False,
-    }
-
-    if isinstance(quote, Exception):
-        logger.warning(f"Failed to get quote for sentiment: {quote}")
-    if isinstance(history, Exception):
-        logger.warning(f"Failed to get history for sentiment: {history}")
-    if isinstance(analyst_ratings, Exception):
-        logger.warning(f"Failed to get analyst ratings: {analyst_ratings}")
-
-    # Try to get news
-    news = None
-    try:
-        from app.services.news_service import get_news_service
-        news_service = await get_news_service()
-        articles = await news_service.get_news_by_symbol(symbol)
-        if articles:
-            news = articles[:10]
-            sources_status["news"] = True
-    except Exception as e:
-        logger.debug(f"Failed to fetch news for sentiment: {e}")
-
-    # Try to get market context
-    market_context = None
-    try:
-        market_context = await router.get_market_context()
-        sources_status["market_context"] = True
-    except Exception as e:
-        logger.debug(f"Failed to get market context: {e}")
-
-    success_count = sum(sources_status.values())
-    total_count = len(sources_status)
-    logger.debug(f"Sentiment data preparation complete for {symbol}: {success_count}/{total_count} sources succeeded")
-
-    return {
-        "quote": quote if sources_status["quote"] else None,
-        "history": history if sources_status["history"] else None,
-        "analyst_ratings": analyst_ratings if sources_status["analyst_ratings"] else None,
-        "news": news,
-        "market_context": market_context,
-    }
-
-
 def _build_sentiment_data_prompt(
     symbol: str,
     market: str,
-    data: Dict[str, Any],
+    skill_results: Dict[str, SkillResult],
     language: str,
 ) -> str:
     """Build data section for sentiment analysis prompt."""
     sections = []
 
     # Quote
-    quote = data.get("quote")
-    if quote:
+    quote_result = skill_results.get("get_stock_quote")
+    if quote_result and quote_result.success and quote_result.data:
+        quote = quote_result.data
         if language == "zh":
             sections.append(f"""## 市场表现
 - 当前价格: {_format_price(quote.get('price'))}
@@ -915,8 +716,9 @@ def _build_sentiment_data_prompt(
 """)
 
     # Analyst ratings
-    analyst = data.get("analyst_ratings")
-    if analyst:
+    analyst_result = skill_results.get("get_analyst_ratings")
+    if analyst_result and analyst_result.success and analyst_result.data:
+        analyst = analyst_result.data
         if language == "zh":
             sections.append(f"""## 分析师评级
 - 推荐: {analyst.get('recommendation', 'N/A')}
@@ -931,8 +733,9 @@ def _build_sentiment_data_prompt(
 """)
 
     # News headlines
-    news = data.get("news")
-    if news:
+    news_result = skill_results.get("get_news")
+    if news_result and news_result.success and news_result.data:
+        news = news_result.data
         if language == "zh":
             sections.append("## 近期新闻")
             for article in news[:5]:
@@ -943,8 +746,9 @@ def _build_sentiment_data_prompt(
                 sections.append(f"- [{article.get('source', 'Unknown')}] {article.get('title', '')}")
 
     # Market context
-    ctx = data.get("market_context")
-    if ctx:
+    ctx_result = skill_results.get("get_market_context")
+    if ctx_result and ctx_result.success and ctx_result.data:
+        ctx = ctx_result.data
         if language == "zh":
             sections.append(f"""## 市场环境
 - 大盘趋势: {ctx.get('market_trend', 'N/A')}
@@ -987,11 +791,11 @@ async def sentiment_node(state: AnalysisState) -> Dict[str, Any]:
 Analyze the given market data, news, and analyst ratings to evaluate overall market sentiment.
 Output results in JSON format."""
 
-        # 2. Prepare data
-        data = await _prepare_sentiment_data(symbol, market)
+        # 2. Prepare data via Skills
+        skill_results = await _execute_agent_skills("sentiment", symbol, market)
 
         # 3. Build prompt
-        data_section = _build_sentiment_data_prompt(symbol, market, data, language)
+        data_section = _build_sentiment_data_prompt(symbol, market, skill_results, language)
 
         if language == "zh":
             user_prompt = f"""# 情绪分析请求
@@ -1099,103 +903,24 @@ Please analyze the market sentiment for this stock and output results in JSON fo
 # =============================================================================
 
 
-async def _prepare_news_data(
-    symbol: str,
-    market: str,
-) -> Dict[str, Any]:
-    """Prepare data for news analysis."""
-    from app.services.stock_service import get_stock_service
-
-    logger.debug(f"Preparing news data for {symbol} ({market})")
-
-    # Track data source results
-    news_success = False
-    context_success = False
-
-    # Fetch news
-    articles = []
-    try:
-        from app.services.news_service import get_news_service
-        news_service = await get_news_service()
-        articles = await news_service.get_news_by_symbol(symbol)
-        news_success = True
-        logger.debug(f"Fetched {len(articles)} news articles for {symbol}")
-    except Exception as e:
-        logger.error(f"Failed to fetch news for {symbol}: {e}")
-
-    # Get basic stock context
-    stock_context = None
-    try:
-        stock_service = await get_stock_service()
-        quote = await stock_service.get_quote(symbol)
-        if quote:
-            stock_context = {
-                "price": quote.get("price"),
-                "change_percent": quote.get("changePercent"),
-                "market_cap": quote.get("marketCap"),
-            }
-            context_success = True
-    except Exception as e:
-        logger.debug(f"Could not get stock context for {symbol}: {e}")
-
-    # Score and sort articles by importance
-    scored_articles = _score_news_articles(articles)
-
-    success_count = sum([news_success, context_success])
-    logger.debug(f"News data preparation complete for {symbol}: {success_count}/2 sources succeeded")
-
-    return {
-        "articles": scored_articles,
-        "stock_context": stock_context,
-    }
-
-
-def _score_news_articles(articles: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    """Score and sort news articles by importance."""
-    SOURCE_WEIGHTS = {
-        "reuters": 1.5, "bloomberg": 1.5, "wsj": 1.4, "cnbc": 1.3,
-        "ft": 1.4, "barrons": 1.3, "seekingalpha": 1.1, "marketwatch": 1.2,
-    }
-
-    KEYWORDS = {
-        "earnings": 2.0, "revenue": 1.8, "profit": 1.8, "acquisition": 2.0,
-        "merger": 2.0, "bankruptcy": 2.5, "fraud": 2.5, "fda": 2.0,
-        "approval": 1.8, "upgrade": 1.5, "downgrade": 1.5,
-    }
-
-    scored = []
-    for article in articles:
-        score = 1.0
-
-        source = (article.get("source") or "").lower()
-        for src_key, weight in SOURCE_WEIGHTS.items():
-            if src_key in source:
-                score *= weight
-                break
-
-        title = (article.get("title") or "").lower()
-        summary = (article.get("summary") or "").lower()
-        text = f"{title} {summary}"
-        max_kw_weight = 1.0
-        for kw, weight in KEYWORDS.items():
-            if kw in text:
-                max_kw_weight = max(max_kw_weight, weight)
-        score *= max_kw_weight
-
-        scored.append({**article, "_importance_score": round(score, 2)})
-
-    scored.sort(key=lambda x: x.get("_importance_score", 0), reverse=True)
-    return scored
-
-
 def _build_news_data_prompt(
     symbol: str,
     market: str,
-    data: Dict[str, Any],
+    skill_results: Dict[str, SkillResult],
     language: str,
 ) -> str:
     """Build data section for news analysis prompt."""
-    articles = data.get("articles", [])
+    # Get scored articles (preferred) or raw news
+    scored_result = skill_results.get("score_news_articles")
+    if scored_result and scored_result.success and scored_result.data:
+        articles = scored_result.data
+    else:
+        # Fall back to raw news if scoring failed
+        news_result = skill_results.get("get_news")
+        if news_result and news_result.success and news_result.data:
+            articles = news_result.data
+        else:
+            articles = []
 
     if not articles:
         if language == "zh":
@@ -1205,8 +930,9 @@ def _build_news_data_prompt(
     sections = []
 
     # Stock context
-    ctx = data.get("stock_context")
-    if ctx:
+    ctx_result = skill_results.get("get_stock_quote")
+    if ctx_result and ctx_result.success and ctx_result.data:
+        ctx = ctx_result.data
         if language == "zh":
             sections.append(f"""## 股票概况
 - 价格: {_format_price(ctx.get('price'))}
@@ -1274,11 +1000,11 @@ async def news_node(state: AnalysisState) -> Dict[str, Any]:
 Analyze the given news articles and evaluate their potential impact on the stock price.
 Output results in JSON format."""
 
-        # 2. Prepare data
-        data = await _prepare_news_data(symbol, market)
+        # 2. Prepare data via Skills
+        skill_results = await _execute_agent_skills("news", symbol, market)
 
         # 3. Build prompt
-        data_section = _build_news_data_prompt(symbol, market, data, language)
+        data_section = _build_news_data_prompt(symbol, market, skill_results, language)
 
         if language == "zh":
             user_prompt = f"""# 新闻分析请求

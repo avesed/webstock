@@ -275,9 +275,13 @@ async def _monitor_news_async() -> Dict[str, Any]:
                     ]
 
                     await _update_progress("layer1_filter", f"Layer 1: Filtering {len(new_articles)} new articles...", 20)
-                    filter_results, _ = await _run_initial_filter_if_enabled(
-                        db, system_settings, articles_for_filter
-                    )
+                    try:
+                        filter_results, _ = await _run_initial_filter_if_enabled(
+                            db, system_settings, articles_for_filter
+                        )
+                    except Exception as e:
+                        logger.warning("Layer 1: Initial filter failed, proceeding without filter: %s", e)
+                        filter_results = {}
 
                     # Store articles that passed initial filter
                     filter_service = get_two_phase_filter_service()
@@ -500,29 +504,30 @@ async def _monitor_news_async() -> Dict[str, Any]:
                         importance,
                     )
 
-            await _update_progress("dispatch", f"Dispatching content fetch for {len(all_new_articles)} articles...", 92)
-            # Dispatch full content fetching for ALL newly stored articles
-            # This replaces direct embedding - full_content_tasks will handle embedding
+            await _update_progress("dispatch", f"Dispatching news pipeline for {len(all_new_articles)} articles...", 92)
+            # Dispatch LangGraph news pipeline for ALL newly stored articles
             for news_obj in all_new_articles:
                 try:
                     await db.refresh(news_obj)
                     if news_obj.id and news_obj.url:
-                        from worker.tasks.full_content_tasks import fetch_news_content
-                        fetch_news_content.delay(
-                            str(news_obj.id),
-                            news_obj.url,
-                            news_obj.market,
-                            news_obj.symbol,
-                            None,  # user_id - use default settings
-                            use_two_phase,  # Pass two-phase flag
+                        from worker.tasks.full_content_tasks import process_news_article
+                        process_news_article.delay(
+                            news_id=str(news_obj.id),
+                            url=news_obj.url,
+                            market=news_obj.market or "US",
+                            symbol=news_obj.symbol or "",
+                            title=news_obj.title or "",
+                            summary=news_obj.summary or "",
+                            published_at=news_obj.published_at.isoformat() if news_obj.published_at else None,
+                            use_two_phase=use_two_phase,
                         )
                         logger.debug(
-                            "Dispatched full content fetch for news_id=%s (two_phase=%s)",
+                            "Dispatched news pipeline for news_id=%s (two_phase=%s)",
                             news_obj.id,
                             use_two_phase,
                         )
                 except Exception as e:
-                    logger.warning("Failed to dispatch full content fetch: %s", e)
+                    logger.warning("Failed to dispatch news pipeline: %s", e)
 
             # Check news alerts
             alerts_triggered = await _check_news_alerts(db, stats["articles_stored"])
@@ -531,9 +536,9 @@ async def _monitor_news_async() -> Dict[str, Any]:
     except Exception as e:
         logger.exception(f"Error in news monitor: {e}")
         raise
-    # get_task_session handles connection cleanup automatically
-
-    await _finish_progress(stats)
+    finally:
+        # Always mark progress as finished, even if an error occurred
+        await _finish_progress(stats)
 
     logger.info(
         f"News monitor completed: "

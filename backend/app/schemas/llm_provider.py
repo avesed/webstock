@@ -64,3 +64,4 @@ class ModelAssignmentsConfig(CamelModel):
     analysis: ModelAssignment
     synthesis: ModelAssignment
     embedding: ModelAssignment
+    news_filter: ModelAssignment

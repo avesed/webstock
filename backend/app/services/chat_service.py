@@ -37,9 +37,9 @@ from app.core.llm import (
 from app.core.user_ai_config import current_user_ai_config
 from app.core.token_bucket import get_chat_rate_limiter, get_user_chat_rate_limiter
 from app.models.chat import ChatMessage, Conversation
-from app.services.chat_tools import (
-    CHAT_TOOLS,
-    execute_tool,
+from app.skills.chat_adapter import (
+    execute_chat_tool,
+    get_chat_tools,
     get_tool_label,
 )
 from app.prompts import build_chat_system_prompt
@@ -360,7 +360,7 @@ class ChatService:
                 request = ChatRequest(
                     model=model,
                     messages=gateway_messages,
-                    tools=CHAT_TOOLS if tools_supported and iteration < _MAX_TOOL_ITERATIONS else None,
+                    tools=get_chat_tools() if tools_supported and iteration < _MAX_TOOL_ITERATIONS else None,
                     max_tokens=user_max_tokens,
                     temperature=user_temperature,
                     stream=True,
@@ -447,7 +447,7 @@ class ChatService:
                         except json.JSONDecodeError:
                             args = {}
                         async with AsyncSessionLocal() as tool_db:
-                            result = await execute_tool(name, args, user_id, tool_db)
+                            result = await execute_chat_tool(name, args, user_id, tool_db)
                         return tc_id, name, result
 
                     tasks = [_run_tool(tc) for tc in collected_tool_calls]
