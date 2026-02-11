@@ -5,7 +5,8 @@
     "users": "User Management",
     "settings": "System Settings",
     "monitor": "System Monitor",
-    "filter": "Filter Stats"
+    "filter": "Filter Stats",
+    "pipeline": "Pipeline Trace"
   },
   "users": {
     "title": "User Management",
@@ -212,11 +213,40 @@
     "votingDescription": "Multi-agent voting filter decision distribution",
     "unanimousSkip": "Unanimous Skip",
     "majoritySkip": "Majority Skip",
-    "rescued": "Rescued",
-    "rescueRate": "Rescue Rate",
+    "majorityPass": "Majority Pass",
+    "unanimousPass": "Unanimous Pass",
     "strictAgent": "Strict Agent",
     "moderateAgent": "Moderate Agent",
     "permissiveAgent": "Permissive Agent",
-    "allAgentsCost": "All Agents Cost"
+    "allAgentsCost": "All Agents Cost",
+    "sourceTitle": "Source Quality Ranking",
+    "sourceDescription": "Article quality metrics by news source",
+    "sourceColumn": "Source",
+    "totalColumn": "Total",
+    "keepRateColumn": "Keep Rate",
+    "embedRateColumn": "Embed Rate",
+    "avgEntitiesColumn": "Avg Entities",
+    "sentimentColumn": "Sentiment",
+    "noSourceData": "No source data available",
+    "noSourceDataHint": "Statistics will appear after articles are processed"
+  },
+  "pipeline": {
+    "statsTitle": "Pipeline Statistics",
+    "statsDescription": "Aggregate performance statistics for news processing pipeline nodes",
+    "timelineTitle": "Article Timeline",
+    "timelineDescription": "View the complete processing timeline for a specific article",
+    "newsIdPlaceholder": "Enter article ID (UUID)...",
+    "search": "Search",
+    "searchError": "Failed to load article timeline",
+    "noData": "No pipeline data available",
+    "noDataHint": "Statistics will appear here after running the news monitor",
+    "noEvents": "No events found for this article",
+    "totalDuration": "Total duration",
+    "layer": "Layer",
+    "node": "Node",
+    "total": "Total",
+    "success": "Success",
+    "errors": "Errors",
+    "avgMs": "Avg(ms)"
   }
 }

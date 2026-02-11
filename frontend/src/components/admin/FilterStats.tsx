@@ -3,7 +3,7 @@ import { useQuery } from '@tanstack/react-query'
 import { useTranslation } from 'react-i18next'
 import { AlertTriangle, CheckCircle, Filter, Coins, TrendingUp, TrendingDown, Play, Loader2, Clock, Vote } from 'lucide-react'
 
-import { adminApi, FilterStats as FilterStatsType, MonitorStatus } from '@/api/admin'
+import { adminApi, FilterStats as FilterStatsType, MonitorStatus, SourceStats } from '@/api/admin'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Progress } from '@/components/ui/progress'
@@ -88,6 +88,12 @@ export default function FilterStats() {
   const { data: stats, isLoading, error, refetch } = useQuery<FilterStatsType>({
     queryKey: ['admin', 'filter-stats'],
     queryFn: () => adminApi.getFilterStats(7),
+    refetchInterval: 60000,
+  })
+
+  const { data: sourceStats, isLoading: sourceLoading } = useQuery<SourceStats>({
+    queryKey: ['admin', 'source-stats'],
+    queryFn: () => adminApi.getSourceStats(7),
     refetchInterval: 60000,
   })
 
@@ -182,8 +188,9 @@ export default function FilterStats() {
   const permissiveTokens = stats.tokens?.initialPermissive ?? null
 
   const voting = stats.counts?.voting ?? null
-  const votingTotal = voting ? (voting.unanimousSkip + voting.majoritySkip + voting.rescued) : 0
-  const rescueRate = votingTotal > 0 ? ((voting!.rescued / votingTotal) * 100).toFixed(1) : '0.0'
+  const votingTotal = voting
+    ? (voting.unanimousSkip + voting.majoritySkip + voting.majorityPass + voting.unanimousPass)
+    : 0
 
   const alerts = stats.alerts ?? []
 
@@ -294,57 +301,6 @@ export default function FilterStats() {
         />
       </div>
 
-      {/* Voting Stats */}
-      {voting && votingTotal > 0 && (
-        <Card>
-          <CardHeader>
-            <CardTitle className="text-base flex items-center gap-2">
-              <Vote className="h-4 w-4" />
-              {t('filter.votingStats')}
-            </CardTitle>
-            <CardDescription>{t('filter.votingDescription')}</CardDescription>
-          </CardHeader>
-          <CardContent>
-            <div className="grid gap-4 sm:grid-cols-4">
-              <div className="space-y-1">
-                <p className="text-sm text-muted-foreground">{t('filter.unanimousSkip')}</p>
-                <p className="text-2xl font-bold">{voting.unanimousSkip}</p>
-                <p className="text-xs text-muted-foreground">
-                  {votingTotal > 0
-                    ? ((voting.unanimousSkip / votingTotal) * 100).toFixed(1)
-                    : 0}%
-                </p>
-              </div>
-              <div className="space-y-1">
-                <p className="text-sm text-muted-foreground">{t('filter.majoritySkip')}</p>
-                <p className="text-2xl font-bold">{voting.majoritySkip}</p>
-                <p className="text-xs text-muted-foreground">
-                  {votingTotal > 0
-                    ? ((voting.majoritySkip / votingTotal) * 100).toFixed(1)
-                    : 0}%
-                </p>
-              </div>
-              <div className="space-y-1">
-                <p className="text-sm text-muted-foreground">{t('filter.rescued')}</p>
-                <p className="text-2xl font-bold text-green-600 dark:text-green-400">{voting.rescued}</p>
-                <p className="text-xs text-muted-foreground">
-                  {votingTotal > 0
-                    ? ((voting.rescued / votingTotal) * 100).toFixed(1)
-                    : 0}%
-                </p>
-              </div>
-              <div className="space-y-1">
-                <p className="text-sm text-muted-foreground">{t('filter.rescueRate')}</p>
-                <p className="text-2xl font-bold text-blue-600 dark:text-blue-400">{rescueRate}%</p>
-                <p className="text-xs text-muted-foreground">
-                  {voting.rescued} / {votingTotal}
-                </p>
-              </div>
-            </div>
-          </CardContent>
-        </Card>
-      )}
-
       {/* Detailed Stats */}
       <div className="grid gap-4 md:grid-cols-2">
         {/* Initial Filter Breakdown */}
@@ -405,6 +361,34 @@ export default function FilterStats() {
                 className="h-2"
               />
             </div>
+
+            {/* Voting stats (multi-agent) */}
+            {voting && votingTotal > 0 && (
+              <div className="pt-4 border-t">
+                <p className="text-sm font-medium mb-2 flex items-center gap-1.5">
+                  <Vote className="h-3.5 w-3.5" />
+                  {t('filter.votingStats')}
+                </p>
+                <div className="grid grid-cols-4 gap-2 text-center">
+                  <div>
+                    <p className="text-lg font-bold text-red-600 dark:text-red-400">{voting.unanimousSkip}</p>
+                    <p className="text-xs text-muted-foreground">{t('filter.unanimousSkip')}</p>
+                  </div>
+                  <div>
+                    <p className="text-lg font-bold text-orange-600 dark:text-orange-400">{voting.majoritySkip}</p>
+                    <p className="text-xs text-muted-foreground">{t('filter.majoritySkip')}</p>
+                  </div>
+                  <div>
+                    <p className="text-lg font-bold text-blue-600 dark:text-blue-400">{voting.majorityPass}</p>
+                    <p className="text-xs text-muted-foreground">{t('filter.majorityPass')}</p>
+                  </div>
+                  <div>
+                    <p className="text-lg font-bold text-green-600 dark:text-green-400">{voting.unanimousPass}</p>
+                    <p className="text-xs text-muted-foreground">{t('filter.unanimousPass')}</p>
+                  </div>
+                </div>
+              </div>
+            )}
 
             {/* Token usage for initial filter */}
             <div className="pt-4 border-t">
@@ -561,6 +545,103 @@ export default function FilterStats() {
           </CardContent>
         </Card>
       )}
+
+      {/* Source Quality Ranking */}
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-base">{t('filter.sourceTitle')}</CardTitle>
+          <CardDescription>{t('filter.sourceDescription')}</CardDescription>
+        </CardHeader>
+        <CardContent>
+          {sourceLoading ? (
+            <div className="space-y-2">
+              {[...Array(3)].map((_, i) => <Skeleton key={i} className="h-8 w-full" />)}
+            </div>
+          ) : !sourceStats?.sources?.length ? (
+            <div className="text-center py-4">
+              <p className="text-muted-foreground">{t('filter.noSourceData')}</p>
+              <p className="text-xs text-muted-foreground mt-1">{t('filter.noSourceDataHint')}</p>
+            </div>
+          ) : (
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="border-b text-muted-foreground">
+                    <th className="text-left py-2 font-medium">{t('filter.sourceColumn')}</th>
+                    <th className="text-right py-2 font-medium">{t('filter.totalColumn')}</th>
+                    <th className="text-right py-2 font-medium">{t('filter.keepRateColumn')}</th>
+                    <th className="text-right py-2 font-medium">{t('filter.embedRateColumn')}</th>
+                    <th className="text-right py-2 font-medium">{t('filter.avgEntitiesColumn')}</th>
+                    <th className="text-right py-2 font-medium">{t('filter.sentimentColumn')}</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {sourceStats.sources.map((s) => (
+                    <tr key={s.source} className="border-b last:border-0">
+                      <td className="py-2 font-medium">{s.source}</td>
+                      <td className="text-right py-2">{s.total}</td>
+                      <td className="text-right py-2">
+                        {s.keepRate != null ? (
+                          <span className={cn(
+                            'font-medium',
+                            s.keepRate >= 80 ? 'text-green-600 dark:text-green-400' :
+                            s.keepRate >= 60 ? 'text-yellow-600 dark:text-yellow-400' :
+                            'text-red-600 dark:text-red-400'
+                          )}>
+                            {s.keepRate}%
+                          </span>
+                        ) : (
+                          <span className="text-muted-foreground">-</span>
+                        )}
+                      </td>
+                      <td className="text-right py-2">
+                        {s.embedRate != null ? (
+                          <span className={cn(
+                            'font-medium',
+                            s.embedRate >= 80 ? 'text-green-600 dark:text-green-400' :
+                            s.embedRate >= 60 ? 'text-yellow-600 dark:text-yellow-400' :
+                            'text-red-600 dark:text-red-400'
+                          )}>
+                            {s.embedRate}%
+                          </span>
+                        ) : (
+                          <span className="text-muted-foreground">-</span>
+                        )}
+                      </td>
+                      <td className="text-right py-2">
+                        {s.avgEntityCount != null ? s.avgEntityCount.toFixed(1) : '-'}
+                      </td>
+                      <td className="text-right py-2">
+                        {s.sentimentDistribution ? (
+                          <div className="flex items-center justify-end gap-1.5">
+                            {(s.sentimentDistribution.bullish ?? 0) > 0 && (
+                              <Badge variant="outline" className="text-green-600 border-green-300 dark:border-green-700 text-xs px-1.5 py-0">
+                                +{s.sentimentDistribution.bullish}
+                              </Badge>
+                            )}
+                            {(s.sentimentDistribution.bearish ?? 0) > 0 && (
+                              <Badge variant="outline" className="text-red-600 border-red-300 dark:border-red-700 text-xs px-1.5 py-0">
+                                -{s.sentimentDistribution.bearish}
+                              </Badge>
+                            )}
+                            {(s.sentimentDistribution.neutral ?? 0) > 0 && (
+                              <Badge variant="outline" className="text-muted-foreground text-xs px-1.5 py-0">
+                                {s.sentimentDistribution.neutral}
+                              </Badge>
+                            )}
+                          </div>
+                        ) : (
+                          <span className="text-muted-foreground">-</span>
+                        )}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </CardContent>
+      </Card>
     </div>
   )
 }

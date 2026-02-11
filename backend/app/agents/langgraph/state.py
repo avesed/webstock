@@ -212,6 +212,9 @@ class NewsProcessingState(TypedDict):
     final_status: str  # 'embedded', 'deleted', 'failed', 'pending'
     error: Optional[str]
 
+    # Pipeline trace events (accumulated across nodes, flushed in update_db_node)
+    trace_events: Annotated[List[Dict[str, Any]], add]
+
 
 def create_news_processing_state(
     news_id: str,
@@ -252,4 +255,5 @@ def create_news_processing_state(
         chunks_stored=0,
         final_status="pending",
         error=None,
+        trace_events=[],
     )

@@ -366,7 +366,8 @@ class VotingCountsResponse(CamelModel):
 
     unanimous_skip: int = 0
     majority_skip: int = 0
-    rescued: int = 0
+    majority_pass: int = 0
+    unanimous_pass: int = 0
 
 
 class FilterCountsResponse(CamelModel):
@@ -439,7 +440,8 @@ class DailyFilterStatsItemResponse(CamelModel):
     # Multi-agent voting stats
     vote_unanimous_skip: int = 0
     vote_majority_skip: int = 0
-    vote_rescued: int = 0
+    vote_majority_pass: int = 0
+    vote_unanimous_pass: int = 0
     # Per-agent token tracking
     initial_strict_input_tokens: int = 0
     initial_strict_output_tokens: int = 0
@@ -452,3 +454,86 @@ class DailyFilterStatsResponse(CamelModel):
 
     days: int
     data: List[DailyFilterStatsItemResponse]
+
+
+# ============== Pipeline Tracing Schemas ==============
+
+
+class PipelineEventResponse(CamelModel):
+    """Single pipeline event."""
+
+    id: str
+    news_id: str
+    layer: str
+    node: str
+    status: str
+    duration_ms: Optional[float] = None
+    metadata: Optional[dict] = None
+    error: Optional[str] = None
+    created_at: datetime
+
+
+class ArticleTimelineResponse(CamelModel):
+    """Full pipeline timeline for a single article."""
+
+    news_id: str
+    title: Optional[str] = None
+    symbol: Optional[str] = None
+    events: List[PipelineEventResponse]
+    total_duration_ms: Optional[float] = None
+
+
+class NodeStatsResponse(CamelModel):
+    """Aggregate stats for a single pipeline node."""
+
+    layer: str
+    node: str
+    count: int
+    success_count: int
+    error_count: int
+    avg_ms: Optional[float] = None
+    p50_ms: Optional[float] = None
+    p95_ms: Optional[float] = None
+    max_ms: Optional[float] = None
+
+
+class PipelineStatsResponse(CamelModel):
+    """Aggregate pipeline statistics."""
+
+    period_days: int
+    nodes: List[NodeStatsResponse]
+
+
+class PipelineEventSearchResponse(CamelModel):
+    """Paginated pipeline event search results."""
+
+    events: List[PipelineEventResponse]
+    total: int
+
+
+# ============== Source Stats Schemas ==============
+
+
+class SourceStatsItemResponse(CamelModel):
+    """Per-source article quality statistics."""
+
+    source: str
+    total: int
+    initial_useful: int = 0
+    initial_uncertain: int = 0
+    fine_keep: int = 0
+    fine_delete: int = 0
+    embedded: int = 0
+    fetch_failed: int = 0
+    avg_entity_count: Optional[float] = None
+    sentiment_distribution: Optional[dict] = None
+    keep_rate: Optional[float] = None
+    embed_rate: Optional[float] = None
+
+
+class SourceStatsResponse(CamelModel):
+    """Source-level aggregate statistics."""
+
+    period_days: int
+    sources: List[SourceStatsItemResponse]
+    total_sources: int

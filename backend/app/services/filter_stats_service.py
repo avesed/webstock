@@ -53,7 +53,8 @@ class FilterStatsService:
         # Multi-agent voting stats
         "vote_unanimous_skip",
         "vote_majority_skip",
-        "vote_rescued",
+        "vote_majority_pass",
+        "vote_unanimous_pass",
     ]
 
     TOKEN_TYPES = [
@@ -323,10 +324,11 @@ class FilterStatsService:
         deep_total = summary["fine_keep"] + summary["fine_delete"]
 
         # Multi-agent voting stats
-        vote_unanimous = summary.get("vote_unanimous_skip", 0)
-        vote_majority = summary.get("vote_majority_skip", 0)
-        vote_rescued = summary.get("vote_rescued", 0)
-        has_voting = (vote_unanimous + vote_majority + vote_rescued) > 0
+        vote_unanimous_skip = summary.get("vote_unanimous_skip", 0)
+        vote_majority_skip = summary.get("vote_majority_skip", 0)
+        vote_majority_pass = summary.get("vote_majority_pass", 0)
+        vote_unanimous_pass = summary.get("vote_unanimous_pass", 0)
+        has_voting = (vote_unanimous_skip + vote_majority_skip + vote_majority_pass + vote_unanimous_pass) > 0
 
         return {
             "period_days": days,
@@ -351,9 +353,10 @@ class FilterStatsService:
                     "error": summary["embedding_error"],
                 },
                 **({"voting": {
-                    "unanimous_skip": vote_unanimous,
-                    "majority_skip": vote_majority,
-                    "rescued": vote_rescued,
+                    "unanimous_skip": vote_unanimous_skip,
+                    "majority_skip": vote_majority_skip,
+                    "majority_pass": vote_majority_pass,
+                    "unanimous_pass": vote_unanimous_pass,
                 }} if has_voting else {}),
             },
             "rates": {

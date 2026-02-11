@@ -351,7 +351,8 @@ class TwoPhaseFilterService:
         results: Dict[str, InitialFilterResult] = {}
         vote_unanimous_skip = 0
         vote_majority_skip = 0
-        vote_rescued = 0
+        vote_majority_pass = 0
+        vote_unanimous_pass = 0
 
         for article in articles:
             url = article.get("url", "")
@@ -378,16 +379,15 @@ class TwoPhaseFilterService:
             else:
                 final_decision = "uncertain"
 
-            # Track voting statistics
+            # Track voting statistics (4-bucket distribution by skip_count)
             if skip_count == 3:
                 vote_unanimous_skip += 1
             elif skip_count == 2:
                 vote_majority_skip += 1
-
-            # Track "rescued" articles: moderate voted skip but final decision is not skip
-            moderate_decision = decisions.get("moderate", "uncertain")
-            if moderate_decision == "skip" and final_decision != "skip":
-                vote_rescued += 1
+            elif skip_count == 1:
+                vote_majority_pass += 1
+            else:
+                vote_unanimous_pass += 1
 
             # Build reason showing all votes
             reason = (
@@ -412,8 +412,10 @@ class TwoPhaseFilterService:
             await stats_service.increment("vote_unanimous_skip", vote_unanimous_skip)
         if vote_majority_skip > 0:
             await stats_service.increment("vote_majority_skip", vote_majority_skip)
-        if vote_rescued > 0:
-            await stats_service.increment("vote_rescued", vote_rescued)
+        if vote_majority_pass > 0:
+            await stats_service.increment("vote_majority_pass", vote_majority_pass)
+        if vote_unanimous_pass > 0:
+            await stats_service.increment("vote_unanimous_pass", vote_unanimous_pass)
 
         # Log summary
         useful_total = sum(1 for r in results.values() if r["decision"] == "useful")
@@ -424,7 +426,7 @@ class TwoPhaseFilterService:
             f"Multi-agent initial filter complete: "
             f"{useful_total} useful, {uncertain_total} uncertain, {skip_total} skip "
             f"(unanimous_skip={vote_unanimous_skip}, majority_skip={vote_majority_skip}, "
-            f"rescued={vote_rescued})"
+            f"majority_pass={vote_majority_pass}, unanimous_pass={vote_unanimous_pass})"
         )
 
         return results

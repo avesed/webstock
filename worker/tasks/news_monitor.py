@@ -3,6 +3,7 @@
 import asyncio
 import json
 import logging
+import time
 from datetime import datetime, timezone
 from typing import Any, Callable, Dict, List, Optional, TypeVar
 
@@ -184,6 +185,8 @@ async def _monitor_news_async() -> Dict[str, Any]:
         "two_phase_enabled": False,
     }
 
+    trace_batch = []  # Pipeline trace events to write after commit
+
     try:
         async with get_task_session() as db:
             # Get Finnhub API key from system settings
@@ -318,6 +321,12 @@ async def _monitor_news_async() -> Dict[str, Any]:
                         all_new_articles.append(news)
                         stats["articles_stored"] += 1
 
+                        trace_batch.append({
+                            "news_obj": news,
+                            "decision": filter_result.get("decision", "uncertain"),
+                            "reason": filter_result.get("reason", ""),
+                        })
+
                         article_dict = article.to_dict()
                         importance = _score_article_importance(article_dict)
                         if importance >= 2.0:
@@ -386,6 +395,12 @@ async def _monitor_news_async() -> Dict[str, Any]:
                         db.add(news)
                         all_new_articles.append(news)
                         stats["articles_stored"] += 1
+
+                        trace_batch.append({
+                            "news_obj": news,
+                            "decision": "stored",
+                            "reason": "legacy_mode",
+                        })
 
                         article_dict = article.to_dict()
                         importance = _score_article_importance(article_dict)
@@ -503,6 +518,25 @@ async def _monitor_news_async() -> Dict[str, Any]:
                         title_preview,
                         importance,
                     )
+
+            # Write pipeline trace events for Layer 1
+            if trace_batch:
+                from app.services.pipeline_trace_service import PipelineTraceService
+                try:
+                    for item in trace_batch:
+                        news_obj = item["news_obj"]
+                        if news_obj.id:
+                            await PipelineTraceService.record_event(
+                                db, news_id=str(news_obj.id), layer="1",
+                                node="initial_filter", status="success",
+                                metadata={
+                                    "decision": item["decision"],
+                                    "reason": item.get("reason", ""),
+                                },
+                            )
+                    await db.commit()
+                except Exception as e:
+                    logger.warning("Failed to write pipeline trace events: %s", e)
 
             await _update_progress("dispatch", f"Dispatching batch fetch for {len(all_new_articles)} articles...", 92)
             # Dispatch Layer 1.5: batch fetch content with controlled concurrency

@@ -5,7 +5,8 @@
     "users": "用户管理",
     "settings": "系统设置",
     "monitor": "系统监控",
-    "filter": "筛选统计"
+    "filter": "筛选统计",
+    "pipeline": "管线追踪"
   },
   "users": {
     "title": "用户管理",
@@ -212,11 +213,40 @@
     "votingDescription": "多Agent投票过滤决策分布",
     "unanimousSkip": "全票跳过",
     "majoritySkip": "多数跳过",
-    "rescued": "投票挽救",
-    "rescueRate": "挽救率",
+    "majorityPass": "多数通过",
+    "unanimousPass": "全票通过",
     "strictAgent": "严格Agent",
     "moderateAgent": "适中Agent",
     "permissiveAgent": "宽松Agent",
-    "allAgentsCost": "全部Agent成本"
+    "allAgentsCost": "全部Agent成本",
+    "sourceTitle": "新闻源质量排行",
+    "sourceDescription": "按新闻源查看文章质量指标",
+    "sourceColumn": "新闻源",
+    "totalColumn": "总数",
+    "keepRateColumn": "保留率",
+    "embedRateColumn": "嵌入率",
+    "avgEntitiesColumn": "平均实体",
+    "sentimentColumn": "情感分布",
+    "noSourceData": "暂无新闻源数据",
+    "noSourceDataHint": "处理文章后统计数据将在此显示"
+  },
+  "pipeline": {
+    "statsTitle": "管线统计",
+    "statsDescription": "新闻处理管线各节点的聚合性能统计",
+    "timelineTitle": "文章时间线",
+    "timelineDescription": "查看单篇文章的完整处理时间线",
+    "newsIdPlaceholder": "输入文章 ID (UUID)...",
+    "search": "查询",
+    "searchError": "加载文章时间线失败",
+    "noData": "暂无管线数据",
+    "noDataHint": "运行新闻监控后，统计数据将在此显示",
+    "noEvents": "未找到该文章的事件",
+    "totalDuration": "总耗时",
+    "layer": "层",
+    "node": "节点",
+    "total": "总数",
+    "success": "成功",
+    "errors": "错误",
+    "avgMs": "平均(ms)"
   }
 }

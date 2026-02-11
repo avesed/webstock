@@ -6,7 +6,7 @@ from typing import Optional
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from sqlalchemy import and_, func, or_, select
+from sqlalchemy import and_, func, or_, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.rate_limiter import rate_limit
@@ -23,6 +23,7 @@ from app.schemas.admin import (
     ApiCallStats,
     ApiStats,
     ApproveUserRequest,
+    ArticleTimelineResponse,
     CreateUserRequest,
     DailyFilterStatsResponse,
     FeaturesConfig,
@@ -32,8 +33,14 @@ from app.schemas.admin import (
     ModelAssignment,
     ModelAssignmentsConfig,
     NewsConfig,
+    NodeStatsResponse,
+    PipelineEventResponse,
+    PipelineEventSearchResponse,
+    PipelineStatsResponse,
     RejectUserRequest,
     ResetPasswordRequest,
+    SourceStatsItemResponse,
+    SourceStatsResponse,
     SystemConfigResponse,
     SystemMonitorStatsResponse,
     SystemResourceStats,
@@ -53,6 +60,8 @@ from app.schemas.llm_provider import (
     LlmProviderUpdate,
 )
 from app.schemas.user import MessageResponse
+from app.models.news import News
+from app.services.pipeline_trace_service import PipelineTraceService
 
 logger = logging.getLogger(__name__)
 
@@ -1428,3 +1437,233 @@ async def get_monitor_status(
         "last_run": last_run,
         "next_run_at": next_run_at,
     }
+
+
+# ============== Pipeline Tracing Endpoints ==============
+
+
+@router.get(
+    "/pipeline/article/{news_id}",
+    response_model=ArticleTimelineResponse,
+    summary="Get article pipeline timeline",
+    description="Get the full pipeline execution timeline for a specific article.",
+    dependencies=[Depends(rate_limit(max_requests=60, window_seconds=60))],
+)
+async def get_article_timeline(
+    news_id: str,
+    admin: User = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """Get pipeline timeline for a single article."""
+    logger.info("Admin %d viewing pipeline timeline for article %s", admin.id, news_id)
+
+    events = await PipelineTraceService.get_article_timeline(db, news_id)
+
+    # Try to get article title and symbol from News table
+    title = None
+    symbol = None
+    try:
+        result = await db.execute(
+            select(News.title, News.symbol).where(News.id == news_id)
+        )
+        row = result.first()
+        if row:
+            title = row.title
+            symbol = row.symbol
+    except Exception:
+        pass  # News may have been deleted
+
+    # Calculate total duration
+    total_duration_ms = None
+    if events:
+        durations = [e.duration_ms for e in events if e.duration_ms is not None]
+        if durations:
+            total_duration_ms = round(sum(durations), 1)
+
+    return ArticleTimelineResponse(
+        news_id=news_id,
+        title=title,
+        symbol=symbol,
+        events=[
+            PipelineEventResponse(
+                id=e.id,
+                news_id=e.news_id,
+                layer=e.layer,
+                node=e.node,
+                status=e.status,
+                duration_ms=e.duration_ms,
+                metadata=e.metadata_,
+                error=e.error,
+                created_at=e.created_at,
+            )
+            for e in events
+        ],
+        total_duration_ms=total_duration_ms,
+    )
+
+
+@router.get(
+    "/pipeline/stats",
+    response_model=PipelineStatsResponse,
+    summary="Get pipeline aggregate statistics",
+    description="Get aggregate statistics for pipeline nodes over a time period.",
+    dependencies=[Depends(rate_limit(max_requests=30, window_seconds=60))],
+)
+async def get_pipeline_stats(
+    admin: User = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+    days: int = Query(7, ge=1, le=30, description="Number of days to aggregate"),
+):
+    """Get aggregate pipeline statistics."""
+    logger.info("Admin %d viewing pipeline stats for %d days", admin.id, days)
+
+    stats = await PipelineTraceService.get_aggregate_stats(db, days)
+
+    return PipelineStatsResponse(
+        period_days=stats["period_days"],
+        nodes=[
+            NodeStatsResponse(**node_data)
+            for node_data in stats["nodes"]
+        ],
+    )
+
+
+@router.get(
+    "/pipeline/events",
+    response_model=PipelineEventSearchResponse,
+    summary="Search pipeline events",
+    description="Search and filter pipeline events with pagination.",
+    dependencies=[Depends(rate_limit(max_requests=30, window_seconds=60))],
+)
+async def search_pipeline_events(
+    admin: User = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+    layer: Optional[str] = Query(None, description="Filter by layer (1, 1.5, 2)"),
+    node: Optional[str] = Query(None, description="Filter by node name"),
+    status: Optional[str] = Query(None, description="Filter by status (success, error, skip)"),
+    days: int = Query(1, ge=1, le=30, description="Time window in days"),
+    limit: int = Query(50, ge=1, le=200, description="Max results"),
+    offset: int = Query(0, ge=0, description="Pagination offset"),
+):
+    """Search pipeline events with optional filters."""
+    logger.info(
+        "Admin %d searching pipeline events: layer=%s, node=%s, status=%s, days=%d",
+        admin.id, layer, node, status, days,
+    )
+
+    events, total = await PipelineTraceService.search_events(
+        db, layer=layer, node=node, status=status,
+        days=days, limit=limit, offset=offset,
+    )
+
+    return PipelineEventSearchResponse(
+        events=[
+            PipelineEventResponse(
+                id=e.id,
+                news_id=e.news_id,
+                layer=e.layer,
+                node=e.node,
+                status=e.status,
+                duration_ms=e.duration_ms,
+                metadata=e.metadata_,
+                error=e.error,
+                created_at=e.created_at,
+            )
+            for e in events
+        ],
+        total=total,
+    )
+
+
+# ============== Source Statistics Endpoints ==============
+
+
+@router.get(
+    "/news/source-stats",
+    response_model=SourceStatsResponse,
+    summary="Get news source quality statistics",
+    description="Get per-source article quality metrics aggregated over a time period.",
+    dependencies=[Depends(rate_limit(max_requests=30, window_seconds=60))],
+)
+async def get_source_stats(
+    admin: User = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+    days: int = Query(7, ge=1, le=30, description="Number of days to aggregate"),
+):
+    """Get per-source quality statistics from the News table."""
+    logger.info("Admin %d viewing source stats for %d days", admin.id, days)
+
+    cutoff = datetime.now(timezone.utc) - timedelta(days=days)
+
+    # Note: related_entities is JSON (not JSONB) — use json_array_length / json_typeof
+    # content_status values are lowercase: pending, fetched, embedded, failed, blocked, deleted
+    query = text("""
+        SELECT
+            source,
+            COUNT(*) AS total,
+            COUNT(*) FILTER (WHERE filter_status = 'useful') AS initial_useful,
+            COUNT(*) FILTER (WHERE filter_status = 'uncertain') AS initial_uncertain,
+            COUNT(*) FILTER (WHERE filter_status = 'keep') AS fine_keep,
+            COUNT(*) FILTER (WHERE filter_status = 'delete') AS fine_delete,
+            COUNT(*) FILTER (WHERE content_status = 'embedded') AS embedded,
+            COUNT(*) FILTER (WHERE content_status IN ('failed', 'blocked')) AS fetch_failed,
+            AVG(
+                CASE
+                    WHEN related_entities IS NOT NULL
+                         AND related_entities::text != 'null'
+                         AND json_typeof(related_entities) = 'array'
+                    THEN json_array_length(related_entities)
+                    ELSE 0
+                END
+            ) AS avg_entity_count,
+            COUNT(*) FILTER (WHERE sentiment_tag = 'bullish') AS bullish,
+            COUNT(*) FILTER (WHERE sentiment_tag = 'bearish') AS bearish,
+            COUNT(*) FILTER (WHERE sentiment_tag = 'neutral') AS neutral
+        FROM news
+        WHERE created_at >= :cutoff
+        GROUP BY source
+        ORDER BY COUNT(*) DESC
+    """)
+
+    try:
+        result = await db.execute(query, {"cutoff": cutoff})
+        rows = result.fetchall()
+    except Exception as e:
+        logger.error("Failed to query source stats: %s", e)
+        return SourceStatsResponse(period_days=days, sources=[], total_sources=0)
+
+    sources = []
+    for row in rows:
+        total = row.total
+        fine_total = row.fine_keep + row.fine_delete
+
+        # Sentiment distribution (only include if any sentiment data exists)
+        bullish = row.bullish
+        bearish = row.bearish
+        neutral = row.neutral
+        sentiment_total = bullish + bearish + neutral
+        sentiment_dist = (
+            {"bullish": bullish, "bearish": bearish, "neutral": neutral}
+            if sentiment_total > 0 else None
+        )
+
+        sources.append(SourceStatsItemResponse(
+            source=row.source,
+            total=total,
+            initial_useful=row.initial_useful,
+            initial_uncertain=row.initial_uncertain,
+            fine_keep=row.fine_keep,
+            fine_delete=row.fine_delete,
+            embedded=row.embedded,
+            fetch_failed=row.fetch_failed,
+            avg_entity_count=round(row.avg_entity_count, 1) if row.avg_entity_count is not None else None,
+            sentiment_distribution=sentiment_dist,
+            keep_rate=round(row.fine_keep / fine_total * 100, 1) if fine_total > 0 else None,
+            embed_rate=round(row.embedded / total * 100, 1) if total > 0 else None,
+        ))
+
+    return SourceStatsResponse(
+        period_days=days,
+        sources=sources,
+        total_sources=len(sources),
+    )

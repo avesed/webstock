@@ -41,6 +41,7 @@ celery_app.conf.update(
         "worker.tasks.full_content_tasks.batch_fetch_content": {"queue": "scraping"},
         "worker.tasks.full_content_tasks.process_news_article": {"queue": "default"},
         "worker.tasks.full_content_tasks.cleanup_expired_news": {"queue": "default"},
+        "worker.tasks.full_content_tasks.cleanup_pipeline_events": {"queue": "default"},
     },
 
     # Task execution settings
@@ -89,6 +90,10 @@ celery_app.conf.update(
         "cleanup-news-content": {
             "task": "worker.tasks.full_content_tasks.cleanup_expired_news",
             "schedule": crontab(hour=4, minute=0),  # Daily at 4:00 AM
+        },
+        "cleanup-pipeline-events": {
+            "task": "worker.tasks.full_content_tasks.cleanup_pipeline_events",
+            "schedule": crontab(hour=4, minute=30),  # Daily at 4:30 AM (after news cleanup)
         },
         "update-stock-list": {
             "task": "worker.tasks.stock_list_tasks.update_stock_list",

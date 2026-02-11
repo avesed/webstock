@@ -12,6 +12,7 @@ Workflow graph:
 """
 
 import logging
+import time
 import uuid
 
 from langgraph.graph import END, StateGraph
@@ -33,12 +34,22 @@ async def read_file_node(state: NewsProcessingState) -> dict:
     it to a JSON file. This node reads that file and populates the state with
     the full text and metadata for downstream LLM processing.
     """
+    from app.services.pipeline_trace_service import PipelineTraceService
+
+    t0 = time.monotonic()
+
     file_path = state.get("file_path")
     if not file_path:
         logger.warning("read_file_node: no file_path in state for news_id=%s", state["news_id"])
+        elapsed = (time.monotonic() - t0) * 1000
         return {
             "final_status": "failed",
             "error": "No file_path provided — content not fetched by Layer 1.5",
+            "trace_events": [PipelineTraceService.make_event(
+                news_id=state["news_id"], layer="2", node="read_file",
+                status="error", duration_ms=elapsed,
+                error="No file_path provided",
+            )],
         }
 
     from app.services.news_storage_service import get_news_storage_service
@@ -51,9 +62,15 @@ async def read_file_node(state: NewsProcessingState) -> dict:
             "read_file_node: cannot read content from %s for news_id=%s",
             file_path, state["news_id"],
         )
+        elapsed = (time.monotonic() - t0) * 1000
         return {
             "final_status": "failed",
             "error": f"Cannot read content from {file_path}",
+            "trace_events": [PipelineTraceService.make_event(
+                news_id=state["news_id"], layer="2", node="read_file",
+                status="error", duration_ms=elapsed,
+                error=f"Cannot read content from {file_path}",
+            )],
         }
 
     logger.info(
@@ -61,12 +78,18 @@ async def read_file_node(state: NewsProcessingState) -> dict:
         len(content_data["full_text"]), file_path, state["news_id"],
     )
 
+    elapsed = (time.monotonic() - t0) * 1000
     return {
         "full_text": content_data["full_text"],
         "word_count": content_data.get("word_count", 0),
         "language": content_data.get("language"),
         "authors": content_data.get("authors"),
         "keywords": content_data.get("keywords"),
+        "trace_events": [PipelineTraceService.make_event(
+            news_id=state["news_id"], layer="2", node="read_file",
+            status="success", duration_ms=elapsed,
+            metadata={"word_count": content_data.get("word_count", 0), "language": content_data.get("language")},
+        )],
     }
 
 
@@ -90,12 +113,23 @@ async def deep_filter_node(state: NewsProcessingState) -> dict:
     from worker.db_utils import get_task_session
     from app.skills.registry import get_skill_registry
     from app.services.filter_stats_service import get_filter_stats_service
+    from app.services.pipeline_trace_service import PipelineTraceService
+
+    t0 = time.monotonic()
 
     registry = get_skill_registry()
     skill = registry.get("deep_filter_news")
     if skill is None:
         logger.warning("deep_filter_news skill not found in registry")
-        return {"filter_decision": "keep"}
+        elapsed = (time.monotonic() - t0) * 1000
+        return {
+            "filter_decision": "keep",
+            "trace_events": [PipelineTraceService.make_event(
+                news_id=state["news_id"], layer="2", node="deep_filter",
+                status="error", duration_ms=elapsed,
+                error="skill not found",
+            )],
+        }
 
     stats_service = get_filter_stats_service()
 
@@ -119,8 +153,16 @@ async def deep_filter_node(state: NewsProcessingState) -> dict:
         logger.warning(
             "deep_filter_node failed for %s: %s", state["news_id"], result.error
         )
+        elapsed = (time.monotonic() - t0) * 1000
         # On filter failure, default to keep (don't lose articles)
-        return {"filter_decision": "keep"}
+        return {
+            "filter_decision": "keep",
+            "trace_events": [PipelineTraceService.make_event(
+                news_id=state["news_id"], layer="2", node="deep_filter",
+                status="error", duration_ms=elapsed,
+                error=str(result.error)[:200] if result.error else "unknown error",
+            )],
+        }
 
     data = result.data
     decision = data.get("decision", "keep")
@@ -135,6 +177,7 @@ async def deep_filter_node(state: NewsProcessingState) -> dict:
     else:
         await stats_service.increment("fine_keep")
 
+    elapsed = (time.monotonic() - t0) * 1000
     return {
         "filter_decision": decision,
         "entities": data.get("entities"),
@@ -142,6 +185,11 @@ async def deep_filter_node(state: NewsProcessingState) -> dict:
         "event_tags": data.get("event_tags"),
         "sentiment_tag": data.get("sentiment", "neutral"),
         "investment_summary": data.get("investment_summary", ""),
+        "trace_events": [PipelineTraceService.make_event(
+            news_id=state["news_id"], layer="2", node="deep_filter",
+            status="success", duration_ms=elapsed,
+            metadata={"decision": decision, "entity_count": len(data.get("entities") or []), "sentiment_tag": data.get("sentiment", "neutral")},
+        )],
     }
 
 
@@ -150,6 +198,9 @@ async def single_filter_node(state: NewsProcessingState) -> dict:
     from worker.db_utils import get_task_session
     from app.services.news_filter_service import get_news_filter_service
     from app.services.two_phase_filter_service import get_news_llm_settings
+    from app.services.pipeline_trace_service import PipelineTraceService
+
+    t0 = time.monotonic()
 
     async with get_task_session() as db:
         llm_settings = await get_news_llm_settings(db)
@@ -169,13 +220,29 @@ async def single_filter_node(state: NewsProcessingState) -> dict:
         )
     except Exception as e:
         logger.warning("single_filter_node failed for %s: %s", state["news_id"], e)
-        return {"filter_decision": "keep"}  # Default to keep on error
+        elapsed = (time.monotonic() - t0) * 1000
+        return {
+            "filter_decision": "keep",
+            "trace_events": [PipelineTraceService.make_event(
+                news_id=state["news_id"], layer="2", node="single_filter",
+                status="error", duration_ms=elapsed,
+                error=str(e)[:200],
+            )],
+        }  # Default to keep on error
 
     decision = "keep" if should_keep else "delete"
     logger.info(
         "single_filter_node: news_id=%s, decision=%s", state["news_id"], decision,
     )
-    return {"filter_decision": decision}
+    elapsed = (time.monotonic() - t0) * 1000
+    return {
+        "filter_decision": decision,
+        "trace_events": [PipelineTraceService.make_event(
+            news_id=state["news_id"], layer="2", node="single_filter",
+            status="success", duration_ms=elapsed,
+            metadata={"decision": decision},
+        )],
+    }
 
 
 def route_decision(state: NewsProcessingState) -> str:
@@ -196,14 +263,23 @@ async def embed_node(state: NewsProcessingState) -> dict:
     from worker.db_utils import get_task_session
     from app.skills.registry import get_skill_registry
     from app.services.filter_stats_service import get_filter_stats_service
+    from app.services.pipeline_trace_service import PipelineTraceService
+
+    t0 = time.monotonic()
 
     registry = get_skill_registry()
     skill = registry.get("embed_document")
     if skill is None:
         logger.warning("embed_node: embed_document skill not found in registry")
+        elapsed = (time.monotonic() - t0) * 1000
         return {
             "final_status": "failed",
             "error": "embed_document skill not found in registry",
+            "trace_events": [PipelineTraceService.make_event(
+                news_id=state["news_id"], layer="2", node="embed",
+                status="error", duration_ms=elapsed,
+                error="embed_document skill not found in registry",
+            )],
         }
     stats_service = get_filter_stats_service()
 
@@ -218,9 +294,16 @@ async def embed_node(state: NewsProcessingState) -> dict:
     content = "\n\n".join(content_parts)
 
     if not content.strip():
+        logger.warning("embed_node: no content to embed for news_id=%s", state["news_id"])
+        elapsed = (time.monotonic() - t0) * 1000
         return {
             "final_status": "failed",
             "error": "No content to embed",
+            "trace_events": [PipelineTraceService.make_event(
+                news_id=state["news_id"], layer="2", node="embed",
+                status="error", duration_ms=elapsed,
+                error="No content to embed",
+            )],
         }
 
     async with get_task_session() as db:
@@ -236,24 +319,39 @@ async def embed_node(state: NewsProcessingState) -> dict:
     if not result.success:
         logger.warning("embed_node failed for %s: %s", state["news_id"], result.error)
         await stats_service.increment("embedding_error")
+        elapsed = (time.monotonic() - t0) * 1000
         return {
             "final_status": "failed",
             "error": result.error,
+            "trace_events": [PipelineTraceService.make_event(
+                news_id=state["news_id"], layer="2", node="embed",
+                status="error", duration_ms=elapsed,
+                error=str(result.error)[:200] if result.error else "unknown error",
+            )],
         }
 
     data = result.data or {}
     await stats_service.increment("embedding_success")
 
+    elapsed = (time.monotonic() - t0) * 1000
     return {
         "chunks_total": data.get("chunks_total", 0),
         "chunks_stored": data.get("chunks_stored", 0),
         "final_status": "embedded",
+        "trace_events": [PipelineTraceService.make_event(
+            news_id=state["news_id"], layer="2", node="embed",
+            status="success", duration_ms=elapsed,
+            metadata={"chunks_total": data.get("chunks_total", 0), "chunks_stored": data.get("chunks_stored", 0)},
+        )],
     }
 
 
 async def mark_deleted_node(state: NewsProcessingState) -> dict:
     """Mark the article as deleted and clean up content file."""
     from app.services.news_storage_service import get_news_storage_service
+    from app.services.pipeline_trace_service import PipelineTraceService
+
+    t0 = time.monotonic()
 
     file_path = state.get("file_path")
     if file_path:
@@ -264,9 +362,15 @@ async def mark_deleted_node(state: NewsProcessingState) -> dict:
         except Exception as e:
             logger.warning("Failed to delete content file %s: %s", file_path, e)
 
+    elapsed = (time.monotonic() - t0) * 1000
     return {
         "final_status": "deleted",
         "file_path": None,
+        "trace_events": [PipelineTraceService.make_event(
+            news_id=state["news_id"], layer="2", node="mark_deleted",
+            status="success", duration_ms=elapsed,
+            metadata={"file_path": file_path},
+        )],
     }
 
 
@@ -276,6 +380,7 @@ async def update_db_node(state: NewsProcessingState) -> dict:
     from sqlalchemy import select
     from app.models.news import News, ContentStatus, FilterStatus
 
+    t0 = time.monotonic()
     news_id = state["news_id"]
     final_status = state.get("final_status", "pending")
 
@@ -346,10 +451,41 @@ async def update_db_node(state: NewsProcessingState) -> dict:
             logger.info(
                 "update_db_node: news_id=%s, final_status=%s", news_id, final_status
             )
+
+            # Write pipeline trace events
+            elapsed = (time.monotonic() - t0) * 1000
+            try:
+                from app.services.pipeline_trace_service import PipelineTraceService
+                all_events = list(state.get("trace_events", []))
+                all_events.append(PipelineTraceService.make_event(
+                    news_id=news_id, layer="2", node="update_db",
+                    status="success", duration_ms=elapsed,
+                    metadata={"final_status": final_status,
+                               "content_status": news.content_status if news else None},
+                ))
+                await PipelineTraceService.record_events_batch(db, all_events)
+                await db.commit()
+            except Exception as trace_err:
+                logger.warning("update_db_node: trace write failed: %s", trace_err)
+
     except Exception as e:
         logger.error(
             "update_db_node: DB update failed for news_id=%s: %s", news_id, e,
         )
+        # Try to record trace events even on DB failure
+        elapsed = (time.monotonic() - t0) * 1000
+        try:
+            from app.services.pipeline_trace_service import PipelineTraceService
+            async with get_task_session() as trace_db:
+                all_events = list(state.get("trace_events", []))
+                all_events.append(PipelineTraceService.make_event(
+                    news_id=news_id, layer="2", node="update_db",
+                    status="error", duration_ms=elapsed, error=str(e)[:200],
+                ))
+                await PipelineTraceService.record_events_batch(trace_db, all_events)
+                await trace_db.commit()
+        except Exception as trace_err:
+            logger.debug("update_db_node: fallback trace write also failed: %s", trace_err)
 
     return {}
 

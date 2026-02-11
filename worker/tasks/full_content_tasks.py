@@ -9,6 +9,7 @@
 
 import asyncio
 import logging
+import time
 import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Any, Callable, Dict, List, TypeVar
@@ -271,6 +272,8 @@ async def _fetch_single_article(article: Dict[str, Any]) -> Dict[str, Any]:
         logger.error("fetch_full_content skill not found in registry")
         return {"success": False, "error": "fetch_full_content skill not found"}
 
+    t0 = time.monotonic()
+
     # Execute fetch
     result = await skill.safe_execute(
         timeout=60.0,
@@ -304,6 +307,20 @@ async def _fetch_single_article(article: Dict[str, Any]) -> Dict[str, Any]:
                     news.content_status = ContentStatus.FAILED.value
                 news.content_error = error_msg[:500]
                 news.content_fetched_at = now
+
+                # Record pipeline trace event for fetch failure
+                elapsed = (time.monotonic() - t0) * 1000
+                try:
+                    from app.services.pipeline_trace_service import PipelineTraceService
+                    await PipelineTraceService.record_event(
+                        db, news_id=news_id, layer="1.5", node="fetch",
+                        status="error", duration_ms=elapsed,
+                        metadata={"content_status": str(news.content_status)},
+                        error=error_msg[:200] if error_msg else None,
+                    )
+                except Exception as trace_err:
+                    logger.debug("Trace recording failed for fetch error: %s", trace_err)
+
                 await db.commit()
 
                 logger.warning(
@@ -325,6 +342,23 @@ async def _fetch_single_article(article: Dict[str, Any]) -> Dict[str, Any]:
             news.language = data.get("language")
             news.authors = data.get("authors")
             news.keywords = data.get("keywords")
+
+            # Record pipeline trace event for fetch success
+            elapsed = (time.monotonic() - t0) * 1000
+            try:
+                from app.services.pipeline_trace_service import PipelineTraceService
+                await PipelineTraceService.record_event(
+                    db, news_id=news_id, layer="1.5", node="fetch",
+                    status="success", duration_ms=elapsed,
+                    metadata={
+                        "word_count": data.get("word_count", 0),
+                        "language": data.get("language"),
+                        "content_status": str(news.content_status),
+                    },
+                )
+            except Exception as trace_err:
+                logger.debug("Trace recording failed for fetch success: %s", trace_err)
+
             await db.commit()
 
             logger.info(
@@ -461,3 +495,25 @@ async def _cleanup_expired_news_async() -> Dict[str, Any]:
     )
 
     return stats
+
+
+@celery_app.task(name="worker.tasks.full_content_tasks.cleanup_pipeline_events")
+def cleanup_pipeline_events():
+    """Clean up old pipeline trace events."""
+    try:
+        return run_async_task(_cleanup_pipeline_events_async)
+    except Exception as e:
+        logger.exception("cleanup_pipeline_events failed: %s", e)
+        raise
+
+
+async def _cleanup_pipeline_events_async() -> Dict[str, Any]:
+    """Async implementation of pipeline events cleanup."""
+    from app.services.pipeline_trace_service import PipelineTraceService
+
+    async with get_task_session() as db:
+        deleted = await PipelineTraceService.cleanup_old_events(db, retention_days=7)
+        await db.commit()
+
+    logger.info("Pipeline events cleanup: deleted %d old events", deleted)
+    return {"deleted": deleted}

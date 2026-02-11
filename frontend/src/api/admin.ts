@@ -283,6 +283,41 @@ export const adminApi = {
     const response = await apiClient.get<MonitorStatus>('/admin/news/monitor-status')
     return response.data
   },
+
+  // Pipeline tracing
+  getArticleTimeline: async (newsId: string): Promise<ArticleTimeline> => {
+    const response = await apiClient.get<ArticleTimeline>(`/admin/pipeline/article/${newsId}`)
+    return response.data
+  },
+
+  getPipelineStats: async (days = 7): Promise<PipelineStats> => {
+    const response = await apiClient.get<PipelineStats>('/admin/pipeline/stats', {
+      params: { days },
+    })
+    return response.data
+  },
+
+  searchPipelineEvents: async (params: {
+    layer?: string
+    node?: string
+    status?: string
+    days?: number
+    limit?: number
+    offset?: number
+  }): Promise<PipelineEventSearchResult> => {
+    const response = await apiClient.get<PipelineEventSearchResult>('/admin/pipeline/events', {
+      params,
+    })
+    return response.data
+  },
+
+  // Source quality stats
+  getSourceStats: async (days = 7): Promise<SourceStats> => {
+    const response = await apiClient.get<SourceStats>('/admin/news/source-stats', {
+      params: { days },
+    })
+    return response.data
+  },
 }
 
 // Filter stats types
@@ -311,7 +346,8 @@ export interface FilterStats {
     voting?: {
       unanimousSkip: number
       majoritySkip: number
-      rescued: number
+      majorityPass: number
+      unanimousPass: number
     }
   }
   rates: {
@@ -381,4 +417,69 @@ export interface DailyFilterStatsItem {
   initialOutputTokens: number
   deepInputTokens: number
   deepOutputTokens: number
+}
+
+// Pipeline tracing types
+export interface PipelineEvent {
+  id: string
+  newsId: string
+  layer: string
+  node: string
+  status: string
+  durationMs: number | null
+  metadata: Record<string, unknown> | null
+  error: string | null
+  createdAt: string
+}
+
+export interface ArticleTimeline {
+  newsId: string
+  title: string | null
+  symbol: string | null
+  events: PipelineEvent[]
+  totalDurationMs: number | null
+}
+
+export interface NodeStats {
+  layer: string
+  node: string
+  count: number
+  successCount: number
+  errorCount: number
+  avgMs: number | null
+  p50Ms: number | null
+  p95Ms: number | null
+  maxMs: number | null
+}
+
+export interface PipelineStats {
+  periodDays: number
+  nodes: NodeStats[]
+}
+
+export interface PipelineEventSearchResult {
+  events: PipelineEvent[]
+  total: number
+}
+
+// Source stats types
+export interface SourceStatsItem {
+  source: string
+  total: number
+  initialUseful: number
+  initialUncertain: number
+  fineKeep: number
+  fineDelete: number
+  embedded: number
+  fetchFailed: number
+  avgEntityCount: number | null
+  sentimentDistribution: Record<string, number> | null
+  keepRate: number | null
+  embedRate: number | null
+}
+
+export interface SourceStats {
+  periodDays: number
+  sources: SourceStatsItem[]
+  totalSources: number
 }
