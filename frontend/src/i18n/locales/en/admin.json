@@ -207,6 +207,16 @@
     "running": "Running...",
     "taskTriggered": "Task started successfully",
     "nextRun": "Next run",
-    "lastRun": "Last run"
+    "lastRun": "Last run",
+    "votingStats": "Voting Stats",
+    "votingDescription": "Multi-agent voting filter decision distribution",
+    "unanimousSkip": "Unanimous Skip",
+    "majoritySkip": "Majority Skip",
+    "rescued": "Rescued",
+    "rescueRate": "Rescue Rate",
+    "strictAgent": "Strict Agent",
+    "moderateAgent": "Moderate Agent",
+    "permissiveAgent": "Permissive Agent",
+    "allAgentsCost": "All Agents Cost"
   }
 }

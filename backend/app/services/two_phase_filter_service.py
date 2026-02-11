@@ -5,6 +5,7 @@ This service implements a two-stage filtering pipeline:
 2. Deep Filter: Based on full text, extracts entities, tags, summary, and makes final KEEP/DELETE decision
 """
 
+import asyncio
 import json
 import logging
 import re
@@ -54,6 +55,15 @@ class NewsLLMSettings:
     api_key: str
     base_url: Optional[str]
     model: str
+
+
+@dataclass
+class FilterAgent:
+    """Configuration for one initial filter agent."""
+
+    name: str
+    prompt_template: str
+    model: Optional[str] = None  # None = use default news_filter model
 
 
 async def get_news_llm_settings(db: AsyncSession) -> NewsLLMSettings:
@@ -161,7 +171,7 @@ class TwoPhaseFilterService:
     Stage 2 (Deep Filter): Full text analysis with entity extraction and tagging.
     """
 
-    # Prompt for initial filtering (title + summary only)
+    # Prompt for initial filtering (title + summary only) — used by "moderate" agent
     INITIAL_FILTER_PROMPT = """你是金融新闻筛选专家。评估以下新闻对投资者的价值。
 
 判断标准:
@@ -174,6 +184,43 @@ class TwoPhaseFilterService:
 
 新闻:
 {news_text}"""
+
+    # Strict initial filter prompt — only keeps articles with concrete investment data
+    INITIAL_FILTER_PROMPT_STRICT = """你是严格的金融新闻筛选专家。只保留对投资决策有直接、明确影响的新闻。
+
+判断标准:
+- USEFUL: 直接包含可量化的投资信息（财报数据、并购金额、监管处罚、价格变动等具体数字）
+- UNCERTAIN: 提到上市公司或市场，但缺少具体数据
+- SKIP: 无具体投资数据、评论性文章、行业综述、生活类内容
+
+返回 JSON 格式:
+{{"1": {{"decision": "useful", "reason": "..."}}, "2": {{"decision": "skip", "reason": "..."}}}}
+
+新闻:
+{news_text}"""
+
+    # Permissive initial filter prompt — errs on the side of keeping articles
+    INITIAL_FILTER_PROMPT_PERMISSIVE = """你是金融新闻筛选专家。你的原则是"宁可放过，不可错杀"。
+
+判断标准:
+- USEFUL: 任何提及上市公司、行业政策、经济数据、市场走势的新闻
+- UNCERTAIN: 可能间接影响市场的内容（国际关系、科技突破、社会事件等）
+- SKIP: 100%确定无任何投资关联的内容（纯娱乐、体育、生活方式、明显广告）
+
+如果不确定，请选择 UNCERTAIN 而不是 SKIP。
+
+返回 JSON 格式:
+{{"1": {{"decision": "useful", "reason": "..."}}, "2": {{"decision": "skip", "reason": "..."}}}}
+
+新闻:
+{news_text}"""
+
+    # Three filter agents with different strictness levels for majority voting
+    FILTER_AGENTS = [
+        FilterAgent(name="strict", prompt_template="INITIAL_FILTER_PROMPT_STRICT", model=None),
+        FilterAgent(name="moderate", prompt_template="INITIAL_FILTER_PROMPT", model=None),
+        FilterAgent(name="permissive", prompt_template="INITIAL_FILTER_PROMPT_PERMISSIVE", model=None),
+    ]
 
     # Prompt for deep filtering (full text)
     DEEP_FILTER_PROMPT = """你是金融新闻分析专家。分析以下新闻全文。
@@ -219,7 +266,10 @@ class TwoPhaseFilterService:
         batch_size: int = 20,
     ) -> Dict[str, InitialFilterResult]:
         """
-        Batch initial filter for news articles based on title and summary.
+        Batch initial filter for news articles using multi-agent voting.
+
+        Three agents (strict, moderate, permissive) evaluate each article
+        independently. An article is only skipped if 2+ agents vote "skip".
 
         Args:
             db: Database session
@@ -232,8 +282,188 @@ class TwoPhaseFilterService:
         if not articles:
             return {}
 
-        llm_settings = await get_news_llm_settings(db)
+        return await self.multi_agent_initial_filter(db, articles, batch_size)
+
+    async def multi_agent_initial_filter(
+        self,
+        db: AsyncSession,
+        articles: List[Dict[str, str]],
+        batch_size: int = 20,
+    ) -> Dict[str, InitialFilterResult]:
+        """
+        Run 3 filter agents concurrently and aggregate votes.
+
+        Each agent evaluates all articles using its own prompt. Final decisions
+        are determined by majority vote: 2+ skip = skip, 2+ useful = useful,
+        otherwise uncertain.
+
+        Args:
+            db: Database session
+            articles: List of dicts with keys: url, headline, summary
+            batch_size: Number of articles per LLM call
+
+        Returns:
+            Dict mapping URL to InitialFilterResult with aggregated decisions
+        """
+        try:
+            llm_settings = await get_news_llm_settings(db)
+        except ValueError as e:
+            logger.error(f"Cannot run multi-agent filter: LLM config error: {e}")
+            raise
+
+        # Run all 3 agents concurrently
+        tasks = [
+            self._run_single_agent_filter(agent, llm_settings, articles, batch_size)
+            for agent in self.FILTER_AGENTS
+        ]
+
+        logger.info(
+            f"Starting multi-agent initial filter with {len(articles)} articles, "
+            f"agents: {[a.name for a in self.FILTER_AGENTS]}"
+        )
+
+        agent_results = await asyncio.gather(*tasks, return_exceptions=True)
+
+        # Map agent name to results, handling failures
+        agent_votes: Dict[str, Dict[str, InitialFilterResult]] = {}
+        failed_agents = []
+        for agent, result in zip(self.FILTER_AGENTS, agent_results):
+            if isinstance(result, Exception):
+                logger.warning(
+                    f"Filter agent '{agent.name}' failed: {result}. "
+                    f"Treating all votes as 'uncertain'."
+                )
+                agent_votes[agent.name] = {}
+                failed_agents.append(agent.name)
+            else:
+                agent_votes[agent.name] = result
+
+        if len(failed_agents) == len(self.FILTER_AGENTS):
+            logger.error(
+                f"All {len(self.FILTER_AGENTS)} filter agents failed: {failed_agents}. "
+                f"All {len(articles)} articles will default to 'uncertain'."
+            )
+
+        # Aggregate votes per article
+        from app.services.filter_stats_service import get_filter_stats_service
+        stats_service = get_filter_stats_service()
+
+        results: Dict[str, InitialFilterResult] = {}
+        vote_unanimous_skip = 0
+        vote_majority_skip = 0
+        vote_rescued = 0
+
+        for article in articles:
+            url = article.get("url", "")
+
+            # Collect each agent's decision for this article
+            decisions: Dict[str, str] = {}
+            for agent in self.FILTER_AGENTS:
+                agent_result = agent_votes.get(agent.name, {}).get(url)
+                if agent_result:
+                    decisions[agent.name] = agent_result["decision"]
+                else:
+                    # Agent failed or missing result — treat as uncertain
+                    decisions[agent.name] = "uncertain"
+
+            # Count votes
+            skip_count = sum(1 for d in decisions.values() if d == "skip")
+            useful_count = sum(1 for d in decisions.values() if d == "useful")
+
+            # Determine final decision by majority
+            if skip_count >= 2:
+                final_decision = "skip"
+            elif useful_count >= 2:
+                final_decision = "useful"
+            else:
+                final_decision = "uncertain"
+
+            # Track voting statistics
+            if skip_count == 3:
+                vote_unanimous_skip += 1
+            elif skip_count == 2:
+                vote_majority_skip += 1
+
+            # Track "rescued" articles: moderate voted skip but final decision is not skip
+            moderate_decision = decisions.get("moderate", "uncertain")
+            if moderate_decision == "skip" and final_decision != "skip":
+                vote_rescued += 1
+
+            # Build reason showing all votes
+            reason = (
+                f"votes: {decisions.get('strict', '?')}/"
+                f"{decisions.get('moderate', '?')}/"
+                f"{decisions.get('permissive', '?')}"
+            )
+
+            results[url] = InitialFilterResult(
+                url=url,
+                decision=final_decision,
+                reason=reason,
+            )
+
+            logger.debug(
+                f"Vote detail: {article.get('headline', url)[:60]} → "
+                f"{reason} → final={final_decision}"
+            )
+
+        # Track aggregate voting stats
+        if vote_unanimous_skip > 0:
+            await stats_service.increment("vote_unanimous_skip", vote_unanimous_skip)
+        if vote_majority_skip > 0:
+            await stats_service.increment("vote_majority_skip", vote_majority_skip)
+        if vote_rescued > 0:
+            await stats_service.increment("vote_rescued", vote_rescued)
+
+        # Log summary
+        useful_total = sum(1 for r in results.values() if r["decision"] == "useful")
+        uncertain_total = sum(1 for r in results.values() if r["decision"] == "uncertain")
+        skip_total = sum(1 for r in results.values() if r["decision"] == "skip")
+
+        logger.info(
+            f"Multi-agent initial filter complete: "
+            f"{useful_total} useful, {uncertain_total} uncertain, {skip_total} skip "
+            f"(unanimous_skip={vote_unanimous_skip}, majority_skip={vote_majority_skip}, "
+            f"rescued={vote_rescued})"
+        )
+
+        return results
+
+    async def _run_single_agent_filter(
+        self,
+        agent: FilterAgent,
+        llm_settings: NewsLLMSettings,
+        articles: List[Dict[str, str]],
+        batch_size: int = 20,
+    ) -> Dict[str, InitialFilterResult]:
+        """
+        Run a single filter agent across all article batches.
+
+        This is the core filtering logic extracted from the original
+        batch_initial_filter, parameterized by agent configuration.
+
+        Args:
+            agent: FilterAgent configuration (name, prompt, optional model)
+            llm_settings: LLM settings (API key, base URL, default model)
+            articles: List of dicts with keys: url, headline, summary
+            batch_size: Number of articles per LLM call
+
+        Returns:
+            Dict mapping URL to InitialFilterResult
+        """
         gateway = get_llm_gateway()
+
+        # Resolve prompt template from class attribute name
+        prompt_template = getattr(self, agent.prompt_template)
+        model = agent.model or llm_settings.model
+
+        # Map agent name to token tracking stage
+        token_stage_map = {
+            "strict": "initial_strict",
+            "moderate": "initial",
+            "permissive": "initial_permissive",
+        }
+        token_stage = token_stage_map.get(agent.name, "initial")
 
         results: Dict[str, InitialFilterResult] = {}
 
@@ -248,11 +478,11 @@ class TwoPhaseFilterService:
                 ]
             )
 
-            prompt = self.INITIAL_FILTER_PROMPT.format(news_text=news_text)
+            prompt = prompt_template.format(news_text=news_text)
 
             try:
                 chat_request = ChatRequest(
-                    model=llm_settings.model,
+                    model=model,
                     messages=[Message(role=Role.USER, content=prompt)],
                 )
                 response = await gateway.chat(
@@ -267,7 +497,7 @@ class TwoPhaseFilterService:
                     from app.services.filter_stats_service import get_filter_stats_service
                     stats_service = get_filter_stats_service()
                     await stats_service.track_tokens(
-                        stage="initial",
+                        stage=token_stage,
                         input_tokens=response.usage.prompt_tokens,
                         output_tokens=response.usage.completion_tokens,
                     )
@@ -289,21 +519,21 @@ class TwoPhaseFilterService:
                     )
 
                 logger.info(
-                    f"Initial filter batch {i // batch_size + 1}: "
+                    f"Agent '{agent.name}' batch {i // batch_size + 1}: "
                     f"{sum(1 for r in list(results.values())[-len(batch):] if r['decision'] == 'useful')} useful, "
                     f"{sum(1 for r in list(results.values())[-len(batch):] if r['decision'] == 'uncertain')} uncertain, "
                     f"{sum(1 for r in list(results.values())[-len(batch):] if r['decision'] == 'skip')} skip"
                 )
 
             except Exception as e:
-                logger.warning(f"Initial filter batch failed: {e}")
-                # On error, mark all as uncertain (will continue to deep filter)
+                logger.warning(f"Agent '{agent.name}' batch {i // batch_size + 1} failed: {e}")
+                # On error, mark all batch articles as uncertain
                 for a in batch:
                     url = a.get("url", "")
                     results[url] = InitialFilterResult(
                         url=url,
                         decision="uncertain",
-                        reason=f"error: {str(e)[:50]}",
+                        reason=f"error ({agent.name}): {str(e)[:50]}",
                     )
 
         return results
@@ -335,13 +565,13 @@ class TwoPhaseFilterService:
         llm_settings = await get_news_llm_settings(db)
         gateway = get_llm_gateway()
 
-        # Truncate full text to avoid token limits (~8K chars ≈ 2K tokens)
-        truncated_text = full_text[:8000] if full_text else ""
+        # Full text passed as-is; max 50K chars enforced at fetch time by full_content_service
+        content_text = full_text if full_text else ""
 
         prompt = self.DEEP_FILTER_PROMPT.format(
             title=title,
             source=source,
-            full_text=truncated_text,
+            full_text=content_text,
         )
 
         try:

@@ -308,6 +308,11 @@ export interface FilterStats {
       success: number
       error: number
     }
+    voting?: {
+      unanimousSkip: number
+      majoritySkip: number
+      rescued: number
+    }
   }
   rates: {
     initialSkipRate: number
@@ -322,6 +327,8 @@ export interface FilterStats {
     deepFilter: TokenUsage
     total: TokenUsage
     days: number
+    initialStrict?: TokenUsage
+    initialPermissive?: TokenUsage
   }
   alerts: FilterAlert[]
 }

@@ -207,6 +207,16 @@
     "running": "运行中...",
     "taskTriggered": "任务已启动",
     "nextRun": "下次执行",
-    "lastRun": "上次执行"
+    "lastRun": "上次执行",
+    "votingStats": "投票统计",
+    "votingDescription": "多Agent投票过滤决策分布",
+    "unanimousSkip": "全票跳过",
+    "majoritySkip": "多数跳过",
+    "rescued": "投票挽救",
+    "rescueRate": "挽救率",
+    "strictAgent": "严格Agent",
+    "moderateAgent": "适中Agent",
+    "permissiveAgent": "宽松Agent",
+    "allAgentsCost": "全部Agent成本"
   }
 }

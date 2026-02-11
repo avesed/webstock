@@ -361,6 +361,14 @@ class EmbeddingCountsResponse(CamelModel):
     error: int
 
 
+class VotingCountsResponse(CamelModel):
+    """Counts for multi-agent voting results."""
+
+    unanimous_skip: int = 0
+    majority_skip: int = 0
+    rescued: int = 0
+
+
 class FilterCountsResponse(CamelModel):
     """All filter counts grouped."""
 
@@ -368,6 +376,7 @@ class FilterCountsResponse(CamelModel):
     deep_filter: DeepFilterCountsResponse
     errors: ErrorCountsResponse
     embedding: EmbeddingCountsResponse
+    voting: Optional[VotingCountsResponse] = None
 
 
 class FilterRatesResponse(CamelModel):
@@ -388,6 +397,8 @@ class FilterTokensResponse(CamelModel):
     deep_filter: TokenUsageResponse
     total: TokenUsageResponse
     days: int
+    initial_strict: Optional[TokenUsageResponse] = None
+    initial_permissive: Optional[TokenUsageResponse] = None
 
 
 class FilterAlertResponse(CamelModel):
@@ -425,6 +436,15 @@ class DailyFilterStatsItemResponse(CamelModel):
     initial_output_tokens: int
     deep_input_tokens: int
     deep_output_tokens: int
+    # Multi-agent voting stats
+    vote_unanimous_skip: int = 0
+    vote_majority_skip: int = 0
+    vote_rescued: int = 0
+    # Per-agent token tracking
+    initial_strict_input_tokens: int = 0
+    initial_strict_output_tokens: int = 0
+    initial_permissive_input_tokens: int = 0
+    initial_permissive_output_tokens: int = 0
 
 
 class DailyFilterStatsResponse(CamelModel):

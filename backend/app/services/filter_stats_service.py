@@ -50,11 +50,19 @@ class FilterStatsService:
         "filter_error",
         "embedding_success",
         "embedding_error",
+        # Multi-agent voting stats
+        "vote_unanimous_skip",
+        "vote_majority_skip",
+        "vote_rescued",
     ]
 
     TOKEN_TYPES = [
         "initial_input_tokens",
         "initial_output_tokens",
+        "initial_strict_input_tokens",
+        "initial_strict_output_tokens",
+        "initial_permissive_input_tokens",
+        "initial_permissive_output_tokens",
         "deep_input_tokens",
         "deep_output_tokens",
     ]
@@ -93,11 +101,11 @@ class FilterStatsService:
         Track token usage for a filter stage.
 
         Args:
-            stage: "initial" or "deep"
+            stage: "initial", "initial_strict", "initial_permissive", or "deep"
             input_tokens: Number of input tokens used
             output_tokens: Number of output tokens used
         """
-        if stage not in ("initial", "deep"):
+        if stage not in ("initial", "initial_strict", "initial_permissive", "deep"):
             logger.warning(f"Unknown filter stage: {stage}")
             return
 
@@ -237,6 +245,12 @@ class FilterStatsService:
         deep_input = summary.get("deep_input_tokens", 0)
         deep_output = summary.get("deep_output_tokens", 0)
 
+        # Per-agent token tracking
+        strict_input = summary.get("initial_strict_input_tokens", 0)
+        strict_output = summary.get("initial_strict_output_tokens", 0)
+        permissive_input = summary.get("initial_permissive_input_tokens", 0)
+        permissive_output = summary.get("initial_permissive_output_tokens", 0)
+
         # Cost estimates for gpt-4o-mini (as of 2024)
         # Input: $0.15 / 1M tokens, Output: $0.60 / 1M tokens
         input_rate = 0.15 / 1_000_000
@@ -244,8 +258,12 @@ class FilterStatsService:
 
         initial_cost = (initial_input * input_rate) + (initial_output * output_rate)
         deep_cost = (deep_input * input_rate) + (deep_output * output_rate)
+        strict_cost = (strict_input * input_rate) + (strict_output * output_rate)
+        permissive_cost = (permissive_input * input_rate) + (permissive_output * output_rate)
 
-        return {
+        has_per_agent = (strict_input + strict_output + permissive_input + permissive_output) > 0
+
+        result = {
             "initial_filter": {
                 "input_tokens": initial_input,
                 "output_tokens": initial_output,
@@ -259,13 +277,30 @@ class FilterStatsService:
                 "estimated_cost_usd": round(deep_cost, 4),
             },
             "total": {
-                "input_tokens": initial_input + deep_input,
-                "output_tokens": initial_output + deep_output,
-                "total_tokens": initial_input + initial_output + deep_input + deep_output,
-                "estimated_cost_usd": round(initial_cost + deep_cost, 4),
+                "input_tokens": initial_input + deep_input + strict_input + permissive_input,
+                "output_tokens": initial_output + deep_output + strict_output + permissive_output,
+                "total_tokens": (initial_input + initial_output + deep_input + deep_output
+                                 + strict_input + strict_output + permissive_input + permissive_output),
+                "estimated_cost_usd": round(initial_cost + deep_cost + strict_cost + permissive_cost, 4),
             },
             "days": days,
         }
+
+        if has_per_agent:
+            result["initial_strict"] = {
+                "input_tokens": strict_input,
+                "output_tokens": strict_output,
+                "total_tokens": strict_input + strict_output,
+                "estimated_cost_usd": round(strict_cost, 4),
+            }
+            result["initial_permissive"] = {
+                "input_tokens": permissive_input,
+                "output_tokens": permissive_output,
+                "total_tokens": permissive_input + permissive_output,
+                "estimated_cost_usd": round(permissive_cost, 4),
+            }
+
+        return result
 
     async def get_comprehensive_stats(self, days: int = 7) -> Dict[str, any]:
         """
@@ -286,6 +321,12 @@ class FilterStatsService:
             + summary["initial_skip"]
         )
         deep_total = summary["fine_keep"] + summary["fine_delete"]
+
+        # Multi-agent voting stats
+        vote_unanimous = summary.get("vote_unanimous_skip", 0)
+        vote_majority = summary.get("vote_majority_skip", 0)
+        vote_rescued = summary.get("vote_rescued", 0)
+        has_voting = (vote_unanimous + vote_majority + vote_rescued) > 0
 
         return {
             "period_days": days,
@@ -309,6 +350,11 @@ class FilterStatsService:
                     "success": summary["embedding_success"],
                     "error": summary["embedding_error"],
                 },
+                **({"voting": {
+                    "unanimous_skip": vote_unanimous,
+                    "majority_skip": vote_majority,
+                    "rescued": vote_rescued,
+                }} if has_voting else {}),
             },
             "rates": {
                 "initial_skip_rate": round(rates["initial_skip_rate"] * 100, 1),

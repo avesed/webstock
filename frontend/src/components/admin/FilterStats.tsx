@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { useTranslation } from 'react-i18next'
-import { AlertTriangle, CheckCircle, Filter, Coins, TrendingUp, TrendingDown, Play, Loader2, Clock } from 'lucide-react'
+import { AlertTriangle, CheckCircle, Filter, Coins, TrendingUp, TrendingDown, Play, Loader2, Clock, Vote } from 'lucide-react'
 
 import { adminApi, FilterStats as FilterStatsType, MonitorStatus } from '@/api/admin'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
@@ -178,6 +178,12 @@ export default function FilterStats() {
   const initialTokens = stats.tokens?.initialFilter ?? defaultTokenUsage
   const deepTokens = stats.tokens?.deepFilter ?? defaultTokenUsage
   const totalTokens = stats.tokens?.total ?? defaultTokenUsage
+  const strictTokens = stats.tokens?.initialStrict ?? null
+  const permissiveTokens = stats.tokens?.initialPermissive ?? null
+
+  const voting = stats.counts?.voting ?? null
+  const votingTotal = voting ? (voting.unanimousSkip + voting.majoritySkip + voting.rescued) : 0
+  const rescueRate = votingTotal > 0 ? ((voting!.rescued / votingTotal) * 100).toFixed(1) : '0.0'
 
   const alerts = stats.alerts ?? []
 
@@ -288,6 +294,57 @@ export default function FilterStats() {
         />
       </div>
 
+      {/* Voting Stats */}
+      {voting && votingTotal > 0 && (
+        <Card>
+          <CardHeader>
+            <CardTitle className="text-base flex items-center gap-2">
+              <Vote className="h-4 w-4" />
+              {t('filter.votingStats')}
+            </CardTitle>
+            <CardDescription>{t('filter.votingDescription')}</CardDescription>
+          </CardHeader>
+          <CardContent>
+            <div className="grid gap-4 sm:grid-cols-4">
+              <div className="space-y-1">
+                <p className="text-sm text-muted-foreground">{t('filter.unanimousSkip')}</p>
+                <p className="text-2xl font-bold">{voting.unanimousSkip}</p>
+                <p className="text-xs text-muted-foreground">
+                  {votingTotal > 0
+                    ? ((voting.unanimousSkip / votingTotal) * 100).toFixed(1)
+                    : 0}%
+                </p>
+              </div>
+              <div className="space-y-1">
+                <p className="text-sm text-muted-foreground">{t('filter.majoritySkip')}</p>
+                <p className="text-2xl font-bold">{voting.majoritySkip}</p>
+                <p className="text-xs text-muted-foreground">
+                  {votingTotal > 0
+                    ? ((voting.majoritySkip / votingTotal) * 100).toFixed(1)
+                    : 0}%
+                </p>
+              </div>
+              <div className="space-y-1">
+                <p className="text-sm text-muted-foreground">{t('filter.rescued')}</p>
+                <p className="text-2xl font-bold text-green-600 dark:text-green-400">{voting.rescued}</p>
+                <p className="text-xs text-muted-foreground">
+                  {votingTotal > 0
+                    ? ((voting.rescued / votingTotal) * 100).toFixed(1)
+                    : 0}%
+                </p>
+              </div>
+              <div className="space-y-1">
+                <p className="text-sm text-muted-foreground">{t('filter.rescueRate')}</p>
+                <p className="text-2xl font-bold text-blue-600 dark:text-blue-400">{rescueRate}%</p>
+                <p className="text-xs text-muted-foreground">
+                  {voting.rescued} / {votingTotal}
+                </p>
+              </div>
+            </div>
+          </CardContent>
+        </Card>
+      )}
+
       {/* Detailed Stats */}
       <div className="grid gap-4 md:grid-cols-2">
         {/* Initial Filter Breakdown */}
@@ -352,18 +409,49 @@ export default function FilterStats() {
             {/* Token usage for initial filter */}
             <div className="pt-4 border-t">
               <p className="text-sm text-muted-foreground mb-2">{t('filter.inputTokens')} / {t('filter.outputTokens')}</p>
-              <div className="grid grid-cols-2 gap-2 text-sm">
-                <div>
-                  <span className="text-muted-foreground">In:</span>{' '}
-                  <span className="font-medium">{formatNumber(initialTokens.inputTokens)}</span>
+
+              {/* Per-agent breakdown when available */}
+              {(strictTokens || permissiveTokens) ? (
+                <div className="space-y-2">
+                  <div className="text-sm">
+                    <span className="text-muted-foreground">{t('filter.strictAgent')}:</span>{' '}
+                    <span className="font-medium">{formatNumber(strictTokens?.inputTokens ?? 0)}</span>
+                    <span className="text-muted-foreground"> in / </span>
+                    <span className="font-medium">{formatNumber(strictTokens?.outputTokens ?? 0)}</span>
+                    <span className="text-muted-foreground"> out</span>
+                  </div>
+                  <div className="text-sm">
+                    <span className="text-muted-foreground">{t('filter.moderateAgent')}:</span>{' '}
+                    <span className="font-medium">{formatNumber(initialTokens.inputTokens)}</span>
+                    <span className="text-muted-foreground"> in / </span>
+                    <span className="font-medium">{formatNumber(initialTokens.outputTokens)}</span>
+                    <span className="text-muted-foreground"> out</span>
+                  </div>
+                  <div className="text-sm">
+                    <span className="text-muted-foreground">{t('filter.permissiveAgent')}:</span>{' '}
+                    <span className="font-medium">{formatNumber(permissiveTokens?.inputTokens ?? 0)}</span>
+                    <span className="text-muted-foreground"> in / </span>
+                    <span className="font-medium">{formatNumber(permissiveTokens?.outputTokens ?? 0)}</span>
+                    <span className="text-muted-foreground"> out</span>
+                  </div>
                 </div>
-                <div>
-                  <span className="text-muted-foreground">Out:</span>{' '}
-                  <span className="font-medium">{formatNumber(initialTokens.outputTokens)}</span>
+              ) : (
+                <div className="grid grid-cols-2 gap-2 text-sm">
+                  <div>
+                    <span className="text-muted-foreground">In:</span>{' '}
+                    <span className="font-medium">{formatNumber(initialTokens.inputTokens)}</span>
+                  </div>
+                  <div>
+                    <span className="text-muted-foreground">Out:</span>{' '}
+                    <span className="font-medium">{formatNumber(initialTokens.outputTokens)}</span>
+                  </div>
                 </div>
-              </div>
+              )}
               <p className="text-xs text-muted-foreground mt-1">
-                {t('filter.estimatedCost')}: {formatCost(initialTokens.estimatedCostUsd)}
+                {(strictTokens || permissiveTokens)
+                  ? `${t('filter.allAgentsCost')}: ${formatCost(initialTokens.estimatedCostUsd + (strictTokens?.estimatedCostUsd ?? 0) + (permissiveTokens?.estimatedCostUsd ?? 0))}`
+                  : `${t('filter.estimatedCost')}: ${formatCost(initialTokens.estimatedCostUsd)}`
+                }
               </p>
             </div>
           </CardContent>
