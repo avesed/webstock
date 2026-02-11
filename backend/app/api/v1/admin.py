@@ -1658,8 +1658,8 @@ async def get_source_stats(
             fetch_failed=row.fetch_failed,
             avg_entity_count=round(row.avg_entity_count, 1) if row.avg_entity_count is not None else None,
             sentiment_distribution=sentiment_dist,
-            keep_rate=round(row.fine_keep / fine_total * 100, 1) if fine_total > 0 else None,
-            embed_rate=round(row.embedded / total * 100, 1) if total > 0 else None,
+            keep_rate=round(row.embedded / total * 100, 1) if total > 0 else None,
+            fetch_rate=round(fine_total / total * 100, 1) if total > 0 else None,
         ))
 
     return SourceStatsResponse(

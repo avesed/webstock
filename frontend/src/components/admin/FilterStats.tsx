@@ -570,7 +570,7 @@ export default function FilterStats() {
                     <th className="text-left py-2 font-medium">{t('filter.sourceColumn')}</th>
                     <th className="text-right py-2 font-medium">{t('filter.totalColumn')}</th>
                     <th className="text-right py-2 font-medium">{t('filter.keepRateColumn')}</th>
-                    <th className="text-right py-2 font-medium">{t('filter.embedRateColumn')}</th>
+                    <th className="text-right py-2 font-medium">{t('filter.fetchRateColumn')}</th>
                     <th className="text-right py-2 font-medium">{t('filter.avgEntitiesColumn')}</th>
                     <th className="text-right py-2 font-medium">{t('filter.sentimentColumn')}</th>
                   </tr>
@@ -595,14 +595,14 @@ export default function FilterStats() {
                         )}
                       </td>
                       <td className="text-right py-2">
-                        {s.embedRate != null ? (
+                        {s.fetchRate != null ? (
                           <span className={cn(
                             'font-medium',
-                            s.embedRate >= 80 ? 'text-green-600 dark:text-green-400' :
-                            s.embedRate >= 60 ? 'text-yellow-600 dark:text-yellow-400' :
+                            s.fetchRate >= 80 ? 'text-green-600 dark:text-green-400' :
+                            s.fetchRate >= 60 ? 'text-yellow-600 dark:text-yellow-400' :
                             'text-red-600 dark:text-red-400'
                           )}>
-                            {s.embedRate}%
+                            {s.fetchRate}%
                           </span>
                         ) : (
                           <span className="text-muted-foreground">-</span>

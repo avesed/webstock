@@ -224,7 +224,7 @@
     "sourceColumn": "新闻源",
     "totalColumn": "总数",
     "keepRateColumn": "保留率",
-    "embedRateColumn": "嵌入率",
+    "fetchRateColumn": "抓取率",
     "avgEntitiesColumn": "平均实体",
     "sentimentColumn": "情感分布",
     "noSourceData": "暂无新闻源数据",

@@ -475,7 +475,7 @@ export interface SourceStatsItem {
   avgEntityCount: number | null
   sentimentDistribution: Record<string, number> | null
   keepRate: number | null
-  embedRate: number | null
+  fetchRate: number | null
 }
 
 export interface SourceStats {

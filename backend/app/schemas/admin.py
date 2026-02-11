@@ -527,8 +527,8 @@ class SourceStatsItemResponse(CamelModel):
     fetch_failed: int = 0
     avg_entity_count: Optional[float] = None
     sentiment_distribution: Optional[dict] = None
-    keep_rate: Optional[float] = None
-    embed_rate: Optional[float] = None
+    keep_rate: Optional[float] = None   # embedded / total (end-to-end retention)
+    fetch_rate: Optional[float] = None  # (fine_keep + fine_delete) / total (Layer 1.5 throughput)
 
 
 class SourceStatsResponse(CamelModel):

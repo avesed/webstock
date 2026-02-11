@@ -224,7 +224,7 @@
     "sourceColumn": "Source",
     "totalColumn": "Total",
     "keepRateColumn": "Keep Rate",
-    "embedRateColumn": "Embed Rate",
+    "fetchRateColumn": "Fetch Rate",
     "avgEntitiesColumn": "Avg Entities",
     "sentimentColumn": "Sentiment",
     "noSourceData": "No source data available",
