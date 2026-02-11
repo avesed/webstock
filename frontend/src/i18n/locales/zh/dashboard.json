@@ -219,6 +219,37 @@
       "5Y": "5年",
       "ALL": "全部"
     },
+    "indicators": {
+      "title": "指标",
+      "technicalIndicators": "技术指标",
+      "chartInterval": "图表周期",
+      "comingSoon": "即将推出",
+      "dailyOnly": "仅月线以上",
+      "ma": "均线",
+      "maDesc": "简单和指数移动平均线",
+      "rsi": "RSI",
+      "rsiDesc": "相对强弱指标",
+      "macd": "MACD",
+      "macdDesc": "指数平滑异同移动平均线",
+      "bb": "布林带",
+      "bbDesc": "波动性通道",
+      "volume": "成交量",
+      "volumeDesc": "成交量柱状图",
+      "sentiment": "情感趋势",
+      "sentimentDesc": "新闻情感评分时间线"
+    },
+    "ohlc": {
+      "open": "开",
+      "high": "高",
+      "low": "低",
+      "close": "收"
+    },
+    "vol": "量",
+    "contracts": "合约",
+    "sent": "情绪",
+    "noData": "暂无数据",
+    "noChartData": "暂无图表数据",
+    "tryDifferentPeriod": "请尝试选择其他时间周期",
     "financials": {
       "revenue": "营收",
       "revenueGrowth": "营收增长",

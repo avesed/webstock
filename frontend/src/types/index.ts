@@ -335,6 +335,22 @@ export interface NewsArticle {
   createdAt: string
 }
 
+// Sentiment Timeline types
+export interface SentimentTimelineItem {
+  date: string
+  bullish: number
+  bearish: number
+  neutral: number
+  total: number
+  score: number
+}
+
+export interface SentimentTimelineResponse {
+  symbol: string
+  days: number
+  data: SentimentTimelineItem[]
+}
+
 // AI Analysis types
 export type AnalysisType = 'FUNDAMENTAL' | 'TECHNICAL' | 'SENTIMENT' | 'COMPREHENSIVE'
 

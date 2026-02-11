@@ -10,8 +10,9 @@ import {
   CrosshairMode,
   LineStyle,
 } from 'lightweight-charts'
+import { useTranslation } from 'react-i18next'
 import { useThemeStore } from '@/stores/themeStore'
-import type { CandlestickData, ChartTimeframe } from '@/types'
+import type { CandlestickData, ChartTimeframe, SentimentTimelineItem } from '@/types'
 import { cn, isMetal } from '@/lib/utils'
 
 interface StockChartProps {
@@ -22,6 +23,8 @@ interface StockChartProps {
   className?: string
   height?: number
   onTimeframeChange?: (tf: ChartTimeframe) => void
+  sentimentData?: SentimentTimelineItem[] | undefined
+  showVolume?: boolean
 }
 
 interface CrosshairData {
@@ -31,6 +34,7 @@ interface CrosshairData {
   low: number
   close: number
   volume: number | undefined
+  sentiment: number | undefined
 }
 
 // Ordered timeframes for zoom navigation
@@ -139,11 +143,15 @@ export default function StockChart({
   className,
   height = 400,
   onTimeframeChange,
+  sentimentData,
+  showVolume = true,
 }: StockChartProps) {
+  const { t } = useTranslation('dashboard')
   const chartContainerRef = useRef<HTMLDivElement>(null)
   const chartRef = useRef<IChartApi | null>(null)
   const candlestickSeriesRef = useRef<ISeriesApi<'Candlestick'> | null>(null)
   const volumeSeriesRef = useRef<ISeriesApi<'Histogram'> | null>(null)
+  const sentimentSeriesRef = useRef<ISeriesApi<'Baseline'> | null>(null)
   const { resolvedTheme } = useThemeStore()
   const [crosshairData, setCrosshairData] = useState<CrosshairData | null>(null)
 
@@ -259,9 +267,32 @@ export default function StockChart({
       },
     })
 
+    // Create sentiment baseline series (overlaid on main chart area)
+    const sentimentSeries = chart.addBaselineSeries({
+      priceScaleId: 'sentiment',
+      baseValue: { type: 'price', price: 0 },
+      topLineColor: 'rgba(34, 197, 94, 1)',
+      topFillColor1: 'rgba(34, 197, 94, 0.28)',
+      topFillColor2: 'rgba(34, 197, 94, 0.05)',
+      bottomLineColor: 'rgba(239, 68, 68, 1)',
+      bottomFillColor1: 'rgba(239, 68, 68, 0.05)',
+      bottomFillColor2: 'rgba(239, 68, 68, 0.28)',
+      lineWidth: 2,
+      priceFormat: {
+        type: 'custom',
+        formatter: (v: number) => v.toFixed(2),
+      },
+    })
+    sentimentSeries.priceScale().applyOptions({
+      scaleMargins: { top: 0.1, bottom: 0.3 },
+      visible: false, // Hidden by default; toggled on when data loads
+    })
+    sentimentSeries.applyOptions({ visible: false })
+
     chartRef.current = chart
     candlestickSeriesRef.current = candlestickSeries
     volumeSeriesRef.current = volumeSeries
+    sentimentSeriesRef.current = sentimentSeries
 
     // Handle crosshair move for tooltip
     chart.subscribeCrosshairMove((param) => {
@@ -272,6 +303,7 @@ export default function StockChart({
 
       const candleData = param.seriesData.get(candlestickSeries) as LWCandlestickData<Time> | undefined
       const volumeData = param.seriesData.get(volumeSeries) as HistogramData<Time> | undefined
+      const sentData = param.seriesData.get(sentimentSeries) as { value?: number } | undefined
 
       if (candleData) {
         setCrosshairData({
@@ -281,6 +313,7 @@ export default function StockChart({
           low: candleData.low,
           close: candleData.close,
           volume: volumeData?.value,
+          sentiment: sentData?.value,
         })
       }
     })
@@ -333,6 +366,7 @@ export default function StockChart({
       chartRef.current = null
       candlestickSeriesRef.current = null
       volumeSeriesRef.current = null
+      sentimentSeriesRef.current = null
     }
   }, [height, resolvedTheme])
 
@@ -351,6 +385,35 @@ export default function StockChart({
       chartRef.current.timeScale().fitContent()
     }
   }, [data])
+
+  // Update sentiment data when it changes
+  // Sentiment data uses YYYY-MM-DD strings (daily aggregation), which is incompatible
+  // with intraday timeframes that use Unix timestamps. Hide sentiment on intraday charts.
+  const isIntradayTimeframe = timeframe === '1H' || timeframe === '1D' || timeframe === '1W'
+  useEffect(() => {
+    if (!sentimentSeriesRef.current) return
+    const hasData = !isIntradayTimeframe && !!sentimentData?.length
+    // Toggle series and price scale visibility
+    sentimentSeriesRef.current.applyOptions({ visible: hasData })
+    sentimentSeriesRef.current.priceScale().applyOptions({ visible: hasData })
+    if (!hasData) {
+      sentimentSeriesRef.current.setData([])
+      return
+    }
+    sentimentSeriesRef.current.setData(
+      sentimentData!.map((d) => ({
+        time: d.date as Time,
+        value: d.score,
+      }))
+    )
+  }, [sentimentData, isIntradayTimeframe])
+
+  // Toggle volume visibility
+  useEffect(() => {
+    if (!volumeSeriesRef.current) return
+    volumeSeriesRef.current.applyOptions({ visible: showVolume })
+    volumeSeriesRef.current.priceScale().applyOptions({ visible: showVolume })
+  }, [showVolume])
 
   // Update theme when it changes
   useEffect(() => {
@@ -379,6 +442,7 @@ export default function StockChart({
     low: lastDataPoint.low,
     close: lastDataPoint.close,
     volume: lastDataPoint.volume,
+    sentiment: undefined,
   } : null)
 
   const priceChange = displayData ? displayData.close - displayData.open : 0
@@ -394,15 +458,15 @@ export default function StockChart({
         {displayData ? (
           <div className="space-y-1">
             <div className="flex items-center gap-2">
-              <span className="text-muted-foreground">O:</span>
+              <span className="text-muted-foreground">{t('stock.ohlc.open')}:</span>
               <span>{formatPrice(displayData.open)}</span>
-              <span className="text-muted-foreground">H:</span>
+              <span className="text-muted-foreground">{t('stock.ohlc.high')}:</span>
               <span>{formatPrice(displayData.high)}</span>
             </div>
             <div className="flex items-center gap-2">
-              <span className="text-muted-foreground">L:</span>
+              <span className="text-muted-foreground">{t('stock.ohlc.low')}:</span>
               <span>{formatPrice(displayData.low)}</span>
-              <span className="text-muted-foreground">C:</span>
+              <span className="text-muted-foreground">{t('stock.ohlc.close')}:</span>
               <span
                 className={cn(
                   'font-medium',
@@ -423,17 +487,34 @@ export default function StockChart({
               </span>
               {displayData.volume !== undefined && (
                 <>
-                  {/* For precious metals, volume is in contracts (futures); for stocks it's shares */}
                   <span className="text-muted-foreground">
-                    {isMetalSymbol ? 'Contracts:' : 'Vol:'}
+                    {isMetalSymbol ? `${t('stock.contracts')}:` : `${t('stock.vol')}:`}
                   </span>
                   <span>{formatVolume(displayData.volume)}</span>
+                </>
+              )}
+              {displayData.sentiment !== undefined && (
+                <>
+                  <span className="text-muted-foreground">{t('stock.sent')}:</span>
+                  <span
+                    className={cn(
+                      'font-medium',
+                      displayData.sentiment > 0
+                        ? 'text-stock-up'
+                        : displayData.sentiment < 0
+                          ? 'text-stock-down'
+                          : 'text-muted-foreground'
+                    )}
+                  >
+                    {displayData.sentiment >= 0 ? '+' : ''}
+                    {displayData.sentiment.toFixed(2)}
+                  </span>
                 </>
               )}
             </div>
           </div>
         ) : (
-          <div className="text-muted-foreground">No data available</div>
+          <div className="text-muted-foreground">{t('stock.noData')}</div>
         )}
       </div>
 
@@ -455,8 +536,8 @@ export default function StockChart({
       {!isLoading && (!Array.isArray(data) || data.length === 0) && (
         <div className="absolute inset-0 flex items-center justify-center">
           <div className="text-center text-muted-foreground">
-            <p>No chart data available</p>
-            <p className="text-sm">Try selecting a different time period</p>
+            <p>{t('stock.noChartData')}</p>
+            <p className="text-sm">{t('stock.tryDifferentPeriod')}</p>
           </div>
         </div>
       )}

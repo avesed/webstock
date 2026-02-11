@@ -9,6 +9,7 @@ import {
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu'
 import { ChevronDown, Settings2 } from 'lucide-react'
+import { useTranslation } from 'react-i18next'
 import type { ChartTimeframe } from '@/types'
 
 interface ChartControlsProps {
@@ -21,8 +22,11 @@ interface ChartControlsProps {
   className?: string
 }
 
+// Which timeframes are considered intraday (sentiment unavailable)
+const INTRADAY_TIMEFRAMES: ChartTimeframe[] = ['1H', '1D', '1W']
+
 export type ChartInterval = '1m' | '5m' | '15m' | '1h' | '4h' | '1d' | '1w'
-export type ChartIndicator = 'MA' | 'RSI' | 'MACD' | 'BB' | 'VOL'
+export type ChartIndicator = 'MA' | 'RSI' | 'MACD' | 'BB' | 'VOL' | 'SENT'
 
 const timeframes: { value: ChartTimeframe; label: string }[] = [
   { value: '1H', label: '1H' },
@@ -46,12 +50,14 @@ const intervals: { value: ChartInterval; label: string; description: string }[] 
   { value: '1w', label: '1W', description: '1 week' },
 ]
 
-const indicators: { value: ChartIndicator; label: string; description: string }[] = [
-  { value: 'MA', label: 'Moving Average', description: 'Simple and exponential moving averages' },
-  { value: 'RSI', label: 'RSI', description: 'Relative Strength Index' },
-  { value: 'MACD', label: 'MACD', description: 'Moving Average Convergence Divergence' },
-  { value: 'BB', label: 'Bollinger Bands', description: 'Volatility bands' },
-  { value: 'VOL', label: 'Volume', description: 'Trading volume histogram' },
+// i18n keys for each indicator (must be literal strings for type-safe i18n)
+const indicatorDefs: { value: ChartIndicator; labelKey: 'stock.indicators.ma' | 'stock.indicators.rsi' | 'stock.indicators.macd' | 'stock.indicators.bb' | 'stock.indicators.volume' | 'stock.indicators.sentiment'; descKey: 'stock.indicators.maDesc' | 'stock.indicators.rsiDesc' | 'stock.indicators.macdDesc' | 'stock.indicators.bbDesc' | 'stock.indicators.volumeDesc' | 'stock.indicators.sentimentDesc'; implemented: boolean }[] = [
+  { value: 'MA', labelKey: 'stock.indicators.ma', descKey: 'stock.indicators.maDesc', implemented: false },
+  { value: 'RSI', labelKey: 'stock.indicators.rsi', descKey: 'stock.indicators.rsiDesc', implemented: false },
+  { value: 'MACD', labelKey: 'stock.indicators.macd', descKey: 'stock.indicators.macdDesc', implemented: false },
+  { value: 'BB', labelKey: 'stock.indicators.bb', descKey: 'stock.indicators.bbDesc', implemented: false },
+  { value: 'VOL', labelKey: 'stock.indicators.volume', descKey: 'stock.indicators.volumeDesc', implemented: true },
+  { value: 'SENT', labelKey: 'stock.indicators.sentiment', descKey: 'stock.indicators.sentimentDesc', implemented: true },
 ]
 
 export default function ChartControls({
@@ -63,6 +69,7 @@ export default function ChartControls({
   onIndicatorToggle,
   className,
 }: ChartControlsProps) {
+  const { t } = useTranslation('dashboard')
   const selectedInterval = intervals.find((i) => i.value === interval)
 
   return (
@@ -97,7 +104,7 @@ export default function ChartControls({
             </Button>
           </DropdownMenuTrigger>
           <DropdownMenuContent align="start" className="w-48">
-            <DropdownMenuLabel>Chart Interval</DropdownMenuLabel>
+            <DropdownMenuLabel>{t('stock.indicators.chartInterval')}</DropdownMenuLabel>
             <DropdownMenuSeparator />
             {intervals.map((i) => (
               <DropdownMenuItem
@@ -121,7 +128,7 @@ export default function ChartControls({
           <DropdownMenuTrigger asChild>
             <Button variant="outline" size="sm" className="h-8 gap-1">
               <Settings2 className="h-3.5 w-3.5" />
-              <span className="hidden text-xs sm:inline">Indicators</span>
+              <span className="hidden text-xs sm:inline">{t('stock.indicators.title')}</span>
               {activeIndicators.length > 0 && (
                 <span className="ml-1 flex h-4 w-4 items-center justify-center rounded-full bg-primary text-[10px] text-primary-foreground">
                   {activeIndicators.length}
@@ -131,23 +138,33 @@ export default function ChartControls({
             </Button>
           </DropdownMenuTrigger>
           <DropdownMenuContent align="start" className="w-56">
-            <DropdownMenuLabel>Technical Indicators</DropdownMenuLabel>
+            <DropdownMenuLabel>{t('stock.indicators.technicalIndicators')}</DropdownMenuLabel>
             <DropdownMenuSeparator />
-            {indicators.map((indicator) => {
+            {indicatorDefs.map((indicator) => {
               const isActive = activeIndicators.includes(indicator.value)
+              const isIntraday = INTRADAY_TIMEFRAMES.includes(timeframe)
+              const isSentIntraday = indicator.value === 'SENT' && isIntraday
+              const isDisabled = !indicator.implemented
               return (
                 <DropdownMenuItem
                   key={indicator.value}
-                  onClick={() => onIndicatorToggle(indicator.value)}
-                  className="flex items-start gap-2"
+                  onClick={() => {
+                    if (!isDisabled) onIndicatorToggle(indicator.value)
+                  }}
+                  className={cn(
+                    'flex items-start gap-2',
+                    isDisabled && 'opacity-40 cursor-not-allowed'
+                  )}
                 >
                   <div
                     className={cn(
                       'mt-0.5 h-4 w-4 rounded border',
-                      isActive ? 'border-primary bg-primary' : 'border-input'
+                      isDisabled
+                        ? 'border-muted'
+                        : isActive ? 'border-primary bg-primary' : 'border-input'
                     )}
                   >
-                    {isActive && (
+                    {isActive && !isDisabled && (
                       <svg
                         className="h-4 w-4 text-primary-foreground"
                         fill="none"
@@ -164,18 +181,20 @@ export default function ChartControls({
                     )}
                   </div>
                   <div className="flex flex-col">
-                    <span className="font-medium">{indicator.label}</span>
+                    <span className={cn('font-medium', isDisabled && 'text-muted-foreground')}>
+                      {t(indicator.labelKey)}
+                      {isDisabled && <span className="ml-1 text-[10px] font-normal">({t('stock.indicators.comingSoon')})</span>}
+                    </span>
                     <span className="text-xs text-muted-foreground">
-                      {indicator.description}
+                      {t(indicator.descKey)}
+                      {isSentIntraday && isActive && (
+                        <span className="ml-1 text-amber-500">({t('stock.indicators.dailyOnly')})</span>
+                      )}
                     </span>
                   </div>
                 </DropdownMenuItem>
               )
             })}
-            <DropdownMenuSeparator />
-            <div className="px-2 py-1.5 text-xs text-muted-foreground">
-              Technical indicators coming soon
-            </div>
           </DropdownMenuContent>
         </DropdownMenu>
       )}

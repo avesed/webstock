@@ -131,6 +131,16 @@ export default function StockDetailPage() {
     enabled: !!upperSymbol,
   })
 
+  // Indicator visibility
+  const showVolume = chartControls.activeIndicators.includes('VOL')
+  const showSentiment = chartControls.activeIndicators.includes('SENT')
+  const { data: sentimentData } = useQuery({
+    queryKey: ['sentiment-timeline', upperSymbol],
+    queryFn: () => newsApi.getSentimentTimeline(upperSymbol, 90),
+    enabled: !!upperSymbol && showSentiment,
+    staleTime: 5 * 60 * 1000,
+  })
+
   // Fetch watchlists to check if stock is in any
   const { data: watchlistsData } = useQuery({
     queryKey: ['watchlists'],
@@ -343,6 +353,8 @@ export default function StockDetailPage() {
                     <ChartControls
                       timeframe={chartControls.timeframe}
                       onTimeframeChange={chartControls.setTimeframe}
+                      indicators={chartControls.activeIndicators}
+                      onIndicatorToggle={chartControls.toggleIndicator}
                     />
                   </CardHeader>
                   <CardContent>
@@ -358,6 +370,8 @@ export default function StockDetailPage() {
                         isLoading={isLoadingChart}
                         height={400}
                         onTimeframeChange={chartControls.setTimeframe}
+                        showVolume={showVolume}
+                        sentimentData={showSentiment ? sentimentData?.data : undefined}
                       />
                     )}
                   </CardContent>

@@ -32,6 +32,8 @@ from app.schemas.news import (
     NewsFeedResponse,
     NewsFullContentResponse,
     NewsResponse,
+    SentimentTimelineItemResponse,
+    SentimentTimelineResponse,
     TrendingNewsResponse,
 )
 from app.services.news_service import get_news_service
@@ -443,6 +445,106 @@ async def delete_news_alert(
     logger.info(f"Deleted news alert {alert_id}")
 
     return MessageResponse(message="News alert deleted successfully")
+
+
+@router.get(
+    "/{symbol}/sentiment-timeline",
+    response_model=SentimentTimelineResponse,
+    summary="Get sentiment timeline for a stock",
+    description="Get daily aggregated sentiment scores for a stock based on filtered news articles.",
+)
+async def get_sentiment_timeline(
+    symbol: str,
+    days: int = Query(30, ge=7, le=90, description="Number of days to look back"),
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+    _rate_limit: None = Depends(SYMBOL_NEWS_RATE_LIMIT),
+):
+    """
+    Get sentiment timeline for a specific stock.
+
+    Aggregates daily sentiment from news articles that passed the filtering pipeline
+    (filter_status='keep') and have a sentiment_tag assigned.
+
+    - **symbol**: Stock symbol (e.g., AAPL, 0700.HK, 600519.SS)
+    - **days**: Number of days to look back (7-90, default 30)
+    """
+    from datetime import timedelta
+    from sqlalchemy import text
+
+    symbol = symbol.strip().upper()
+
+    # Auto-append exchange suffix for bare A-share codes
+    if re.match(r"^[0-9]{6}$", symbol):
+        if symbol.startswith(("600", "601", "603", "605", "688")):
+            symbol = f"{symbol}.SS"
+        elif symbol.startswith(("000", "001", "002", "003", "300", "301")):
+            symbol = f"{symbol}.SZ"
+
+    # Auto-append .HK for bare 4-5 digit codes
+    if re.match(r"^[0-9]{4,5}$", symbol):
+        symbol = f"{symbol}.HK"
+
+    # Normalize HK symbols: 01810.HK → 1810.HK
+    if symbol.endswith(".HK"):
+        code = symbol[:-3]
+        try:
+            code = str(int(code)).zfill(4)
+        except ValueError:
+            pass
+        symbol = f"{code}.HK"
+
+    cutoff = datetime.now(timezone.utc) - timedelta(days=days)
+
+    query = text("""
+        SELECT
+            DATE(published_at) AS date,
+            COUNT(*) AS total,
+            COUNT(*) FILTER (WHERE sentiment_tag = 'bullish') AS bullish,
+            COUNT(*) FILTER (WHERE sentiment_tag = 'bearish') AS bearish,
+            COUNT(*) FILTER (WHERE sentiment_tag = 'neutral') AS neutral
+        FROM news
+        WHERE symbol = :symbol
+            AND filter_status = 'keep'
+            AND sentiment_tag IS NOT NULL
+            AND published_at >= :cutoff
+        GROUP BY DATE(published_at)
+        ORDER BY date ASC
+    """)
+
+    result = await db.execute(query, {"symbol": symbol, "cutoff": cutoff})
+    rows = result.fetchall()
+
+    data = []
+    for row in rows:
+        total = row.total
+        bullish = row.bullish
+        bearish = row.bearish
+        neutral = row.neutral
+        score = (bullish - bearish) / total if total > 0 else 0.0
+        data.append(
+            SentimentTimelineItemResponse(
+                date=str(row.date),
+                bullish=bullish,
+                bearish=bearish,
+                neutral=neutral,
+                total=total,
+                score=round(score, 4),
+            )
+        )
+
+    logger.info(
+        "Sentiment timeline for %s: %d days, %d data points",
+        symbol,
+        days,
+        len(data),
+    )
+
+    return SentimentTimelineResponse(
+        symbol=symbol,
+        days=days,
+        data=data,
+    )
 
 
 @router.get(

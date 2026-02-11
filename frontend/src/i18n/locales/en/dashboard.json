@@ -219,6 +219,37 @@
       "5Y": "5Y",
       "ALL": "All"
     },
+    "indicators": {
+      "title": "Indicators",
+      "technicalIndicators": "Technical Indicators",
+      "chartInterval": "Chart Interval",
+      "comingSoon": "Coming soon",
+      "dailyOnly": "1M+ only",
+      "ma": "Moving Average",
+      "maDesc": "Simple and exponential moving averages",
+      "rsi": "RSI",
+      "rsiDesc": "Relative Strength Index",
+      "macd": "MACD",
+      "macdDesc": "Moving Average Convergence Divergence",
+      "bb": "Bollinger Bands",
+      "bbDesc": "Volatility bands",
+      "volume": "Volume",
+      "volumeDesc": "Trading volume histogram",
+      "sentiment": "Sentiment",
+      "sentimentDesc": "News sentiment score timeline"
+    },
+    "ohlc": {
+      "open": "O",
+      "high": "H",
+      "low": "L",
+      "close": "C"
+    },
+    "vol": "Vol",
+    "contracts": "Contracts",
+    "sent": "Sent",
+    "noData": "No data available",
+    "noChartData": "No chart data available",
+    "tryDifferentPeriod": "Try selecting a different time period",
     "financials": {
       "revenue": "Revenue",
       "revenueGrowth": "Revenue Growth",

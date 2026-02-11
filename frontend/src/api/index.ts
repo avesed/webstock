@@ -18,6 +18,7 @@ import type {
   ReportSchedule,
   Report,
   NewsArticle,
+  SentimentTimelineResponse,
   SearchResult,
   PaginatedResponse,
   ChatConversation,
@@ -507,6 +508,17 @@ export const newsApi = {
     }
     const response = await apiClient.get<TrendingResponse>('/news/trending')
     return response.data.news
+  },
+
+  getSentimentTimeline: async (
+    symbol: string,
+    days = 30,
+  ): Promise<SentimentTimelineResponse> => {
+    const response = await apiClient.get<SentimentTimelineResponse>(
+      `/news/${encodeURIComponent(symbol)}/sentiment-timeline`,
+      { params: { days } },
+    )
+    return response.data
   },
 
   analyzeArticle: async (article: NewsArticle, language: string = 'en'): Promise<NewsArticle> => {

@@ -164,3 +164,22 @@ class BatchFetchResponse(CamelModel):
 
     queued: int
     message: str
+
+
+class SentimentTimelineItemResponse(CamelModel):
+    """Single day sentiment aggregation data."""
+
+    date: str  # YYYY-MM-DD
+    bullish: int
+    bearish: int
+    neutral: int
+    total: int
+    score: float  # (bullish - bearish) / total, range -1.0 ~ 1.0
+
+
+class SentimentTimelineResponse(CamelModel):
+    """Sentiment trend timeline."""
+
+    symbol: str
+    days: int
+    data: List[SentimentTimelineItemResponse]
