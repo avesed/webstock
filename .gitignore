@@ -107,6 +107,7 @@ review-reports/
 *.local.yml
 *.local.yaml
 .claude/
+docs/
 
 # Runtime generated data
 data/stock_list/

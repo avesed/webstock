@@ -159,6 +159,8 @@ class TushareProvider(DataProvider):
         market: Market,
         period: HistoryPeriod,
         interval: HistoryInterval,
+        start: Optional[str] = None,
+        end: Optional[str] = None,
     ) -> Optional[StockHistory]:
         """History not implemented for Tushare fallback."""
         return None

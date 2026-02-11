@@ -10,6 +10,7 @@ import type {
   StockFinancials,
   CandlestickData,
   ChartTimeframe,
+  TechnicalIndicatorsData,
   Watchlist,
   Portfolio,
   Transaction,
@@ -52,6 +53,62 @@ function toMarketLocalTimestamp(isoDate: string): number {
 
   // No offset in string (e.g. "Z" or bare) — fall back to UTC
   return utcSeconds
+}
+
+/**
+ * Convert a datetime string (e.g. "YYYY-MM-DD HH:MM:SS" or ISO with offset) to a
+ * Unix timestamp suitable for lightweight-charts. For strings with timezone offset,
+ * delegates to toMarketLocalTimestamp. For bare datetime strings (no offset), parses
+ * as UTC and returns the seconds value directly (lightweight-charts renders as UTC).
+ */
+function datetimeToTimestamp(dateStr: string): number {
+  // If the string contains a timezone offset, use the existing helper
+  if (/[+-]\d{2}:\d{2}$/.test(dateStr) || dateStr.endsWith('Z')) {
+    return toMarketLocalTimestamp(dateStr)
+  }
+  // Bare datetime like "2026-02-03 09:30:00" — parse as UTC
+  const d = new Date(dateStr.replace(' ', 'T') + 'Z')
+  return Math.floor(d.getTime() / 1000)
+}
+
+/**
+ * In-place conversion of indicator data point times from datetime strings to
+ * Unix timestamps, for use with lightweight-charts in time-based (intraday) mode.
+ */
+function convertIndicatorTimesToTimestamps(data: TechnicalIndicatorsData): void {
+  const convertPoints = (points: Array<{ time: string | number; value: number }>) => {
+    for (const p of points) {
+      if (typeof p.time === 'string') {
+        p.time = datetimeToTimestamp(p.time)
+      }
+    }
+  }
+
+  // MA series (keyed by period, e.g. "20", "50", "200")
+  if (data.ma) {
+    for (const maData of Object.values(data.ma)) {
+      convertPoints(maData.series)
+    }
+  }
+
+  // RSI
+  if (data.rsi) {
+    convertPoints(data.rsi.series)
+  }
+
+  // MACD
+  if (data.macd) {
+    convertPoints(data.macd.macdLine)
+    convertPoints(data.macd.signalLine)
+    convertPoints(data.macd.histogram)
+  }
+
+  // Bollinger Bands
+  if (data.bb) {
+    convertPoints(data.bb.upper)
+    convertPoints(data.bb.middle)
+    convertPoints(data.bb.lower)
+  }
 }
 
 // Auth API
@@ -98,6 +155,81 @@ export const authApi = {
     })
     return response.data
   },
+}
+
+// Period mapping: timeframe → yfinance period parameter
+const TIMEFRAME_PERIOD: Record<ChartTimeframe, string> = {
+  '1H': '1d',
+  '1D': '1d',
+  '1W': '5d',
+  '1M': '1mo',
+  '3M': '3mo',
+  '6M': '6mo',
+  '1Y': '1y',
+  '5Y': '5y',
+  'ALL': 'max',
+}
+
+// Default interval for each timeframe (used when no override is provided)
+export const TIMEFRAME_DEFAULT_INTERVAL: Record<ChartTimeframe, string> = {
+  '1H': '1m',
+  '1D': '5m',
+  '1W': '15m',
+  '1M': '1h',
+  '3M': '1d',
+  '6M': '1d',
+  '1Y': '1d',
+  '5Y': '1wk',
+  'ALL': '1mo',
+}
+
+// Maximum lookback in days for each interval (yfinance limits)
+export const MAX_LOOKBACK_DAYS: Record<string, number> = {
+  '1m': 7,
+  '2m': 60,
+  '5m': 60,
+  '15m': 60,
+  '30m': 60,
+  '1h': 730,
+  '1d': Infinity,
+  '1wk': Infinity,
+  '1mo': Infinity,
+}
+
+/** Set of intervals considered intraday (sub-daily) */
+const INTRADAY_INTERVALS = new Set(['1m', '2m', '5m', '15m', '30m', '1h'])
+
+/**
+ * Clamp a yfinance period to fit within an interval's maximum lookback window.
+ * E.g. interval=2m supports max 60 days → period '1y' is clamped to '1mo'.
+ */
+const PERIOD_APPROX_DAYS: [string, number][] = [
+  ['1d', 1],
+  ['5d', 5],
+  ['1mo', 31],
+  ['3mo', 92],
+  ['6mo', 183],
+  ['1y', 366],
+  ['2y', 731],
+  ['5y', 1827],
+  ['max', Infinity],
+]
+
+function clampPeriod(period: string, interval: string): string {
+  const maxDays = MAX_LOOKBACK_DAYS[interval]
+  if (maxDays == null || !isFinite(maxDays)) return period
+
+  // Check if the current period already fits
+  const currentDays = PERIOD_APPROX_DAYS.find(([p]) => p === period)?.[1] ?? Infinity
+  if (currentDays <= maxDays) return period
+
+  // Find the largest period that fits within the lookback limit
+  let best = '1d'
+  for (const [p, days] of PERIOD_APPROX_DAYS) {
+    if (days <= maxDays) best = p
+    else break
+  }
+  return best
 }
 
 // Stock API
@@ -174,22 +306,15 @@ export const stockApi = {
 
   getHistory: async (
     symbol: string,
-    timeframe: ChartTimeframe = '1M'
-  ): Promise<CandlestickData[]> => {
-    // Map frontend timeframe to backend period and interval
-    const timeframeMap: Record<ChartTimeframe, { period: string; interval: string }> = {
-      '1H': { period: '1d', interval: '1m' },
-      '1D': { period: '1d', interval: '5m' },
-      '1W': { period: '5d', interval: '15m' },
-      '1M': { period: '1mo', interval: '1d' },
-      '3M': { period: '3mo', interval: '1d' },
-      '6M': { period: '6mo', interval: '1d' },
-      '1Y': { period: '1y', interval: '1d' },
-      '5Y': { period: '5y', interval: '1wk' },
-      'ALL': { period: 'max', interval: '1mo' },
+    timeframe: ChartTimeframe = '1M',
+    options?: {
+      intervalOverride?: string
+      start?: string
+      end?: string
     }
-
-    const { period, interval } = timeframeMap[timeframe]
+  ): Promise<CandlestickData[]> => {
+    const interval = options?.intervalOverride ?? TIMEFRAME_DEFAULT_INTERVAL[timeframe]
+    const period = TIMEFRAME_PERIOD[timeframe]
 
     interface HistoryResponse {
       symbol: string
@@ -206,14 +331,22 @@ export const stockApi = {
       source: string
     }
 
-    const response = await apiClient.get<HistoryResponse>('/stocks/history', {
-      params: { symbol, period, interval },
-    })
+    // When start/end are provided, use date-range mode (don't send period).
+    // Otherwise fall back to period mode with period clamped to interval's max lookback.
+    const params: Record<string, string> = { symbol, interval }
+    if (options?.start && options?.end) {
+      params.start = options.start
+      params.end = options.end
+    } else {
+      params.period = clampPeriod(period, interval)
+    }
+
+    const response = await apiClient.get<HistoryResponse>('/stocks/history', { params })
 
     // Transform backend response to frontend CandlestickData format
     // Backend returns { bars: [...] } with 'date' field, frontend expects array with 'time' field
     const bars = response.data.bars || []
-    const isIntraday = ['1m', '5m', '15m', '1h'].includes(interval)
+    const isIntraday = INTRADAY_INTERVALS.has(interval)
     return bars.map((bar): CandlestickData => ({
       // lightweight-charts needs YYYY-MM-DD for daily+ data, Unix timestamp for intraday
       // For intraday: convert to market-local time since lightweight-charts displays UTC
@@ -226,6 +359,53 @@ export const stockApi = {
       close: bar.close,
       volume: bar.volume,
     }))
+  },
+
+  getIndicators: async (
+    symbol: string,
+    timeframe: ChartTimeframe = '1M',
+    types: string[] = ['sma'],
+    options?: {
+      maPeriods?: number[]
+      rsiPeriod?: number
+      bbPeriod?: number
+      bbStd?: number
+      intervalOverride?: string
+      start?: string
+      end?: string
+    }
+  ): Promise<TechnicalIndicatorsData> => {
+    const interval = options?.intervalOverride ?? TIMEFRAME_DEFAULT_INTERVAL[timeframe]
+    const period = TIMEFRAME_PERIOD[timeframe]
+
+    // Build params: date-range mode when start/end are provided, period mode otherwise.
+    // Period is clamped to fit within the interval's max lookback window.
+    const params: Record<string, string | number> = {
+      symbol,
+      types: types.join(','),
+      interval,
+    }
+    if (options?.start && options?.end) {
+      params.start = options.start
+      params.end = options.end
+    } else {
+      params.period = clampPeriod(period, interval)
+    }
+    if (options?.maPeriods != null) params.ma_periods = options.maPeriods.join(',')
+    if (options?.rsiPeriod != null) params.rsi_period = options.rsiPeriod
+    if (options?.bbPeriod != null) params.bb_period = options.bbPeriod
+    if (options?.bbStd != null) params.bb_std = options.bbStd
+
+    const response = await apiClient.get<TechnicalIndicatorsData>('/stocks/indicators', { params })
+
+    // For intraday intervals, indicator time values come as "YYYY-MM-DD HH:MM:SS"
+    // and need to be converted to Unix timestamps for lightweight-charts
+    const isIntraday = INTRADAY_INTERVALS.has(interval)
+    if (isIntraday) {
+      convertIndicatorTimesToTimestamps(response.data)
+    }
+
+    return response.data
   },
 
   search: async (query: string, signal?: AbortSignal): Promise<SearchResult[]> => {

@@ -23,8 +23,10 @@ class HistoryInterval(str, Enum):
     """Historical data intervals."""
 
     ONE_MINUTE = "1m"
+    TWO_MINUTES = "2m"
     FIVE_MINUTES = "5m"
     FIFTEEN_MINUTES = "15m"
+    THIRTY_MINUTES = "30m"
     HOURLY = "1h"
     DAILY = "1d"
     WEEKLY = "1wk"
@@ -165,3 +167,52 @@ class ErrorResponse(BaseModel):
 
     detail: str
     code: Optional[str] = None
+
+
+# =============================================================================
+# Technical indicator schemas
+# =============================================================================
+
+
+class IndicatorDataPoint(CamelModel):
+    """Single data point in a technical indicator time series."""
+
+    time: str
+    value: float
+
+
+class MAIndicatorResponse(CamelModel):
+    """Response for a moving average indicator (SMA or EMA)."""
+
+    series: List[IndicatorDataPoint]
+    metadata: Dict[str, Any]
+
+
+class MACDIndicatorResponse(CamelModel):
+    """Response for MACD indicator with three lines."""
+
+    macd_line: List[IndicatorDataPoint]
+    signal_line: List[IndicatorDataPoint]
+    histogram: List[IndicatorDataPoint]
+    metadata: Dict[str, Any]
+
+
+class BollingerBandsResponse(CamelModel):
+    """Response for Bollinger Bands indicator with three bands."""
+
+    upper: List[IndicatorDataPoint]
+    middle: List[IndicatorDataPoint]
+    lower: List[IndicatorDataPoint]
+    metadata: Dict[str, Any]
+
+
+class TechnicalIndicatorsResponse(CamelModel):
+    """Full technical indicators response for a symbol."""
+
+    symbol: str
+    interval: str
+    ma: Optional[Dict[str, MAIndicatorResponse]] = None
+    rsi: Optional[MAIndicatorResponse] = None
+    macd: Optional[MACDIndicatorResponse] = None
+    bb: Optional[BollingerBandsResponse] = None
+    warnings: List[str] = []

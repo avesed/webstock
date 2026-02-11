@@ -236,7 +236,12 @@
       "volume": "成交量",
       "volumeDesc": "成交量柱状图",
       "sentiment": "情感趋势",
-      "sentimentDesc": "新闻情感评分时间线"
+      "sentimentDesc": "新闻情感评分时间线",
+      "maPeriods": "均线周期",
+      "maPeriodsPlaceholder": "例如 20, 50, 200",
+      "insufficientData": "{{indicator}}数据不足",
+      "autoInterval": "自动精度: {{interval}}",
+      "intervalLimited": "当前精度数据有限"
     },
     "ohlc": {
       "open": "开",

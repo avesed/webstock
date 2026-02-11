@@ -261,6 +261,8 @@ class TiingoProvider(DataProvider):
         market: Market,
         period: HistoryPeriod,
         interval: HistoryInterval,
+        start: Optional[str] = None,
+        end: Optional[str] = None,
     ) -> Optional[StockHistory]:
         """Get historical data from Tiingo EOD endpoint."""
         if not self.is_available():

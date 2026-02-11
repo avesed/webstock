@@ -404,6 +404,41 @@ export interface ChartOptions {
   bollingerStdDev: number
 }
 
+// Technical Indicator types
+export interface IndicatorDataPoint {
+  time: string | number
+  value: number
+}
+
+export interface MAIndicatorData {
+  series: IndicatorDataPoint[]
+  metadata: Record<string, unknown>
+}
+
+export interface MACDIndicatorData {
+  macdLine: IndicatorDataPoint[]
+  signalLine: IndicatorDataPoint[]
+  histogram: IndicatorDataPoint[]
+  metadata: Record<string, unknown>
+}
+
+export interface BollingerBandsData {
+  upper: IndicatorDataPoint[]
+  middle: IndicatorDataPoint[]
+  lower: IndicatorDataPoint[]
+  metadata: Record<string, unknown>
+}
+
+export interface TechnicalIndicatorsData {
+  symbol: string
+  interval: string
+  ma?: Record<string, MAIndicatorData>
+  rsi?: MAIndicatorData
+  macd?: MACDIndicatorData
+  bb?: BollingerBandsData
+  warnings: string[]
+}
+
 // Search types
 export type MatchField = 'symbol' | 'name' | 'name_zh' | 'pinyin' | 'pinyin_initial'
 

@@ -69,6 +69,8 @@ class DataProvider(ABC):
         market: Market,
         period: HistoryPeriod,
         interval: HistoryInterval,
+        start: Optional[str] = None,
+        end: Optional[str] = None,
     ) -> Optional[StockHistory]:
         """
         Get historical OHLCV data.
@@ -76,8 +78,10 @@ class DataProvider(ABC):
         Args:
             symbol: Stock symbol
             market: Market the symbol belongs to
-            period: Time period (1mo, 1y, etc.)
+            period: Time period (1mo, 1y, etc.) - ignored when start/end provided
             interval: Data interval (1d, 1wk, etc.)
+            start: Optional start date/datetime (e.g. '2025-03-01' or '2025-03-01T09:30:00')
+            end: Optional end date/datetime (e.g. '2025-03-15' or '2025-03-15T15:00:00')
 
         Returns:
             StockHistory or None if unavailable

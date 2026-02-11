@@ -261,12 +261,14 @@ class AKShareProvider(DataProvider):
         market: Market,
         period: HistoryPeriod,
         interval: HistoryInterval,
+        start: Optional[str] = None,
+        end: Optional[str] = None,
     ) -> Optional[StockHistory]:
         """Get historical data from akshare."""
         if market == Market.HK:
-            return await self._get_history_hk(symbol, period, interval)
+            return await self._get_history_hk(symbol, period, interval, start=start, end=end)
         elif market in (Market.SH, Market.SZ):
-            return await self._get_history_cn(symbol, market, period, interval)
+            return await self._get_history_cn(symbol, market, period, interval, start=start, end=end)
         return None
 
     async def _get_history_cn(
@@ -275,54 +277,83 @@ class AKShareProvider(DataProvider):
         market: Market,
         period: HistoryPeriod,
         interval: HistoryInterval,
+        start: Optional[str] = None,
+        end: Optional[str] = None,
     ) -> Optional[StockHistory]:
-        """Get historical data for A-shares."""
+        """Get historical data for A-shares.
+
+        Uses stock_zh_a_hist_min_em (Eastmoney) for intraday intervals
+        and stock_zh_a_hist for daily/weekly/monthly.
+        """
         try:
             import akshare as ak
 
             code = normalize_symbol(symbol, market)
 
-            # Intraday intervals: use ak.stock_zh_a_minute()
-            intraday_period = {
+            # Intraday intervals: use ak.stock_zh_a_hist_min_em() (Eastmoney source)
+            # Supports: 1m, 5m, 15m, 30m, 60m. 2m is not natively supported; fallback to 1m.
+            intraday_map = {
                 HistoryInterval.ONE_MINUTE: "1",
+                HistoryInterval.TWO_MINUTES: "1",   # AKShare doesn't support 2m; fallback to 1m
                 HistoryInterval.FIVE_MINUTES: "5",
                 HistoryInterval.FIFTEEN_MINUTES: "15",
+                HistoryInterval.THIRTY_MINUTES: "30",
                 HistoryInterval.HOURLY: "60",
-            }.get(interval)
+            }
+            if interval == HistoryInterval.TWO_MINUTES:
+                logger.info("AKShare CN: 2m interval not supported, falling back to 1m for %s", symbol)
+            intraday_period = intraday_map.get(interval)
 
             if intraday_period is not None:
-                sina_symbol = f"{'sh' if market == Market.SH else 'sz'}{code}"
-
                 def fetch_minute():
-                    return ak.stock_zh_a_minute(
-                        symbol=sina_symbol,
-                        period=intraday_period,
-                        adjust="qfq",
-                    )
+                    kwargs = {
+                        "symbol": code,
+                        "period": intraday_period,
+                        "adjust": "qfq",
+                    }
+                    # When start/end provided, pass them to the API
+                    # Normalize ISO 'T' separator to space; AKShare expects "YYYY-MM-DD HH:MM:SS"
+                    if start and end:
+                        kwargs["start_date"] = start.replace("T", " ")[:19]
+                        kwargs["end_date"] = end.replace("T", " ")[:19]
+                        logger.info(
+                            "AKShare CN intraday for %s: start=%s, end=%s, period=%s",
+                            symbol, start, end, intraday_period,
+                        )
+                    return ak.stock_zh_a_hist_min_em(**kwargs)
 
                 df = await run_in_executor(fetch_minute)
                 if df is None or df.empty:
+                    logger.info("AKShare CN intraday returned no data for %s (period=%s)", symbol, intraday_period)
                     return None
 
-                df = df.dropna(subset=["open", "high", "low", "close"])
+                # Column names from stock_zh_a_hist_min_em are Chinese:
+                # 时间, 开盘, 收盘, 最高, 最低, 成交量, 成交额, 振幅, 涨跌幅, 涨跌额, 换手率
+                ohlc_cols = ["开盘", "最高", "最低", "收盘"]
+                available_ohlc = [c for c in ohlc_cols if c in df.columns]
+                if available_ohlc:
+                    df = df.dropna(subset=available_ohlc)
 
                 bars = []
                 for _, row in df.iterrows():
-                    date_val = row["day"]
+                    date_val = row["时间"]
                     if isinstance(date_val, str):
                         date_val = datetime.strptime(date_val, "%Y-%m-%d %H:%M:%S")
                     bars.append(
                         OHLCVBar(
                             date=date_val,
-                            open=round(float(row["open"]), 4),
-                            high=round(float(row["high"]), 4),
-                            low=round(float(row["low"]), 4),
-                            close=round(float(row["close"]), 4),
-                            volume=int(row["volume"]),
+                            open=round(float(row["开盘"]), 4),
+                            high=round(float(row["最高"]), 4),
+                            low=round(float(row["最低"]), 4),
+                            close=round(float(row["收盘"]), 4),
+                            volume=int(row["成交量"]),
                         )
                     )
 
-                if bars:
+                logger.info("AKShare CN intraday for %s: %d bars returned", symbol, len(bars))
+
+                # When no start/end provided, trim by period
+                if bars and not (start and end):
                     period_days_map = {
                         HistoryPeriod.ONE_DAY: 1,
                         HistoryPeriod.FIVE_DAYS: 5,
@@ -346,32 +377,44 @@ class AKShareProvider(DataProvider):
                 HistoryInterval.MONTHLY: "monthly",
             }.get(interval, "daily")
 
-            end_date = datetime.now()
-            period_days = {
-                HistoryPeriod.ONE_DAY: 1,
-                HistoryPeriod.FIVE_DAYS: 5,
-                HistoryPeriod.ONE_MONTH: 30,
-                HistoryPeriod.THREE_MONTHS: 90,
-                HistoryPeriod.SIX_MONTHS: 180,
-                HistoryPeriod.ONE_YEAR: 365,
-                HistoryPeriod.TWO_YEARS: 730,
-                HistoryPeriod.FIVE_YEARS: 1825,
-                HistoryPeriod.MAX: 3650,
-            }
-            start_date = end_date - timedelta(days=period_days.get(period, 365))
+            # Determine date range: use start/end if provided, else calculate from period
+            if start and end:
+                fmt_start = start.replace("-", "")[:8]  # "YYYY-MM-DD..." -> "YYYYMMDD"
+                fmt_end = end.replace("-", "")[:8]
+                logger.info(
+                    "AKShare CN daily for %s: start=%s, end=%s",
+                    symbol, fmt_start, fmt_end,
+                )
+            else:
+                end_date = datetime.now()
+                period_days = {
+                    HistoryPeriod.ONE_DAY: 1,
+                    HistoryPeriod.FIVE_DAYS: 5,
+                    HistoryPeriod.ONE_MONTH: 30,
+                    HistoryPeriod.THREE_MONTHS: 90,
+                    HistoryPeriod.SIX_MONTHS: 180,
+                    HistoryPeriod.ONE_YEAR: 365,
+                    HistoryPeriod.TWO_YEARS: 730,
+                    HistoryPeriod.FIVE_YEARS: 1825,
+                    HistoryPeriod.MAX: 3650,
+                }
+                start_date = end_date - timedelta(days=period_days.get(period, 365))
+                fmt_start = start_date.strftime("%Y%m%d")
+                fmt_end = end_date.strftime("%Y%m%d")
 
             def fetch():
                 df = ak.stock_zh_a_hist(
                     symbol=code,
                     period=ak_period,
-                    start_date=start_date.strftime("%Y%m%d"),
-                    end_date=end_date.strftime("%Y%m%d"),
+                    start_date=fmt_start,
+                    end_date=fmt_end,
                     adjust="qfq",
                 )
                 return df
 
             df = await run_in_executor(fetch)
             if df is None or df.empty:
+                logger.info("AKShare CN daily returned no data for %s", symbol)
                 return None
 
             bars = []
@@ -406,8 +449,23 @@ class AKShareProvider(DataProvider):
         symbol: str,
         period: HistoryPeriod,
         interval: HistoryInterval,
+        start: Optional[str] = None,
+        end: Optional[str] = None,
     ) -> Optional[StockHistory]:
-        """Get historical data for HK stocks."""
+        """Get historical data for HK stocks (daily only)."""
+        # HK via AKShare only supports daily intervals; skip for intraday
+        # so the router can try yfinance as fallback
+        _intraday_intervals = {
+            HistoryInterval.ONE_MINUTE, HistoryInterval.TWO_MINUTES,
+            HistoryInterval.FIVE_MINUTES, HistoryInterval.FIFTEEN_MINUTES,
+            HistoryInterval.THIRTY_MINUTES, HistoryInterval.HOURLY,
+        }
+        if interval in _intraday_intervals:
+            logger.info(
+                "AKShare HK does not support intraday interval %s for %s, skipping",
+                interval.value, symbol,
+            )
+            return None
         try:
             import akshare as ak
 
@@ -425,16 +483,30 @@ class AKShareProvider(DataProvider):
             if df is None or df.empty:
                 return None
 
-            period_days = {
-                HistoryPeriod.ONE_MONTH: 30,
-                HistoryPeriod.THREE_MONTHS: 90,
-                HistoryPeriod.SIX_MONTHS: 180,
-                HistoryPeriod.ONE_YEAR: 365,
-                HistoryPeriod.TWO_YEARS: 730,
-                HistoryPeriod.FIVE_YEARS: 1825,
-                HistoryPeriod.MAX: 9999,
-            }
-            cutoff = datetime.now() - timedelta(days=period_days.get(period, 365))
+            # When start/end provided, use them as cutoff; otherwise use period
+            if start and end:
+                cutoff_str = start[:10]  # "YYYY-MM-DD"
+                cutoff = datetime.strptime(cutoff_str, "%Y-%m-%d")
+                logger.info(
+                    "AKShare HK history for %s: filtering start=%s, end=%s",
+                    symbol, start, end,
+                )
+            else:
+                period_days = {
+                    HistoryPeriod.ONE_MONTH: 30,
+                    HistoryPeriod.THREE_MONTHS: 90,
+                    HistoryPeriod.SIX_MONTHS: 180,
+                    HistoryPeriod.ONE_YEAR: 365,
+                    HistoryPeriod.TWO_YEARS: 730,
+                    HistoryPeriod.FIVE_YEARS: 1825,
+                    HistoryPeriod.MAX: 9999,
+                }
+                cutoff = datetime.now() - timedelta(days=period_days.get(period, 365))
+
+            # Parse end date for filtering when start/end provided
+            end_cutoff = None
+            if start and end:
+                end_cutoff = datetime.strptime(end[:10], "%Y-%m-%d") + timedelta(days=1)
 
             bars = []
             for _, row in df.iterrows():
@@ -442,6 +514,8 @@ class AKShareProvider(DataProvider):
                 if isinstance(date_val, str):
                     date_val = datetime.strptime(date_val, "%Y-%m-%d")
                 if date_val < cutoff:
+                    continue
+                if end_cutoff and date_val >= end_cutoff:
                     continue
 
                 bars.append(

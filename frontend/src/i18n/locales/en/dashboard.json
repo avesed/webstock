@@ -236,7 +236,12 @@
       "volume": "Volume",
       "volumeDesc": "Trading volume histogram",
       "sentiment": "Sentiment",
-      "sentimentDesc": "News sentiment score timeline"
+      "sentimentDesc": "News sentiment score timeline",
+      "maPeriods": "MA Periods",
+      "maPeriodsPlaceholder": "e.g. 20, 50, 200",
+      "insufficientData": "Insufficient data for {{indicator}}",
+      "autoInterval": "Auto resolution: {{interval}}",
+      "intervalLimited": "Limited data at this resolution"
     },
     "ohlc": {
       "open": "O",

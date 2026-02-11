@@ -208,6 +208,8 @@ class YFinanceProvider(DataProvider):
         market: Market,
         period: HistoryPeriod,
         interval: HistoryInterval,
+        start: Optional[str] = None,
+        end: Optional[str] = None,
     ) -> Optional[StockHistory]:
         """Get historical data from yfinance."""
         try:
@@ -215,7 +217,22 @@ class YFinanceProvider(DataProvider):
 
             def fetch():
                 ticker = yf.Ticker(symbol)
-                df = ticker.history(period=period.value, interval=interval.value)
+                if start and end:
+                    # yfinance only accepts YYYY-MM-DD for start/end (not datetime strings).
+                    # Strip any time component (e.g. "2026-02-10T09:29:00" → "2026-02-10").
+                    yf_start = start[:10] if len(start) > 10 else start
+                    yf_end = end[:10] if len(end) > 10 else end
+                    # yfinance end is exclusive — if same date, bump end by 1 day
+                    if yf_start == yf_end:
+                        from datetime import datetime as _dt, timedelta as _td
+                        yf_end = (_dt.strptime(yf_end, "%Y-%m-%d") + _td(days=1)).strftime("%Y-%m-%d")
+                    logger.info(
+                        "YFinance history for %s: start=%s, end=%s, interval=%s",
+                        symbol, yf_start, yf_end, interval.value,
+                    )
+                    df = ticker.history(start=yf_start, end=yf_end, interval=interval.value)
+                else:
+                    df = ticker.history(period=period.value, interval=interval.value)
                 return df
 
             df = await run_in_executor(fetch)

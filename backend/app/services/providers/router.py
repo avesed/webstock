@@ -123,6 +123,8 @@ class ProviderRouter:
         period: HistoryPeriod,
         interval: HistoryInterval,
         market: Optional[Market] = None,
+        start: Optional[str] = None,
+        end: Optional[str] = None,
     ) -> Optional[StockHistory]:
         """Get history with automatic fallback."""
         if market is None:
@@ -131,7 +133,7 @@ class ProviderRouter:
         return await self._try_providers(
             market,
             f"get_history({symbol})",
-            lambda p: p.get_history(symbol, market, period, interval),
+            lambda p: p.get_history(symbol, market, period, interval, start=start, end=end),
         )
 
     async def get_info(

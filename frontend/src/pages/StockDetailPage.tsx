@@ -1,7 +1,7 @@
 import { useParams } from 'react-router-dom'
 import { useTranslation } from 'react-i18next'
-import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { useEffect } from 'react'
+import { useQuery, useMutation, useQueryClient, keepPreviousData } from '@tanstack/react-query'
+import { useEffect, useCallback } from 'react'
 import {
   TrendingUp,
   TrendingDown,
@@ -22,6 +22,8 @@ import {
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu'
 import { StockChart, ChartControls, useChartControls } from '@/components/chart'
+import type { ChartInterval } from '@/components/chart'
+import { TIMEFRAME_DEFAULT_INTERVAL } from '@/api'
 import {
   cn,
   formatCurrency,
@@ -52,7 +54,7 @@ export default function StockDetailPage() {
   const queryClient = useQueryClient()
   const { toast } = useToast()
   const { setSelectedSymbol, setSelectedQuote, setSelectedInfo } = useStockStore()
-  const chartControls = useChartControls('1M')
+  const chartControls = useChartControls('1D')
 
   // Tab navigation with URL sync
   const {
@@ -98,17 +100,31 @@ export default function StockDetailPage() {
     enabled: !!upperSymbol && !isMetalAsset,
   })
 
-  // Fetch chart data (auto-refresh for intraday timeframes)
-  const isIntradayTimeframe = chartControls.timeframe === '1H' || chartControls.timeframe === '1D'
+  // Intraday timeframes use sub-daily intervals (1m, 5m, 15m)
+  const isIntradayTimeframe = chartControls.timeframe === '1H' || chartControls.timeframe === '1D' || chartControls.timeframe === '1W'
   const {
     data: chartData,
     isLoading: isLoadingChart,
     error: chartError,
   } = useQuery({
-    queryKey: ['stock-history', upperSymbol, chartControls.timeframe],
-    queryFn: () => stockApi.getHistory(upperSymbol, chartControls.timeframe),
+    queryKey: ['stock-history', upperSymbol, chartControls.timeframe, chartControls.interval, chartControls.visibleRange],
+    queryFn: () => {
+      if (chartControls.visibleRange) {
+        // Date-range mode: fetch specific interval + date range
+        return stockApi.getHistory(upperSymbol, chartControls.timeframe, {
+          intervalOverride: chartControls.interval,
+          start: chartControls.visibleRange.start,
+          end: chartControls.visibleRange.end,
+        })
+      }
+      // Period mode: always pass current interval (supports manual override)
+      return stockApi.getHistory(upperSymbol, chartControls.timeframe, {
+        intervalOverride: chartControls.interval,
+      })
+    },
     enabled: !!upperSymbol,
-    refetchInterval: isIntradayTimeframe ? 60000 : false, // Refresh every 60s for 1H/1D
+    placeholderData: keepPreviousData,
+    refetchInterval: isIntradayTimeframe && !chartControls.visibleRange ? 60000 : false,
     retry: (failureCount, error: any) => {
       // Don't retry 409 (futures market closed)
       if (error?.response?.status === 409) return false
@@ -139,6 +155,50 @@ export default function StockDetailPage() {
     queryFn: () => newsApi.getSentimentTimeline(upperSymbol, 90),
     enabled: !!upperSymbol && showSentiment,
     staleTime: 5 * 60 * 1000,
+  })
+
+  // Technical indicators
+  const showMA = chartControls.activeIndicators.includes('MA')
+  const showRSI = chartControls.activeIndicators.includes('RSI')
+  const showMACD = chartControls.activeIndicators.includes('MACD')
+  const showBB = chartControls.activeIndicators.includes('BB')
+  const hasAnyTechnicalIndicator = showMA || showRSI || showMACD || showBB
+
+  const indicatorTypes = [
+    ...(showMA ? ['sma'] : []),
+    ...(showRSI ? ['rsi'] : []),
+    ...(showMACD ? ['macd'] : []),
+    ...(showBB ? ['bb'] : []),
+  ]
+
+  const { data: indicatorData } = useQuery({
+    queryKey: ['stock-indicators', upperSymbol, chartControls.timeframe, chartControls.interval, chartControls.visibleRange, indicatorTypes.join(','), chartControls.maPeriods.join(',')],
+    queryFn: () => {
+      const opts: {
+        maPeriods: number[]
+        intervalOverride?: string
+        start?: string
+        end?: string
+      } = {
+        maPeriods: chartControls.maPeriods,
+        intervalOverride: chartControls.interval,
+      }
+
+      if (chartControls.visibleRange) {
+        opts.start = chartControls.visibleRange.start
+        opts.end = chartControls.visibleRange.end
+      }
+
+      return stockApi.getIndicators(
+        upperSymbol,
+        chartControls.timeframe,
+        indicatorTypes,
+        opts
+      )
+    },
+    enabled: !!upperSymbol && hasAnyTechnicalIndicator,
+    placeholderData: keepPreviousData,
+    staleTime: 60_000,
   })
 
   // Fetch watchlists to check if stock is in any
@@ -214,6 +274,18 @@ export default function StockDetailPage() {
       addToWatchlistMutation.mutate({ watchlistId, symbol: upperSymbol })
     }
   }
+
+  // Zoom-triggered interval/range change from StockChart
+  const handleVisibleRangeChange = useCallback((newInterval: string, range: { start: string; end: string }) => {
+    chartControls.setInterval(newInterval as ChartInterval)
+    chartControls.setVisibleRange(range)
+  }, [chartControls])
+
+  // Zoom-out reset to period mode
+  const handleVisibleRangeReset = useCallback(() => {
+    chartControls.setInterval(TIMEFRAME_DEFAULT_INTERVAL[chartControls.timeframe] as ChartInterval)
+    chartControls.setVisibleRange(null)
+  }, [chartControls])
 
   if (quoteError) {
     return (
@@ -353,8 +425,15 @@ export default function StockDetailPage() {
                     <ChartControls
                       timeframe={chartControls.timeframe}
                       onTimeframeChange={chartControls.setTimeframe}
+                      interval={chartControls.interval}
+                      onIntervalChange={(newInterval) => {
+                        chartControls.setInterval(newInterval)
+                        // Manual interval selection: clear visible range to use period mode
+                        chartControls.setVisibleRange(null)
+                      }}
                       indicators={chartControls.activeIndicators}
                       onIndicatorToggle={chartControls.toggleIndicator}
+                      maPeriods={chartControls.maPeriods}
                     />
                   </CardHeader>
                   <CardContent>
@@ -372,6 +451,12 @@ export default function StockDetailPage() {
                         onTimeframeChange={chartControls.setTimeframe}
                         showVolume={showVolume}
                         sentimentData={showSentiment ? sentimentData?.data : undefined}
+                        indicatorData={hasAnyTechnicalIndicator && indicatorData?.symbol === upperSymbol ? indicatorData : undefined}
+                        activeIndicators={chartControls.activeIndicators}
+                        interval={chartControls.interval}
+                        onVisibleRangeChange={handleVisibleRangeChange}
+                        onVisibleRangeReset={handleVisibleRangeReset}
+                        isZoomMode={!!chartControls.visibleRange}
                       />
                     )}
                   </CardContent>

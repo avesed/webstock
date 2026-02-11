@@ -1,3 +1,4 @@
+import { useState } from 'react'
 import { cn } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
 import {
@@ -19,13 +20,14 @@ interface ChartControlsProps {
   onIntervalChange?: (interval: ChartInterval) => void
   indicators?: ChartIndicator[]
   onIndicatorToggle?: (indicator: ChartIndicator) => void
+  maPeriods?: number[]
   className?: string
 }
 
 // Which timeframes are considered intraday (sentiment unavailable)
 const INTRADAY_TIMEFRAMES: ChartTimeframe[] = ['1H', '1D', '1W']
 
-export type ChartInterval = '1m' | '5m' | '15m' | '1h' | '4h' | '1d' | '1w'
+export type ChartInterval = '1m' | '2m' | '5m' | '15m' | '30m' | '1h' | '1d' | '1wk' | '1mo'
 export type ChartIndicator = 'MA' | 'RSI' | 'MACD' | 'BB' | 'VOL' | 'SENT'
 
 const timeframes: { value: ChartTimeframe; label: string }[] = [
@@ -42,20 +44,22 @@ const timeframes: { value: ChartTimeframe; label: string }[] = [
 
 const intervals: { value: ChartInterval; label: string; description: string }[] = [
   { value: '1m', label: '1m', description: '1 minute' },
+  { value: '2m', label: '2m', description: '2 minutes' },
   { value: '5m', label: '5m', description: '5 minutes' },
   { value: '15m', label: '15m', description: '15 minutes' },
+  { value: '30m', label: '30m', description: '30 minutes' },
   { value: '1h', label: '1h', description: '1 hour' },
-  { value: '4h', label: '4h', description: '4 hours' },
   { value: '1d', label: '1D', description: '1 day' },
-  { value: '1w', label: '1W', description: '1 week' },
+  { value: '1wk', label: '1W', description: '1 week' },
+  { value: '1mo', label: '1M', description: '1 month' },
 ]
 
 // i18n keys for each indicator (must be literal strings for type-safe i18n)
 const indicatorDefs: { value: ChartIndicator; labelKey: 'stock.indicators.ma' | 'stock.indicators.rsi' | 'stock.indicators.macd' | 'stock.indicators.bb' | 'stock.indicators.volume' | 'stock.indicators.sentiment'; descKey: 'stock.indicators.maDesc' | 'stock.indicators.rsiDesc' | 'stock.indicators.macdDesc' | 'stock.indicators.bbDesc' | 'stock.indicators.volumeDesc' | 'stock.indicators.sentimentDesc'; implemented: boolean }[] = [
-  { value: 'MA', labelKey: 'stock.indicators.ma', descKey: 'stock.indicators.maDesc', implemented: false },
-  { value: 'RSI', labelKey: 'stock.indicators.rsi', descKey: 'stock.indicators.rsiDesc', implemented: false },
-  { value: 'MACD', labelKey: 'stock.indicators.macd', descKey: 'stock.indicators.macdDesc', implemented: false },
-  { value: 'BB', labelKey: 'stock.indicators.bb', descKey: 'stock.indicators.bbDesc', implemented: false },
+  { value: 'MA', labelKey: 'stock.indicators.ma', descKey: 'stock.indicators.maDesc', implemented: true },
+  { value: 'RSI', labelKey: 'stock.indicators.rsi', descKey: 'stock.indicators.rsiDesc', implemented: true },
+  { value: 'MACD', labelKey: 'stock.indicators.macd', descKey: 'stock.indicators.macdDesc', implemented: true },
+  { value: 'BB', labelKey: 'stock.indicators.bb', descKey: 'stock.indicators.bbDesc', implemented: true },
   { value: 'VOL', labelKey: 'stock.indicators.volume', descKey: 'stock.indicators.volumeDesc', implemented: true },
   { value: 'SENT', labelKey: 'stock.indicators.sentiment', descKey: 'stock.indicators.sentimentDesc', implemented: true },
 ]
@@ -67,6 +71,7 @@ export default function ChartControls({
   onIntervalChange,
   indicators: activeIndicators = ['VOL'],
   onIndicatorToggle,
+  maPeriods,
   className,
 }: ChartControlsProps) {
   const { t } = useTranslation('dashboard')
@@ -191,6 +196,18 @@ export default function ChartControls({
                         <span className="ml-1 text-amber-500">({t('stock.indicators.dailyOnly')})</span>
                       )}
                     </span>
+                    {indicator.value === 'MA' && isActive && maPeriods && maPeriods.length > 0 && (
+                      <div className="mt-0.5 flex flex-wrap gap-1">
+                        {maPeriods.map((p) => (
+                          <span
+                            key={p}
+                            className="inline-flex items-center rounded bg-muted px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground"
+                          >
+                            {p}
+                          </span>
+                        ))}
+                      </div>
+                    )}
                   </div>
                 </DropdownMenuItem>
               )
@@ -202,11 +219,44 @@ export default function ChartControls({
   )
 }
 
+// Default interval for each timeframe (must stay in sync with api/index.ts TIMEFRAME_DEFAULT_INTERVAL)
+const TIMEFRAME_DEFAULT_INTERVAL: Record<ChartTimeframe, ChartInterval> = {
+  '1H': '1m',
+  '1D': '5m',
+  '1W': '15m',
+  '1M': '1h',
+  '3M': '1d',
+  '6M': '1d',
+  '1Y': '1d',
+  '5Y': '1wk',
+  'ALL': '1mo',
+}
+
+/**
+ * Given the number of visible days on the chart, return the ideal interval.
+ * Used by StockChart's zoom handler to auto-switch resolution.
+ */
+export function resolveInterval(visibleDays: number): ChartInterval {
+  if (visibleDays <= 0.25) return '2m'     // < 6h
+  if (visibleDays <= 2) return '5m'        // < 2 days
+  if (visibleDays <= 7) return '15m'       // < 1 week
+  if (visibleDays <= 60) return '1h'       // < 2 months
+  if (visibleDays <= 730) return '1d'      // < 2 years
+  if (visibleDays <= 1825) return '1wk'    // < 5 years
+  return '1mo'
+}
+
+/** Visible time range for date-range (start/end) mode queries */
+export interface VisibleRange {
+  start: string
+  end: string
+}
+
 // Export a hook for managing chart controls state
 const TIMEFRAME_STORAGE_KEY = 'webstock-chart-timeframe'
 const VALID_TIMEFRAMES: ChartTimeframe[] = ['1H', '1D', '1W', '1M', '3M', '6M', '1Y', '5Y', 'ALL']
 
-export function useChartControls(initialTimeframe: ChartTimeframe = '1M') {
+export function useChartControls(initialTimeframe: ChartTimeframe = '1D') {
   const [timeframe, setTimeframeState] = useState<ChartTimeframe>(() => {
     try {
       const saved = localStorage.getItem(TIMEFRAME_STORAGE_KEY)
@@ -216,11 +266,18 @@ export function useChartControls(initialTimeframe: ChartTimeframe = '1M') {
     } catch {}
     return initialTimeframe
   })
-  const [interval, setInterval] = useState<ChartInterval>('1d')
+  const [interval, setInterval] = useState<ChartInterval>(() =>
+    TIMEFRAME_DEFAULT_INTERVAL[initialTimeframe]
+  )
+  const [visibleRange, setVisibleRange] = useState<VisibleRange | null>(null)
   const [activeIndicators, setActiveIndicators] = useState<ChartIndicator[]>(['VOL'])
+  const [maPeriods, setMaPeriods] = useState<number[]>([20, 50, 200])
 
   const setTimeframe = (tf: ChartTimeframe) => {
     setTimeframeState(tf)
+    // Reset interval to the default for the new timeframe and clear visible range
+    setInterval(TIMEFRAME_DEFAULT_INTERVAL[tf])
+    setVisibleRange(null)
     try { localStorage.setItem(TIMEFRAME_STORAGE_KEY, tf) } catch {}
   }
 
@@ -237,10 +294,12 @@ export function useChartControls(initialTimeframe: ChartTimeframe = '1M') {
     setTimeframe,
     interval,
     setInterval,
+    visibleRange,
+    setVisibleRange,
     activeIndicators,
     toggleIndicator,
+    maPeriods,
+    setMaPeriods,
   }
 }
 
-// Need to import useState for the hook
-import { useState } from 'react'

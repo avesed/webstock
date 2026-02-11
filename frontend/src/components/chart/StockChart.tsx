@@ -12,7 +12,9 @@ import {
 } from 'lightweight-charts'
 import { useTranslation } from 'react-i18next'
 import { useThemeStore } from '@/stores/themeStore'
-import type { CandlestickData, ChartTimeframe, SentimentTimelineItem } from '@/types'
+import type { CandlestickData, ChartTimeframe, SentimentTimelineItem, TechnicalIndicatorsData } from '@/types'
+import type { ChartIndicator } from './ChartControls'
+import { resolveInterval } from './ChartControls'
 import { cn, isMetal } from '@/lib/utils'
 
 interface StockChartProps {
@@ -25,6 +27,16 @@ interface StockChartProps {
   onTimeframeChange?: (tf: ChartTimeframe) => void
   sentimentData?: SentimentTimelineItem[] | undefined
   showVolume?: boolean
+  indicatorData?: TechnicalIndicatorsData | undefined
+  activeIndicators?: ChartIndicator[] | undefined
+  /** Current data interval (e.g. '5m', '1d') for zoom-change detection */
+  interval?: string
+  /** Called when zooming in triggers a new interval */
+  onVisibleRangeChange?: (interval: string, visibleRange: { start: string; end: string }) => void
+  /** Called when user zooms back out to nearly full range */
+  onVisibleRangeReset?: () => void
+  /** When true, skip fitContent() on data updates (prevents zoom reset feedback loop) */
+  isZoomMode?: boolean
 }
 
 interface CrosshairData {
@@ -35,24 +47,8 @@ interface CrosshairData {
   close: number
   volume: number | undefined
   sentiment: number | undefined
-}
-
-// Ordered timeframes for zoom navigation
-const TIMEFRAME_ORDER: ChartTimeframe[] = ['1H', '1D', '1W', '1M', '3M', '6M', '1Y', '5Y', 'ALL']
-
-// How many bars each timeframe is expected to show (approximate)
-// Used to decide when to switch: if visible bars drop below zoomInAt → go lower,
-// if total data bars are all visible and user keeps zooming out → go higher
-const TIMEFRAME_BAR_COUNTS: Record<ChartTimeframe, { expected: number; zoomInAt: number; zoomOutAt: number }> = {
-  '1H':  { expected: 60,  zoomInAt: 0,  zoomOutAt: 60  },  // 1m bars in 1 hour
-  '1D':  { expected: 78,  zoomInAt: 15, zoomOutAt: 78  },  // 5m bars in a day
-  '1W':  { expected: 130, zoomInAt: 20, zoomOutAt: 130 },  // 15m bars in 5 days
-  '1M':  { expected: 22,  zoomInAt: 5,  zoomOutAt: 22  },  // daily bars in 1mo
-  '3M':  { expected: 65,  zoomInAt: 15, zoomOutAt: 65  },  // daily bars in 3mo
-  '6M':  { expected: 130, zoomInAt: 40, zoomOutAt: 130 },  // daily bars in 6mo
-  '1Y':  { expected: 252, zoomInAt: 80, zoomOutAt: 252 },  // daily bars in 1y
-  '5Y':  { expected: 260, zoomInAt: 50, zoomOutAt: 260 },  // weekly bars in 5y
-  'ALL': { expected: 999, zoomInAt: 50, zoomOutAt: 999 },  // monthly bars
+  rsi: number | undefined
+  macdValue: number | undefined
 }
 
 // Theme configurations for the chart
@@ -135,6 +131,18 @@ function convertToVolumeData(data: CandlestickData[]): HistogramData<Time>[] {
     }))
 }
 
+// Indicator color constants
+const MA_COLORS = ['#2962FF', '#FF6D00', '#AA00FF', '#00BFA5', '#FFD600']
+const RSI_COLOR = '#E040FB'
+const RSI_OVERBOUGHT = 70
+const RSI_OVERSOLD = 30
+const MACD_LINE_COLOR = '#2196F3'
+const MACD_SIGNAL_COLOR = '#FF9800'
+const POSITIVE_HIST_COLOR = 'rgba(34, 197, 94, 0.7)'
+const NEGATIVE_HIST_COLOR = 'rgba(239, 68, 68, 0.7)'
+const BB_COLOR = 'rgba(103, 58, 183, 0.7)'
+const BB_BAND_COLOR = 'rgba(103, 58, 183, 0.4)'
+
 export default function StockChart({
   data,
   timeframe,
@@ -142,9 +150,15 @@ export default function StockChart({
   isLoading = false,
   className,
   height = 400,
-  onTimeframeChange,
+  onTimeframeChange: _onTimeframeChange,
   sentimentData,
   showVolume = true,
+  indicatorData,
+  activeIndicators,
+  interval: _interval,
+  onVisibleRangeChange: _onVisibleRangeChange,
+  onVisibleRangeReset: _onVisibleRangeReset,
+  isZoomMode = false,
 }: StockChartProps) {
   const { t } = useTranslation('dashboard')
   const chartContainerRef = useRef<HTMLDivElement>(null)
@@ -152,23 +166,18 @@ export default function StockChart({
   const candlestickSeriesRef = useRef<ISeriesApi<'Candlestick'> | null>(null)
   const volumeSeriesRef = useRef<ISeriesApi<'Histogram'> | null>(null)
   const sentimentSeriesRef = useRef<ISeriesApi<'Baseline'> | null>(null)
+  const maSeriesRefs = useRef<Map<string, ISeriesApi<'Line'>>>(new Map())
+  const rsiSeriesRef = useRef<ISeriesApi<'Line'> | null>(null)
+  const macdLineRef = useRef<ISeriesApi<'Line'> | null>(null)
+  const macdSignalRef = useRef<ISeriesApi<'Line'> | null>(null)
+  const macdHistRef = useRef<ISeriesApi<'Histogram'> | null>(null)
+  const bbUpperRef = useRef<ISeriesApi<'Line'> | null>(null)
+  const bbMiddleRef = useRef<ISeriesApi<'Line'> | null>(null)
+  const bbLowerRef = useRef<ISeriesApi<'Line'> | null>(null)
   const { resolvedTheme } = useThemeStore()
   const [crosshairData, setCrosshairData] = useState<CrosshairData | null>(null)
 
-  // Refs for zoom-switch logic (avoid stale closures)
-  const timeframeRef = useRef(timeframe)
-  const dataLenRef = useRef(data?.length ?? 0)
-  const switchCooldownRef = useRef(false)
-  const onTimeframeChangeRef = useRef(onTimeframeChange)
-
-  useEffect(() => {
-    timeframeRef.current = timeframe
-    // Set cooldown to prevent auto-switch from overriding manual timeframe change
-    switchCooldownRef.current = true
-    setTimeout(() => { switchCooldownRef.current = false }, 1500)
-  }, [timeframe])
-  useEffect(() => { dataLenRef.current = data?.length ?? 0 }, [data])
-  useEffect(() => { onTimeframeChangeRef.current = onTimeframeChange }, [onTimeframeChange])
+  const zoomDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   // Format price with appropriate decimal places
   const formatPrice = useCallback((price: number): string => {
@@ -289,6 +298,92 @@ export default function StockChart({
     })
     sentimentSeries.applyOptions({ visible: false })
 
+    // RSI series
+    const rsiSeries = chart.addLineSeries({
+      color: RSI_COLOR,
+      lineWidth: 1,
+      priceScaleId: 'rsi',
+      lastValueVisible: false,
+      priceLineVisible: false,
+      crosshairMarkerVisible: false,
+    })
+    rsiSeries.priceScale().applyOptions({
+      scaleMargins: { top: 0.8, bottom: 0 },
+      visible: false,
+    })
+    rsiSeries.createPriceLine({ price: RSI_OVERBOUGHT, color: 'rgba(239, 68, 68, 0.4)', lineWidth: 1, lineStyle: LineStyle.Dashed, axisLabelVisible: false })
+    rsiSeries.createPriceLine({ price: RSI_OVERSOLD, color: 'rgba(34, 197, 94, 0.4)', lineWidth: 1, lineStyle: LineStyle.Dashed, axisLabelVisible: false })
+    rsiSeries.applyOptions({ visible: false })
+    rsiSeriesRef.current = rsiSeries
+
+    // MACD series
+    const macdLine = chart.addLineSeries({
+      color: MACD_LINE_COLOR,
+      lineWidth: 1,
+      priceScaleId: 'macd',
+      lastValueVisible: false,
+      priceLineVisible: false,
+      crosshairMarkerVisible: false,
+    })
+    macdLine.priceScale().applyOptions({
+      scaleMargins: { top: 0.85, bottom: 0 },
+      visible: false,
+    })
+    macdLine.applyOptions({ visible: false })
+    macdLineRef.current = macdLine
+
+    const macdSignal = chart.addLineSeries({
+      color: MACD_SIGNAL_COLOR,
+      lineWidth: 1,
+      priceScaleId: 'macd',
+      lastValueVisible: false,
+      priceLineVisible: false,
+      crosshairMarkerVisible: false,
+    })
+    macdSignal.applyOptions({ visible: false })
+    macdSignalRef.current = macdSignal
+
+    const macdHist = chart.addHistogramSeries({
+      priceScaleId: 'macd',
+      lastValueVisible: false,
+      priceLineVisible: false,
+    })
+    macdHist.applyOptions({ visible: false })
+    macdHistRef.current = macdHist
+
+    // Bollinger Bands
+    const bbUpper = chart.addLineSeries({
+      color: BB_BAND_COLOR,
+      lineWidth: 1,
+      lineStyle: LineStyle.Dashed,
+      lastValueVisible: false,
+      priceLineVisible: false,
+      crosshairMarkerVisible: false,
+    })
+    bbUpper.applyOptions({ visible: false })
+    bbUpperRef.current = bbUpper
+
+    const bbMiddle = chart.addLineSeries({
+      color: BB_COLOR,
+      lineWidth: 1,
+      lastValueVisible: false,
+      priceLineVisible: false,
+      crosshairMarkerVisible: false,
+    })
+    bbMiddle.applyOptions({ visible: false })
+    bbMiddleRef.current = bbMiddle
+
+    const bbLower = chart.addLineSeries({
+      color: BB_BAND_COLOR,
+      lineWidth: 1,
+      lineStyle: LineStyle.Dashed,
+      lastValueVisible: false,
+      priceLineVisible: false,
+      crosshairMarkerVisible: false,
+    })
+    bbLower.applyOptions({ visible: false })
+    bbLowerRef.current = bbLower
+
     chartRef.current = chart
     candlestickSeriesRef.current = candlestickSeries
     volumeSeriesRef.current = volumeSeries
@@ -304,6 +399,8 @@ export default function StockChart({
       const candleData = param.seriesData.get(candlestickSeries) as LWCandlestickData<Time> | undefined
       const volumeData = param.seriesData.get(volumeSeries) as HistogramData<Time> | undefined
       const sentData = param.seriesData.get(sentimentSeries) as { value?: number } | undefined
+      const rsiData = rsiSeriesRef.current ? param.seriesData.get(rsiSeriesRef.current) as { value?: number } | undefined : undefined
+      const macdData = macdLineRef.current ? param.seriesData.get(macdLineRef.current) as { value?: number } | undefined : undefined
 
       if (candleData) {
         setCrosshairData({
@@ -314,39 +411,15 @@ export default function StockChart({
           close: candleData.close,
           volume: volumeData?.value,
           sentiment: sentData?.value,
+          rsi: rsiData?.value,
+          macdValue: macdData?.value,
         })
       }
     })
 
-    // Auto-switch timeframe on zoom
-    chart.timeScale().subscribeVisibleLogicalRangeChange((range) => {
-      if (!range || !onTimeframeChangeRef.current || switchCooldownRef.current) return
-
-      const visibleBars = range.to - range.from
-      const tf = timeframeRef.current
-      const tfIdx = TIMEFRAME_ORDER.indexOf(tf)
-      const config = TIMEFRAME_BAR_COUNTS[tf]
-      const totalBars = dataLenRef.current
-
-      // Zoom in: visible bars dropped well below threshold → switch to lower timeframe
-      if (tfIdx > 0 && config.zoomInAt > 0 && visibleBars < config.zoomInAt) {
-        switchCooldownRef.current = true
-        setTimeout(() => { switchCooldownRef.current = false }, 800)
-        onTimeframeChangeRef.current(TIMEFRAME_ORDER[tfIdx - 1]!)
-        return
-      }
-
-      // Zoom out: all bars visible and user is zoomed beyond → switch to higher timeframe
-      if (tfIdx < TIMEFRAME_ORDER.length - 1 && totalBars > 0) {
-        // range.from can go negative when zoomed out beyond data
-        if (range.from < -totalBars * 0.3 || visibleBars > totalBars * 1.5) {
-          switchCooldownRef.current = true
-          setTimeout(() => { switchCooldownRef.current = false }, 800)
-          onTimeframeChangeRef.current(TIMEFRAME_ORDER[tfIdx + 1]!)
-          return
-        }
-      }
-    })
+    // NOTE: Zoom-triggered auto-switch disabled for now (too many edge cases
+    // with cascading switches and stale data). Manual interval dropdown works.
+    void resolveInterval // suppress unused import warning
 
     // Handle resize
     const handleResize = () => {
@@ -358,15 +431,26 @@ export default function StockChart({
     }
 
     const resizeObserver = new ResizeObserver(handleResize)
-    resizeObserver.observe(chartContainerRef.current)
+    const container = chartContainerRef.current
+    resizeObserver.observe(container)
 
     return () => {
       resizeObserver.disconnect()
+      if (zoomDebounceRef.current) clearTimeout(zoomDebounceRef.current)
+      maSeriesRefs.current.forEach((s) => { try { chart.removeSeries(s) } catch { /* already removed */ } })
+      maSeriesRefs.current.clear()
       chart.remove()
       chartRef.current = null
       candlestickSeriesRef.current = null
       volumeSeriesRef.current = null
       sentimentSeriesRef.current = null
+      rsiSeriesRef.current = null
+      macdLineRef.current = null
+      macdSignalRef.current = null
+      macdHistRef.current = null
+      bbUpperRef.current = null
+      bbMiddleRef.current = null
+      bbLowerRef.current = null
     }
   }, [height, resolvedTheme])
 
@@ -380,11 +464,11 @@ export default function StockChart({
     candlestickSeriesRef.current.setData(candleData)
     volumeSeriesRef.current.setData(volumeData)
 
-    // Fit content to view
-    if (chartRef.current) {
+    // Fit content to view (skip in zoom mode to prevent feedback loop)
+    if (chartRef.current && !isZoomMode) {
       chartRef.current.timeScale().fitContent()
     }
-  }, [data])
+  }, [data, isZoomMode])
 
   // Update sentiment data when it changes
   // Sentiment data uses YYYY-MM-DD strings (daily aggregation), which is incompatible
@@ -392,7 +476,8 @@ export default function StockChart({
   const isIntradayTimeframe = timeframe === '1H' || timeframe === '1D' || timeframe === '1W'
   useEffect(() => {
     if (!sentimentSeriesRef.current) return
-    const hasData = !isIntradayTimeframe && !!sentimentData?.length
+    const showSent = !!activeIndicators?.includes('SENT')
+    const hasData = showSent && !isIntradayTimeframe && !!sentimentData?.length
     // Toggle series and price scale visibility
     sentimentSeriesRef.current.applyOptions({ visible: hasData })
     sentimentSeriesRef.current.priceScale().applyOptions({ visible: hasData })
@@ -406,7 +491,7 @@ export default function StockChart({
         value: d.score,
       }))
     )
-  }, [sentimentData, isIntradayTimeframe])
+  }, [sentimentData, isIntradayTimeframe, activeIndicators])
 
   // Toggle volume visibility
   useEffect(() => {
@@ -414,6 +499,177 @@ export default function StockChart({
     volumeSeriesRef.current.applyOptions({ visible: showVolume })
     volumeSeriesRef.current.priceScale().applyOptions({ visible: showVolume })
   }, [showVolume])
+
+  // Update indicator series when data changes
+  useEffect(() => {
+    const chart = chartRef.current
+    if (!chart) return
+
+    const showMA = !!activeIndicators?.includes('MA')
+    const showRSI = !!activeIndicators?.includes('RSI')
+    const showMACD = !!activeIndicators?.includes('MACD')
+    const showBB = !!activeIndicators?.includes('BB')
+
+    // Helper to convert indicator time format to chart time format
+    const toChartTime = (point: { time: string | number }) => point.time as Time
+
+    // --- MA Lines ---
+    // Remove old MA series
+    maSeriesRefs.current.forEach((s) => {
+      try { chart.removeSeries(s) } catch { /* already removed */ }
+    })
+    maSeriesRefs.current.clear()
+
+    if (showMA && indicatorData?.ma) {
+      const maKeys = Object.keys(indicatorData.ma)
+      maKeys.forEach((key, idx) => {
+        const maData = indicatorData.ma![key]
+        if (!maData?.series?.length) return
+        const color = MA_COLORS[idx % MA_COLORS.length]!
+        const series = chart.addLineSeries({
+          color,
+          lineWidth: 1,
+          lastValueVisible: false,
+          priceLineVisible: false,
+          crosshairMarkerVisible: false,
+          title: key.toUpperCase().replace('_', ' '),
+        })
+        series.setData(maData.series.map(p => ({ time: toChartTime(p), value: p.value })))
+        maSeriesRefs.current.set(key, series)
+      })
+    }
+
+    // --- RSI ---
+    if (rsiSeriesRef.current) {
+      const hasRSI = showRSI && !!indicatorData?.rsi?.series?.length
+      rsiSeriesRef.current.applyOptions({ visible: hasRSI })
+      rsiSeriesRef.current.priceScale().applyOptions({ visible: hasRSI })
+      if (hasRSI) {
+        rsiSeriesRef.current.setData(
+          indicatorData!.rsi!.series.map(p => ({ time: toChartTime(p), value: p.value }))
+        )
+      } else {
+        rsiSeriesRef.current.setData([])
+      }
+    }
+
+    // --- MACD ---
+    const hasMACD = showMACD && !!indicatorData?.macd?.macdLine?.length
+    if (macdLineRef.current) {
+      macdLineRef.current.applyOptions({ visible: hasMACD })
+      macdLineRef.current.priceScale().applyOptions({ visible: hasMACD })
+      if (hasMACD) {
+        macdLineRef.current.setData(
+          indicatorData!.macd!.macdLine.map(p => ({ time: toChartTime(p), value: p.value }))
+        )
+      } else {
+        macdLineRef.current.setData([])
+      }
+    }
+    if (macdSignalRef.current) {
+      macdSignalRef.current.applyOptions({ visible: hasMACD })
+      if (hasMACD) {
+        macdSignalRef.current.setData(
+          indicatorData!.macd!.signalLine.map(p => ({ time: toChartTime(p), value: p.value }))
+        )
+      } else {
+        macdSignalRef.current.setData([])
+      }
+    }
+    if (macdHistRef.current) {
+      macdHistRef.current.applyOptions({ visible: hasMACD })
+      if (hasMACD) {
+        macdHistRef.current.setData(
+          indicatorData!.macd!.histogram.map(p => ({
+            time: toChartTime(p),
+            value: p.value,
+            color: p.value >= 0 ? POSITIVE_HIST_COLOR : NEGATIVE_HIST_COLOR,
+          }))
+        )
+      } else {
+        macdHistRef.current.setData([])
+      }
+    }
+
+    // --- Bollinger Bands ---
+    const hasBB = showBB && !!indicatorData?.bb?.upper?.length
+    if (bbUpperRef.current) {
+      bbUpperRef.current.applyOptions({ visible: hasBB })
+      if (hasBB) {
+        bbUpperRef.current.setData(
+          indicatorData!.bb!.upper.map(p => ({ time: toChartTime(p), value: p.value }))
+        )
+      } else {
+        bbUpperRef.current.setData([])
+      }
+    }
+    if (bbMiddleRef.current) {
+      bbMiddleRef.current.applyOptions({ visible: hasBB })
+      if (hasBB) {
+        bbMiddleRef.current.setData(
+          indicatorData!.bb!.middle.map(p => ({ time: toChartTime(p), value: p.value }))
+        )
+      } else {
+        bbMiddleRef.current.setData([])
+      }
+    }
+    if (bbLowerRef.current) {
+      bbLowerRef.current.applyOptions({ visible: hasBB })
+      if (hasBB) {
+        bbLowerRef.current.setData(
+          indicatorData!.bb!.lower.map(p => ({ time: toChartTime(p), value: p.value }))
+        )
+      } else {
+        bbLowerRef.current.setData([])
+      }
+    }
+
+    // --- Dynamic scale margins ---
+    const hasSubIndicator = (showRSI && !!indicatorData?.rsi?.series?.length) ||
+                             (showMACD && !!indicatorData?.macd?.macdLine?.length)
+    const bothSubIndicators = (showRSI && !!indicatorData?.rsi?.series?.length) &&
+                               (showMACD && !!indicatorData?.macd?.macdLine?.length)
+
+    // Adjust main price scale bottom margin to make room for sub-indicators
+    const mainBottom = bothSubIndicators ? 0.45 : hasSubIndicator ? 0.35 : 0.3
+    chart.applyOptions({
+      rightPriceScale: {
+        scaleMargins: { top: 0.1, bottom: mainBottom },
+      },
+    })
+
+    // Adjust volume scale
+    if (volumeSeriesRef.current) {
+      const volTop = bothSubIndicators ? 0.55 : hasSubIndicator ? 0.65 : 0.8
+      const volBottom = bothSubIndicators ? 0.45 : hasSubIndicator ? 0.35 : 0
+      volumeSeriesRef.current.priceScale().applyOptions({
+        scaleMargins: { top: volTop, bottom: volBottom },
+      })
+    }
+
+    // Adjust sentiment scale
+    if (sentimentSeriesRef.current) {
+      sentimentSeriesRef.current.priceScale().applyOptions({
+        scaleMargins: { top: 0.1, bottom: mainBottom },
+      })
+    }
+
+    // RSI scale
+    if (rsiSeriesRef.current && showRSI && indicatorData?.rsi?.series?.length) {
+      const rsiTop = bothSubIndicators ? 0.6 : 0.7
+      const rsiBottom = bothSubIndicators ? 0.25 : 0.05
+      rsiSeriesRef.current.priceScale().applyOptions({
+        scaleMargins: { top: rsiTop, bottom: rsiBottom },
+      })
+    }
+
+    // MACD scale
+    if (macdLineRef.current && showMACD && indicatorData?.macd?.macdLine?.length) {
+      macdLineRef.current.priceScale().applyOptions({
+        scaleMargins: { top: 0.85, bottom: 0 },
+      })
+    }
+  }, [indicatorData, activeIndicators, data])
 
   // Update theme when it changes
   useEffect(() => {
@@ -443,6 +699,8 @@ export default function StockChart({
     close: lastDataPoint.close,
     volume: lastDataPoint.volume,
     sentiment: undefined,
+    rsi: undefined,
+    macdValue: undefined,
   } : null)
 
   const priceChange = displayData ? displayData.close - displayData.open : 0
@@ -508,6 +766,28 @@ export default function StockChart({
                   >
                     {displayData.sentiment >= 0 ? '+' : ''}
                     {displayData.sentiment.toFixed(2)}
+                  </span>
+                </>
+              )}
+              {displayData.rsi !== undefined && (
+                <>
+                  <span className="text-muted-foreground">RSI:</span>
+                  <span className={cn(
+                    'font-medium',
+                    displayData.rsi > RSI_OVERBOUGHT ? 'text-stock-down' : displayData.rsi < RSI_OVERSOLD ? 'text-stock-up' : 'text-muted-foreground'
+                  )}>
+                    {displayData.rsi.toFixed(1)}
+                  </span>
+                </>
+              )}
+              {displayData.macdValue !== undefined && (
+                <>
+                  <span className="text-muted-foreground">MACD:</span>
+                  <span className={cn(
+                    'font-medium',
+                    displayData.macdValue > 0 ? 'text-stock-up' : displayData.macdValue < 0 ? 'text-stock-down' : 'text-muted-foreground'
+                  )}>
+                    {displayData.macdValue.toFixed(4)}
                   </span>
                 </>
               )}

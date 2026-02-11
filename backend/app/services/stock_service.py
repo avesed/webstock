@@ -67,8 +67,10 @@ class HistoryInterval(str, Enum):
     """Historical data intervals."""
 
     ONE_MINUTE = "1m"
+    TWO_MINUTES = "2m"
     FIVE_MINUTES = "5m"
     FIFTEEN_MINUTES = "15m"
+    THIRTY_MINUTES = "30m"
     HOURLY = "1h"
     DAILY = "1d"
     WEEKLY = "1wk"
@@ -761,144 +763,6 @@ class AKShareProvider:
             return None
 
     @staticmethod
-    async def get_history_cn(
-        symbol: str,
-        market: Market,
-        period: HistoryPeriod,
-        interval: HistoryInterval,
-    ) -> Optional[StockHistory]:
-        """Get historical data for A-shares from akshare."""
-        try:
-            import akshare as ak
-
-            code = normalize_symbol(symbol, market)
-
-            # Intraday intervals: use ak.stock_zh_a_minute() (Sina Finance source)
-            intraday_period = {
-                HistoryInterval.ONE_MINUTE: "1",
-                HistoryInterval.FIVE_MINUTES: "5",
-                HistoryInterval.FIFTEEN_MINUTES: "15",
-                HistoryInterval.HOURLY: "60",
-            }.get(interval)
-
-            if intraday_period is not None:
-                # stock_zh_a_minute needs sh/sz prefix
-                sina_symbol = f"{'sh' if market == Market.SH else 'sz'}{code}"
-
-                def fetch_minute():
-                    return ak.stock_zh_a_minute(
-                        symbol=sina_symbol,
-                        period=intraday_period,
-                        adjust="qfq",
-                    )
-
-                df = await run_in_executor(fetch_minute)
-                if df is None or df.empty:
-                    return None
-
-                import pandas as pd
-
-                # Drop rows with NaN OHLC values
-                df = df.dropna(subset=["open", "high", "low", "close"])
-
-                bars = []
-                for _, row in df.iterrows():
-                    date_val = row["day"]
-                    if isinstance(date_val, str):
-                        date_val = datetime.strptime(date_val, "%Y-%m-%d %H:%M:%S")
-                    bars.append(
-                        OHLCVBar(
-                            date=date_val,
-                            open=round(float(row["open"]), 4),
-                            high=round(float(row["high"]), 4),
-                            low=round(float(row["low"]), 4),
-                            close=round(float(row["close"]), 4),
-                            volume=int(row["volume"]),
-                        )
-                    )
-
-                # Filter bars by period (the API returns recent data, trim to requested range)
-                if bars:
-                    period_days_map = {
-                        HistoryPeriod.ONE_DAY: 1,
-                        HistoryPeriod.FIVE_DAYS: 5,
-                    }
-                    max_days = period_days_map.get(period, 5)
-                    cutoff = datetime.now() - timedelta(days=max_days + 1)
-                    bars = [b for b in bars if b.date >= cutoff]
-
-                return StockHistory(
-                    symbol=symbol,
-                    interval=interval,
-                    bars=bars,
-                    market=market,
-                    source=DataSource.AKSHARE,
-                ) if bars else None
-
-            # Daily/weekly/monthly: use ak.stock_zh_a_hist() (EastMoney source)
-            ak_period = {
-                HistoryInterval.DAILY: "daily",
-                HistoryInterval.WEEKLY: "weekly",
-                HistoryInterval.MONTHLY: "monthly",
-            }.get(interval, "daily")
-
-            # Calculate date range based on period
-            end_date = datetime.now()
-            period_days = {
-                HistoryPeriod.ONE_DAY: 1,
-                HistoryPeriod.FIVE_DAYS: 5,
-                HistoryPeriod.ONE_MONTH: 30,
-                HistoryPeriod.THREE_MONTHS: 90,
-                HistoryPeriod.SIX_MONTHS: 180,
-                HistoryPeriod.ONE_YEAR: 365,
-                HistoryPeriod.TWO_YEARS: 730,
-                HistoryPeriod.FIVE_YEARS: 1825,
-                HistoryPeriod.MAX: 3650,
-            }
-            start_date = end_date - timedelta(days=period_days.get(period, 365))
-
-            def fetch():
-                df = ak.stock_zh_a_hist(
-                    symbol=code,
-                    period=ak_period,
-                    start_date=start_date.strftime("%Y%m%d"),
-                    end_date=end_date.strftime("%Y%m%d"),
-                    adjust="qfq",  # Forward adjust
-                )
-                return df
-
-            df = await run_in_executor(fetch)
-            if df is None or df.empty:
-                return None
-
-            bars = []
-            for _, row in df.iterrows():
-                date_val = row["日期"]
-                if isinstance(date_val, str):
-                    date_val = datetime.strptime(date_val, "%Y-%m-%d")
-                bars.append(
-                    OHLCVBar(
-                        date=date_val,
-                        open=round(float(row["开盘"]), 4),
-                        high=round(float(row["最高"]), 4),
-                        low=round(float(row["最低"]), 4),
-                        close=round(float(row["收盘"]), 4),
-                        volume=int(row["成交量"]),
-                    )
-                )
-
-            return StockHistory(
-                symbol=symbol,
-                interval=interval,
-                bars=bars,
-                market=market,
-                source=DataSource.AKSHARE,
-            )
-        except Exception as e:
-            logger.error(f"AKShare CN history error for {symbol}: {e}")
-            return None
-
-    @staticmethod
     async def get_history_hk(
         symbol: str,
         period: HistoryPeriod,
@@ -1298,15 +1162,19 @@ class StockService:
         period: HistoryPeriod = HistoryPeriod.ONE_YEAR,
         interval: HistoryInterval = HistoryInterval.DAILY,
         force_refresh: bool = False,
+        start: Optional[str] = None,
+        end: Optional[str] = None,
     ) -> Optional[Dict[str, Any]]:
         """
         Get historical OHLCV data.
 
         Args:
             symbol: Stock symbol
-            period: Time period (1mo, 3mo, 6mo, 1y, 2y, 5y, max)
-            interval: Data interval (1d, 1wk, 1mo)
+            period: Time period (1mo, 3mo, 6mo, 1y, 2y, 5y, max) - ignored when start/end provided
+            interval: Data interval (1m, 2m, 5m, 15m, 30m, 1h, 1d, 1wk, 1mo)
             force_refresh: Force fetch from source
+            start: Optional start date/datetime (e.g. '2025-03-01' or '2025-03-01T09:30:00')
+            end: Optional end date/datetime (e.g. '2025-03-15' or '2025-03-15T15:00:00')
 
         Returns:
             Historical data as dict or None if unavailable
@@ -1315,11 +1183,17 @@ class StockService:
         aggregator = await self._get_aggregator()
         router = await self._get_router()
 
-        # Build params hash for cache key uniqueness
-        params_hash = hashlib.md5(f"{period.value}:{interval.value}".encode()).hexdigest()[:8]
+        # Build params hash for cache key uniqueness (include start/end if provided)
+        if start and end:
+            hash_input = f"{start}:{end}:{interval.value}"
+        else:
+            hash_input = f"{period.value}:{interval.value}"
+        params_hash = hashlib.md5(hash_input.encode()).hexdigest()[:8]
 
         async def fetch_history() -> Optional[Dict[str, Any]]:
-            history = await router.get_history(symbol, period, interval, market)
+            history = await router.get_history(
+                symbol, period, interval, market, start=start, end=end,
+            )
             return history.to_dict() if history else None
 
         return await aggregator.get_data(
