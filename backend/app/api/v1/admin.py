@@ -1836,7 +1836,7 @@ async def test_rss_feed(
 
     from app.services.rss_service import get_rss_service
     rss_service = get_rss_service()
-    result = await rss_service.test_feed(data.rsshub_route, data.fulltext_mode)
+    result = await rss_service.test_feed(data.rsshub_route, fulltext=data.fulltext_mode)
 
     return RssFeedTestResponse(
         route=result["route"],

@@ -428,12 +428,13 @@ export function RssFeeds() {
     try {
       const result = await adminApi.testRssFeed(formData.rsshubRoute, formData.fulltextMode)
       setTestResult(result)
-    } catch {
+    } catch (error) {
+      const errorMsg = getErrorMessage(error)
       setTestResult({
         route: formData.rsshubRoute,
         articleCount: 0,
         articles: [],
-        error: t('rss.testError'),
+        error: `${t('rss.testError')}: ${errorMsg}`,
       })
     } finally {
       setTesting(false)
