@@ -1166,43 +1166,63 @@ class StockService:
         end: Optional[str] = None,
     ) -> Optional[Dict[str, Any]]:
         """
-        Get historical OHLCV data.
+        Get historical OHLCV data via the canonical disk cache.
 
         Args:
             symbol: Stock symbol
             period: Time period (1mo, 3mo, 6mo, 1y, 2y, 5y, max) - ignored when start/end provided
             interval: Data interval (1m, 2m, 5m, 15m, 30m, 1h, 1d, 1wk, 1mo)
-            force_refresh: Force fetch from source
+            force_refresh: Force fetch from source (currently unused; canonical cache uses TTL)
             start: Optional start date/datetime (e.g. '2025-03-01' or '2025-03-01T09:30:00')
             end: Optional end date/datetime (e.g. '2025-03-15' or '2025-03-15T15:00:00')
 
         Returns:
             Historical data as dict or None if unavailable
         """
+        from app.services.canonical_cache_service import get_canonical_cache_service
+
         market = detect_market(symbol)
-        aggregator = await self._get_aggregator()
-        router = await self._get_router()
+        canonical = await get_canonical_cache_service()
 
-        # Build params hash for cache key uniqueness (include start/end if provided)
+        # Calculate the requested day span
+        _PERIOD_DAYS_MAP = {
+            "1d": 1, "5d": 5, "1mo": 30, "3mo": 90, "6mo": 180,
+            "1y": 365, "2y": 730, "5y": 1825, "max": 99999,
+        }
+
         if start and end:
-            hash_input = f"{start}:{end}:{interval.value}"
+            try:
+                start_dt = datetime.fromisoformat(
+                    start.replace("T", " ").split("+")[0].split("Z")[0]
+                )
+                end_dt = datetime.fromisoformat(
+                    end.replace("T", " ").split("+")[0].split("Z")[0]
+                )
+                period_days = max((end_dt - start_dt).days, 1)
+            except (ValueError, TypeError):
+                period_days = _PERIOD_DAYS_MAP.get(period.value, 365)
         else:
-            hash_input = f"{period.value}:{interval.value}"
-        params_hash = hashlib.md5(hash_input.encode()).hexdigest()[:8]
+            period_days = _PERIOD_DAYS_MAP.get(period.value, 365)
 
-        async def fetch_history() -> Optional[Dict[str, Any]]:
-            history = await router.get_history(
-                symbol, period, interval, market, start=start, end=end,
-            )
-            return history.to_dict() if history else None
-
-        return await aggregator.get_data(
+        bars = await canonical.get_history(
             symbol=symbol,
-            data_type=DataType.HISTORY,
-            fetch_func=fetch_history,
-            params_hash=params_hash,
-            force_refresh=force_refresh,
+            interval=interval.value,
+            period_days=period_days,
+            market=market,
+            start=start,
+            end=end,
         )
+
+        if not bars:
+            return None
+
+        return {
+            "symbol": symbol,
+            "interval": interval.value,
+            "bars": bars,
+            "market": market.value,
+            "source": "canonical_cache",
+        }
 
     async def get_info(
         self,

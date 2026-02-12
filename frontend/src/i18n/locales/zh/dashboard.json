@@ -168,6 +168,7 @@
     "title": "股票详情",
     "quote": "行情",
     "chart": "图表",
+    "marketClosed": "当前非交易时间，显示最近交易数据",
     "fundamentals": "基本面",
     "technicals": "技术指标",
     "news": "新闻",

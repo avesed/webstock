@@ -197,7 +197,48 @@ export const MAX_LOOKBACK_DAYS: Record<string, number> = {
 }
 
 /** Set of intervals considered intraday (sub-daily) */
-const INTRADAY_INTERVALS = new Set(['1m', '2m', '5m', '15m', '30m', '1h'])
+export const INTRADAY_INTERVALS = new Set(['1m', '2m', '5m', '15m', '30m', '1h'])
+
+/**
+ * Synthesize a "today" bar from a quote, for daily/weekly/monthly chart live updates.
+ * Returns null if quote data is insufficient.
+ */
+export function synthesizeTodayBar(quote: StockQuote): CandlestickData | null {
+  if (quote.price == null || quote.open == null) return null
+  // Use quote.timestamp when available; fall back to local date
+  const today = quote.timestamp
+    ? new Date(quote.timestamp).toISOString().slice(0, 10)
+    : new Date().toISOString().slice(0, 10)
+  return {
+    time: today,
+    open: quote.open,
+    high: quote.dayHigh ?? Math.max(quote.open, quote.price),
+    low: quote.dayLow ?? Math.min(quote.open, quote.price),
+    close: quote.price,
+    volume: quote.volume ?? 0,
+  }
+}
+
+/**
+ * Update an intraday bar in-place from a real-time quote.
+ * Extends the high/low range and sets the close to the current price.
+ * Volume is intentionally preserved from lastBar (quote.volume is daily aggregate,
+ * not per-bar, so using it would misrepresent the bar's actual volume).
+ */
+export function synthesizeIntradayUpdate(
+  quote: StockQuote,
+  lastBar: CandlestickData,
+): CandlestickData {
+  const result: CandlestickData = {
+    time: lastBar.time,
+    open: lastBar.open,
+    high: Math.max(lastBar.high, quote.price),
+    low: Math.min(lastBar.low, quote.price),
+    close: quote.price,
+  }
+  if (lastBar.volume != null) result.volume = lastBar.volume
+  return result
+}
 
 /**
  * Clamp a yfinance period to fit within an interval's maximum lookback window.
@@ -350,6 +391,28 @@ export const stockApi = {
     return bars.map((bar): CandlestickData => ({
       // lightweight-charts needs YYYY-MM-DD for daily+ data, Unix timestamp for intraday
       // For intraday: convert to market-local time since lightweight-charts displays UTC
+      time: isIntraday
+        ? toMarketLocalTimestamp(bar.date)
+        : (bar.date.split('T')[0] ?? bar.date),
+      open: bar.open,
+      high: bar.high,
+      low: bar.low,
+      close: bar.close,
+      volume: bar.volume,
+    }))
+  },
+
+  getLatestBars: async (
+    symbol: string,
+    interval: string,
+    since: number,
+  ): Promise<CandlestickData[]> => {
+    const response = await apiClient.get('/stocks/history/latest', {
+      params: { symbol, interval, since },
+    })
+    const bars = response.data.bars || []
+    const isIntraday = INTRADAY_INTERVALS.has(interval)
+    return bars.map((bar: { date: string; open: number; high: number; low: number; close: number; volume: number }): CandlestickData => ({
       time: isIntraday
         ? toMarketLocalTimestamp(bar.date)
         : (bar.date.split('T')[0] ?? bar.date),

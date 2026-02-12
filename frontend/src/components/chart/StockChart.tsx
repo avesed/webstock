@@ -37,6 +37,8 @@ interface StockChartProps {
   onVisibleRangeReset?: () => void
   /** When true, skip fitContent() on data updates (prevents zoom reset feedback loop) */
   isZoomMode?: boolean
+  /** Live bar update from quote data. Applied via series.update() for smooth real-time updates. */
+  latestBar?: CandlestickData | null
 }
 
 interface CrosshairData {
@@ -159,6 +161,7 @@ export default function StockChart({
   onVisibleRangeChange: _onVisibleRangeChange,
   onVisibleRangeReset: _onVisibleRangeReset,
   isZoomMode = false,
+  latestBar,
 }: StockChartProps) {
   const { t } = useTranslation('dashboard')
   const chartContainerRef = useRef<HTMLDivElement>(null)
@@ -466,9 +469,44 @@ export default function StockChart({
 
     // Fit content to view (skip in zoom mode to prevent feedback loop)
     if (chartRef.current && !isZoomMode) {
-      chartRef.current.timeScale().fitContent()
+      // For 1H timeframe, show the current clock hour (e.g., 13:00–14:00)
+      // derived from the last bar's market-local timestamp.
+      if (timeframe === '1H' && candleData.length > 0) {
+        const lastTime = candleData[candleData.length - 1]!.time as number
+        const hourStart = lastTime - (lastTime % 3600)
+        chartRef.current.timeScale().setVisibleRange({
+          from: hourStart as Time,
+          to: (hourStart + 3600) as Time,
+        })
+      } else {
+        chartRef.current.timeScale().fitContent()
+      }
     }
-  }, [data, isZoomMode])
+  }, [data, isZoomMode, timeframe])
+
+  // Apply live bar update via series.update() (avoids full setData redraw)
+  useEffect(() => {
+    if (!latestBar || !candlestickSeriesRef.current) return
+
+    candlestickSeriesRef.current.update({
+      time: latestBar.time as Time,
+      open: latestBar.open,
+      high: latestBar.high,
+      low: latestBar.low,
+      close: latestBar.close,
+    })
+
+    if (latestBar.volume != null && volumeSeriesRef.current) {
+      const color = latestBar.close >= latestBar.open
+        ? 'rgba(34,197,94,0.5)'
+        : 'rgba(239,68,68,0.5)'
+      volumeSeriesRef.current.update({
+        time: latestBar.time as Time,
+        value: latestBar.volume,
+        color,
+      })
+    }
+  }, [latestBar])
 
   // Update sentiment data when it changes
   // Sentiment data uses YYYY-MM-DD strings (daily aggregation), which is incompatible
@@ -689,15 +727,16 @@ export default function StockChart({
     })
   }, [resolvedTheme])
 
-  // Get the last data point for comparison
+  // Get the last data point for comparison (prefer latestBar for live updates)
   const lastDataPoint = Array.isArray(data) && data.length > 0 ? data[data.length - 1] : null
-  const displayData = crosshairData ?? (lastDataPoint ? {
-    time: lastDataPoint.time,
-    open: lastDataPoint.open,
-    high: lastDataPoint.high,
-    low: lastDataPoint.low,
-    close: lastDataPoint.close,
-    volume: lastDataPoint.volume,
+  const effectiveLastPoint = latestBar ?? lastDataPoint
+  const displayData = crosshairData ?? (effectiveLastPoint ? {
+    time: effectiveLastPoint.time,
+    open: effectiveLastPoint.open,
+    high: effectiveLastPoint.high,
+    low: effectiveLastPoint.low,
+    close: effectiveLastPoint.close,
+    volume: effectiveLastPoint.volume,
     sentiment: undefined,
     rsi: undefined,
     macdValue: undefined,

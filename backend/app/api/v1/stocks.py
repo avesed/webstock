@@ -2,8 +2,9 @@
 
 import asyncio
 import logging
+import math
 import time
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
@@ -31,10 +32,17 @@ from app.schemas.stock import (
     TechnicalIndicatorsResponse,
 )
 from app.services.indicator_service import compute_indicator_series
+from app.services.canonical_cache_service import (
+    RESAMPLE_MAP,
+    get_canonical_cache_service,
+    resample_bars,
+)
+from app.services.providers import get_provider_router
 from app.services.stock_service import (
     HistoryInterval as ServiceInterval,
     HistoryPeriod as ServicePeriod,
     Market,
+    detect_market,
     get_stock_service,
     is_precious_metal,
 )
@@ -89,6 +97,38 @@ INTERVAL_MINUTES: Dict[str, int] = {
 
 # Rate limiting for indicator endpoint (more expensive than quote lookups)
 INDICATOR_RATE_LIMIT = rate_limit(max_requests=30, window_seconds=60, key_prefix="indicator_api")
+
+_PERIOD_THRESHOLDS = [
+    (1, "1d"), (5, "5d"), (30, "1mo"), (90, "3mo"),
+    (180, "6mo"), (365, "1y"), (730, "2y"), (1825, "5y"),
+]
+
+
+def _pick_smallest_period(days: int) -> str:
+    """Pick the smallest yfinance period string that covers the given number of days."""
+    for threshold, period_str in _PERIOD_THRESHOLDS:
+        if days <= threshold:
+            return period_str
+    return "max"
+
+
+def _compute_min_warm_up_bars(
+    type_list: List[str],
+    parsed_ma_periods: List[int],
+    rsi_period: int = 14,
+    bb_period: int = 20,
+) -> int:
+    """Compute the minimum bars needed for indicator warm-up across ALL indicator types."""
+    ma_max = max(parsed_ma_periods) if parsed_ma_periods else 0
+    indicator_minimums = [ma_max]
+    if "rsi" in type_list:
+        indicator_minimums.append(rsi_period + 1)
+    if "macd" in type_list:
+        indicator_minimums.append(26 + 9)  # macd_slow + macd_signal defaults
+    if "bb" in type_list:
+        indicator_minimums.append(bb_period)
+    result = max(indicator_minimums) if indicator_minimums else 200
+    return result if result > 0 else 200
 
 
 def _trim_series(
@@ -168,9 +208,11 @@ async def _compute_indicators_for_symbol(
         # Start/end mode: extend start backwards for indicator warm-up
         original_start_str = start
         interval_mins = INTERVAL_MINUTES.get(interval.value, 1440)
-        max_period = max(parsed_ma_periods) if parsed_ma_periods else 200
+        max_period = _compute_min_warm_up_bars(type_list, parsed_ma_periods, rsi_period, bb_period)
         # warm_up_bars * interval_minutes / minutes_per_day
-        warm_up_days = max(int(max_period * interval_mins / (60 * 24)) + 1, 2 if is_intraday else 30)
+        # Use 240 min (A-shares) for intraday to be conservative across all markets
+        mins_per_day = 240 if is_intraday else (60 * 24)
+        warm_up_days = max(math.ceil(max_period * interval_mins / mins_per_day) + 1, 2 if is_intraday else 30)
         # Cap warm-up to prevent excessively large lookback for weekly/monthly intervals
         warm_up_days = min(warm_up_days, 1825)  # Cap at 5 years
 
@@ -210,20 +252,13 @@ async def _compute_indicators_for_symbol(
                 detail="Failed to fetch historical data for indicator computation.",
             )
     else:
-        # Period mode: use expanded lookback period
-        if is_intraday:
-            # For intraday, use a reasonable lookback
-            expanded_period_str = "1mo" if interval.value in {"1m", "2m", "5m"} else "3mo"
-        else:
-            expanded_period_str = LOOKBACK_MAP.get(period.value, period.value)
+        # Period mode: try original period first to reuse history endpoint's cache,
+        # then expand only if bars are insufficient for indicator warm-up.
+        max_period_val = _compute_min_warm_up_bars(type_list, parsed_ma_periods, rsi_period, bb_period)
+        min_bars_needed = max_period_val + 10  # warm-up + small buffer
 
-        logger.info(
-            "Indicators for %s: period mode, period %s expanded to %s for lookback",
-            symbol, period.value, expanded_period_str,
-        )
-
-        service_period = ServicePeriod(expanded_period_str)
-
+        # Step 1: fetch with original period (same params_hash as history endpoint)
+        service_period = ServicePeriod(period.value)
         try:
             history = await stock_service.get_history(
                 symbol,
@@ -231,16 +266,55 @@ async def _compute_indicators_for_symbol(
                 interval=service_interval,
             )
         except Exception as e:
-            logger.error("Error fetching history for indicators (%s): %s", symbol, e)
-            raise HTTPException(
-                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                detail="Failed to fetch historical data for indicator computation.",
+            logger.warning(
+                "Step 1 fetch failed for %s (period=%s, interval=%s): %s",
+                symbol, period.value, interval.value, e,
+            )
+            history = None
+
+        bars_count = len(history.get("bars") or []) if history else 0
+
+        # Step 2: if bars insufficient for warm-up, compute minimal expanded period
+        if bars_count < min_bars_needed:
+            if is_intraday:
+                interval_mins = INTERVAL_MINUTES.get(interval.value, 1)
+                period_days = PERIOD_DAYS.get(period.value, 1)
+                # Use conservative trading minutes (A-shares: 240min) to ensure
+                # enough warm-up days across all markets (US: 390, HK: 330, CN: 240)
+                trading_mins_per_day = 240
+                warm_up_days = math.ceil(max_period_val * interval_mins / trading_mins_per_day) + 1
+                total_days = period_days + warm_up_days
+                expanded_period_str = _pick_smallest_period(total_days)
+            else:
+                expanded_period_str = LOOKBACK_MAP.get(period.value, period.value)
+
+            logger.info(
+                "Indicator warm-up: %d bars < %d needed for %s (period=%s, interval=%s, ma=%s), expanding → %s",
+                bars_count, min_bars_needed, symbol, period.value, interval.value, ma_periods, expanded_period_str,
+            )
+            try:
+                history = await stock_service.get_history(
+                    symbol,
+                    period=ServicePeriod(expanded_period_str),
+                    interval=service_interval,
+                )
+            except Exception as e:
+                logger.error("Error fetching expanded history for indicators (%s): %s", symbol, e)
+                raise HTTPException(
+                    status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                    detail="Failed to fetch historical data for indicator computation.",
+                )
+        else:
+            logger.info(
+                "Indicator cache reuse: %d bars >= %d needed for %s (period=%s, interval=%s), skipping expanded fetch",
+                bars_count, min_bars_needed, symbol, period.value, interval.value,
             )
 
-    if history is None or not history.get("bars"):
+    if history is None or not (history.get("bars") or []):
         logger.warning(
-            "No bars returned for %s (interval=%s)",
-            symbol, interval.value,
+            "No bars returned for %s (period=%s, interval=%s, mode=%s)",
+            symbol, period.value, interval.value,
+            "start_end" if start and end else "period",
         )
         if is_precious_metal(symbol):
             raise _futures_market_closed_or_404(symbol)
@@ -638,6 +712,89 @@ async def get_stock_indicators_query(
         start=start if start and end else None,
         end=end if start and end else None,
     )
+
+
+@router.get(
+    "/history/latest",
+    summary="Get incremental bars since a timestamp",
+    description=(
+        "Fetch bars newer than the given Unix timestamp, useful for live chart "
+        "updates. New bars are written back to the canonical disk cache (Layer 2) "
+        "as a fire-and-forget operation."
+    ),
+)
+async def get_latest_bars(
+    symbol: str = Query(..., description="Stock symbol (e.g., AAPL, 0700.HK, GC=F)"),
+    interval: HistoryInterval = Query(HistoryInterval.FIVE_MINUTES),
+    since: int = Query(..., ge=946684800, description="Unix timestamp of last known bar (>= 2000-01-01)"),
+    current_user: User = Depends(get_current_user),
+    _rate_limit: None = Depends(STOCK_RATE_LIMIT),
+):
+    """Get incremental bars since a timestamp. Writes back to canonical cache."""
+    symbol = validate_symbol(symbol)
+    market = detect_market(symbol)
+
+    since_dt = datetime.fromtimestamp(since, tz=timezone.utc)
+
+    # Resolve to the canonical tier interval
+    canonical_interval = RESAMPLE_MAP.get(interval.value, interval.value)
+    interval_mins = INTERVAL_MINUTES.get(canonical_interval, 5)
+
+    # Fetch slightly before 'since' to catch bars we might have missed
+    start_str = (since_dt - timedelta(minutes=interval_mins * 2)).strftime(
+        "%Y-%m-%d %H:%M:%S"
+    )
+    end_str = datetime.now(tz=timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+
+    # Fetch from provider at canonical precision
+    router = await get_provider_router()
+    try:
+        history = await router.get_history(
+            symbol,
+            ServicePeriod.ONE_DAY,
+            ServiceInterval(canonical_interval),
+            market,
+            start=start_str,
+            end=end_str,
+        )
+    except Exception as e:
+        logger.error("Error fetching latest bars for %s: %s", symbol, e)
+        return {"symbol": symbol, "interval": interval.value, "bars": []}
+
+    if not history or not history.bars:
+        return {"symbol": symbol, "interval": interval.value, "bars": []}
+
+    raw_bars = [
+        {
+            "date": (
+                b.date.isoformat() if hasattr(b.date, "isoformat") else str(b.date)
+            ),
+            "open": round(float(b.open), 4),
+            "high": round(float(b.high), 4),
+            "low": round(float(b.low), 4),
+            "close": round(float(b.close), 4),
+            "volume": int(b.volume),
+        }
+        for b in history.bars
+    ]
+
+    # Fire-and-forget: write back to Layer 2 disk cache
+    canonical_service = await get_canonical_cache_service()
+    task = asyncio.create_task(
+        canonical_service.append_bars(symbol, canonical_interval, raw_bars)
+    )
+    task.add_done_callback(
+        lambda t: t.exception() and logger.error(
+            "append_bars background task failed for %s/%s: %s",
+            symbol, canonical_interval, t.exception(),
+        )
+    )
+
+    # Downsample to user's requested interval if different from canonical
+    if canonical_interval != interval.value:
+        raw_bars = resample_bars(raw_bars, canonical_interval, interval.value)
+
+    return {"symbol": symbol, "interval": interval.value, "bars": raw_bars}
 
 
 # =============================================================================

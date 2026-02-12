@@ -1,7 +1,7 @@
 import { useParams } from 'react-router-dom'
 import { useTranslation } from 'react-i18next'
 import { useQuery, useMutation, useQueryClient, keepPreviousData } from '@tanstack/react-query'
-import { useEffect, useCallback } from 'react'
+import { useEffect, useCallback, useMemo, useState } from 'react'
 import {
   TrendingUp,
   TrendingDown,
@@ -32,7 +32,7 @@ import {
   getPriceChangeColor,
   isMetal,
 } from '@/lib/utils'
-import { stockApi, watchlistApi, newsApi } from '@/api'
+import { stockApi, watchlistApi, newsApi, synthesizeTodayBar, synthesizeIntradayUpdate } from '@/api'
 import { useStockStore } from '@/stores/stockStore'
 import { useToast } from '@/hooks'
 import { useTabNavigation, type AISubTab } from '@/hooks/useTabNavigation'
@@ -54,7 +54,8 @@ export default function StockDetailPage() {
   const queryClient = useQueryClient()
   const { toast } = useToast()
   const { setSelectedSymbol, setSelectedQuote, setSelectedInfo } = useStockStore()
-  const chartControls = useChartControls('1D')
+  const chartControls = useChartControls('1H')
+  const [lastBarTime, setLastBarTime] = useState<number>(0)
 
   // Tab navigation with URL sync
   const {
@@ -124,13 +125,80 @@ export default function StockDetailPage() {
     },
     enabled: !!upperSymbol,
     placeholderData: keepPreviousData,
-    refetchInterval: isIntradayTimeframe && !chartControls.visibleRange ? 60000 : false,
+    refetchInterval: false,
+    staleTime: isIntradayTimeframe ? 60_000 : 5 * 60_000,
     retry: (failureCount, error: any) => {
       // Don't retry 409 (futures market closed)
       if (error?.response?.status === 409) return false
       return failureCount < 2
     },
   })
+
+  // Track the timestamp of the last bar for incremental fetching
+  useEffect(() => {
+    if (chartData?.length) {
+      const lastBar = chartData[chartData.length - 1]!
+      const ts = typeof lastBar.time === 'number'
+        ? lastBar.time
+        : new Date(lastBar.time as string).getTime() / 1000
+      setLastBarTime(prev => prev !== ts ? ts : prev)
+    }
+  }, [chartData])
+
+  // Incremental bar polling (intraday only, 60s interval)
+  const { data: latestBars } = useQuery({
+    queryKey: ['stock-latest', upperSymbol, chartControls.interval],
+    queryFn: () => stockApi.getLatestBars(
+      upperSymbol,
+      chartControls.interval,
+      lastBarTime,
+    ),
+    enabled: !!upperSymbol && isIntradayTimeframe && lastBarTime > 0 && !chartControls.visibleRange,
+    refetchInterval: 60_000,
+  })
+
+  // Merge incremental bars into full chart data
+  const mergedData = useMemo(() => {
+    if (!chartData) return []
+    if (!latestBars?.length) return chartData
+    const map = new Map(chartData.map(b => [String(b.time), b]))
+    for (const bar of latestBars) {
+      map.set(String(bar.time), bar)
+    }
+    return [...map.values()].sort((a, b) =>
+      typeof a.time === 'number' && typeof b.time === 'number'
+        ? a.time - b.time
+        : String(a.time).localeCompare(String(b.time))
+    )
+  }, [chartData, latestBars])
+
+  // Compute real-time bar from quote for series.update()
+  const latestBar = useMemo(() => {
+    if (!quote) return null
+    if (isIntradayTimeframe) {
+      const last = mergedData[mergedData.length - 1]
+      return last ? synthesizeIntradayUpdate(quote, last) : null
+    }
+    const bar = synthesizeTodayBar(quote)
+    if (!bar) return null
+    // For weekly/monthly charts, the last bar's time is the period end date
+    // (e.g., Sunday for weekly, month-end for monthly) which may be ahead of
+    // today.  series.update() only accepts the latest time or later, so snap
+    // to the last bar's time to avoid "Cannot update oldest data" errors.
+    const last = mergedData[mergedData.length - 1]
+    if (last && typeof last.time === 'string' && typeof bar.time === 'string' && last.time > bar.time) {
+      bar.time = last.time
+    }
+    return bar
+  }, [quote, isIntradayTimeframe, mergedData])
+
+  // Detect non-trading state from quote timestamp staleness
+  const isMarketClosed = useMemo(() => {
+    if (!quote?.timestamp) return false
+    const quoteTime = new Date(quote.timestamp).getTime()
+    const ageMinutes = (Date.now() - quoteTime) / 60_000
+    return ageMinutes > 5
+  }, [quote?.timestamp])
 
   // Extract futures market closed message
   const chartErrorMessage = (chartError as any)?.response?.status === 409
@@ -437,13 +505,20 @@ export default function StockDetailPage() {
                     />
                   </CardHeader>
                   <CardContent>
+                    {isMarketClosed && (
+                      <div className="mb-2 flex items-center gap-1.5 text-xs text-muted-foreground bg-muted/50 px-3 py-1.5 rounded">
+                        <AlertCircle className="h-3 w-3 shrink-0" />
+                        {t('stock.marketClosed')}
+                      </div>
+                    )}
                     {chartErrorMessage ? (
                       <div className="flex items-center justify-center h-[400px] text-muted-foreground">
                         <p>{chartErrorMessage}</p>
                       </div>
                     ) : (
                       <StockChart
-                        data={chartData ?? []}
+                        data={mergedData}
+                        latestBar={latestBar}
                         timeframe={chartControls.timeframe}
                         symbol={upperSymbol}
                         isLoading={isLoadingChart}

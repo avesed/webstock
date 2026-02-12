@@ -54,6 +54,20 @@ const intervals: { value: ChartInterval; label: string; description: string }[] 
   { value: '1mo', label: '1M', description: '1 month' },
 ]
 
+// Valid intervals per timeframe based on data provider limits
+// (yfinance: 1m≤7d, 5m≤60d, 1h≤730d, 1d=unlimited)
+const VALID_INTERVALS: Record<ChartTimeframe, Set<ChartInterval>> = {
+  '1H':  new Set(['1m', '2m', '5m']),
+  '1D':  new Set(['1m', '2m', '5m', '15m', '30m']),
+  '1W':  new Set(['1m', '2m', '5m', '15m', '30m', '1h']),
+  '1M':  new Set(['5m', '15m', '30m', '1h', '1d']),
+  '3M':  new Set(['1h', '1d']),
+  '6M':  new Set(['1h', '1d']),
+  '1Y':  new Set(['1h', '1d']),
+  '5Y':  new Set(['1d', '1wk']),
+  'ALL': new Set(['1d', '1wk', '1mo']),
+}
+
 // i18n keys for each indicator (must be literal strings for type-safe i18n)
 const indicatorDefs: { value: ChartIndicator; labelKey: 'stock.indicators.ma' | 'stock.indicators.rsi' | 'stock.indicators.macd' | 'stock.indicators.bb' | 'stock.indicators.volume' | 'stock.indicators.sentiment'; descKey: 'stock.indicators.maDesc' | 'stock.indicators.rsiDesc' | 'stock.indicators.macdDesc' | 'stock.indicators.bbDesc' | 'stock.indicators.volumeDesc' | 'stock.indicators.sentimentDesc'; implemented: boolean }[] = [
   { value: 'MA', labelKey: 'stock.indicators.ma', descKey: 'stock.indicators.maDesc', implemented: true },
@@ -111,18 +125,25 @@ export default function ChartControls({
           <DropdownMenuContent align="start" className="w-48">
             <DropdownMenuLabel>{t('stock.indicators.chartInterval')}</DropdownMenuLabel>
             <DropdownMenuSeparator />
-            {intervals.map((i) => (
-              <DropdownMenuItem
-                key={i.value}
-                onClick={() => onIntervalChange(i.value)}
-                className={cn(interval === i.value && 'bg-accent')}
-              >
-                <div className="flex flex-col">
-                  <span className="font-medium">{i.label}</span>
-                  <span className="text-xs text-muted-foreground">{i.description}</span>
-                </div>
-              </DropdownMenuItem>
-            ))}
+            {intervals.map((i) => {
+              const isValid = VALID_INTERVALS[timeframe]?.has(i.value) ?? true
+              return (
+                <DropdownMenuItem
+                  key={i.value}
+                  onClick={() => isValid && onIntervalChange(i.value)}
+                  className={cn(
+                    interval === i.value && 'bg-accent',
+                    !isValid && 'opacity-40 cursor-not-allowed'
+                  )}
+                  disabled={!isValid}
+                >
+                  <div className="flex flex-col">
+                    <span className="font-medium">{i.label}</span>
+                    <span className="text-xs text-muted-foreground">{i.description}</span>
+                  </div>
+                </DropdownMenuItem>
+              )
+            })}
           </DropdownMenuContent>
         </DropdownMenu>
       )}

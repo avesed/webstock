@@ -4,6 +4,7 @@ import asyncio
 import json
 import logging
 import random
+import uuid
 from datetime import timedelta
 from enum import Enum
 from typing import Any, Optional, TypeVar, Callable, Awaitable
@@ -21,7 +22,6 @@ class CacheTTL(Enum):
     """Cache TTL configurations with base values and randomization ranges."""
 
     REALTIME_QUOTE = (30, 30)  # 30-60 seconds
-    DAILY_HISTORY = (300, 60)  # 5 minutes + rand(60s)
     COMPANY_INFO = (3600, 600)  # 1 hour + rand(10min)
     FINANCIAL_DATA = (86400, 3600)  # 24 hours + rand(1h)
     STOCK_SEARCH = (600, 60)  # 10 minutes + rand(60s)
@@ -177,45 +177,70 @@ class CacheService:
         self,
         key: str,
         timeout: Optional[int] = None,
-    ) -> bool:
+    ) -> Optional[str]:
         """
-        Acquire distributed lock using Redis SETNX.
+        Acquire distributed lock using Redis SETNX with unique token.
 
         Args:
             key: Lock key (without prefix)
             timeout: Lock timeout in seconds (default: 10s)
 
         Returns:
-            True if lock acquired, False otherwise
+            Lock token string if acquired, None otherwise.
+            The token must be passed to release_lock() for safe release.
         """
         redis = await self._get_redis()
         lock_key = self._build_key(CachePrefix.LOCK, key)
         lock_timeout = timeout or self._lock_timeout
+        token = uuid.uuid4().hex
 
         try:
             # SETNX with expiration to prevent deadlocks
             acquired = await redis.set(
                 lock_key,
-                "1",
+                token,
                 nx=True,
                 ex=lock_timeout,
             )
             if acquired:
                 logger.debug(f"Lock acquired: {lock_key}")
-            return bool(acquired)
+                return token
+            return None
         except Exception as e:
             logger.error(f"Lock acquire error for {lock_key}: {e}")
-            return False
+            return None
 
-    async def release_lock(self, key: str) -> bool:
-        """Release distributed lock."""
+    # Lua script for atomic compare-and-delete (safe lock release)
+    _RELEASE_LOCK_SCRIPT = """
+    if redis.call("get", KEYS[1]) == ARGV[1] then
+        return redis.call("del", KEYS[1])
+    else
+        return 0
+    end
+    """
+
+    async def release_lock(self, key: str, token: Optional[str] = None) -> bool:
+        """Release distributed lock. Uses Lua CAS when token is provided."""
         redis = await self._get_redis()
         lock_key = self._build_key(CachePrefix.LOCK, key)
 
         try:
-            await redis.delete(lock_key)
-            logger.debug(f"Lock released: {lock_key}")
-            return True
+            if token:
+                # Atomic compare-and-delete: only release if we still own it
+                result = await redis.eval(
+                    self._RELEASE_LOCK_SCRIPT, 1, lock_key, token
+                )
+                released = bool(result)
+                if not released:
+                    logger.warning(f"Lock already expired or stolen: {lock_key}")
+                else:
+                    logger.debug(f"Lock released: {lock_key}")
+                return released
+            else:
+                # Legacy fallback: unconditional delete
+                await redis.delete(lock_key)
+                logger.debug(f"Lock released (legacy): {lock_key}")
+                return True
         except Exception as e:
             logger.error(f"Lock release error for {lock_key}: {e}")
             return False
@@ -257,7 +282,8 @@ class CacheService:
 
         for attempt in range(max_retries):
             # Try to acquire lock
-            if await self.acquire_lock(lock_key):
+            lock_token = await self.acquire_lock(lock_key)
+            if lock_token:
                 try:
                     # Double-check cache after acquiring lock
                     cached = await self.get(prefix, key, allow_stale=False)
@@ -278,7 +304,7 @@ class CacheService:
                     stale = await self.get(prefix, key, allow_stale=True)
                     return stale
                 finally:
-                    await self.release_lock(lock_key)
+                    await self.release_lock(lock_key, lock_token)
             else:
                 # Wait for lock holder to populate cache
                 await asyncio.sleep(self._lock_retry_interval * (attempt + 1))
