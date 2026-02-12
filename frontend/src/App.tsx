@@ -22,6 +22,7 @@ import NewsPage from '@/pages/NewsPage'
 import ChatPage from '@/pages/ChatPage'
 import SettingsPage from '@/pages/SettingsPage'
 import AdminDashboardPage from '@/pages/admin/AdminDashboardPage'
+import QlibBacktestsPage from '@/pages/QlibBacktestsPage'
 import NotFoundPage from '@/pages/NotFoundPage'
 
 // Protected Route wrapper
@@ -134,6 +135,7 @@ function App() {
           <Route path="reports" element={<ReportsPage />} />
           <Route path="news" element={<NewsPage />} />
           <Route path="chat" element={<ChatPage />} />
+          <Route path="backtests" element={<QlibBacktestsPage />} />
           <Route path="settings" element={<SettingsPage />} />
           <Route
             path="admin"

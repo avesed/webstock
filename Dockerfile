@@ -1,6 +1,6 @@
 # =============================================================================
 # WebStock App Container
-# Contains: Redis, FastAPI Backend, Celery Worker/Beat, Nginx + Frontend static
+# Contains: FastAPI Backend, Celery Worker/Beat, Nginx + Frontend static
 # PostgreSQL is external (separate container)
 # =============================================================================
 
@@ -41,7 +41,7 @@ RUN python -m venv /opt/venv \
 FROM python:3.11-slim
 
 LABEL maintainer="WebStock Team" \
-      description="WebStock App (Redis + Backend + Worker + Nginx)"
+      description="WebStock App (Backend + Worker + Nginx)"
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
@@ -50,9 +50,8 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /app
 
-# Install runtime packages: redis, nginx, supervisor, libpq, curl
+# Install runtime packages: nginx, supervisor, libpq, curl
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    redis-server \
     nginx \
     supervisor \
     libpq5 \
@@ -79,7 +78,7 @@ COPY --from=frontend-builder /build/dist /var/www/html
 RUN chown -R www-data:www-data /var/www/html
 
 # Create required directories
-RUN mkdir -p /app/logs /app/data /var/run/redis /var/log/nginx \
+RUN mkdir -p /app/logs /app/data /var/log/nginx \
     && chown -R appuser:appgroup /app/logs /app/data
 
 # Copy pre-built stock list data for fast search on first startup

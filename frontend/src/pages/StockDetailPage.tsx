@@ -47,6 +47,7 @@ import {
   AITab,
   StockChatProvider,
 } from '@/components/stock'
+import { QlibFactorPanel } from '@/components/qlib/QlibFactorPanel'
 
 export default function StockDetailPage() {
   const { t } = useTranslation('dashboard')
@@ -466,7 +467,7 @@ export default function StockDetailPage() {
         {/* Primary Tabs: 信息 | AI */}
         <Tabs
           value={primaryTab}
-          onValueChange={(v) => setPrimaryTab(v as 'traditional' | 'ai')}
+          onValueChange={(v) => setPrimaryTab(v as 'traditional' | 'ai' | 'quant')}
           className="space-y-4"
         >
           <PrimaryTabsList>
@@ -475,6 +476,9 @@ export default function StockDetailPage() {
             </PrimaryTabsTrigger>
             <PrimaryTabsTrigger value="ai">
               {t('stock.aiTab', 'AI')}
+            </PrimaryTabsTrigger>
+            <PrimaryTabsTrigger value="quant">
+              {t('stock.quantTab', '量化因子')}
             </PrimaryTabsTrigger>
           </PrimaryTabsList>
 
@@ -657,6 +661,39 @@ export default function StockDetailPage() {
               subTab={subTab as AISubTab}
               onSubTabChange={(tab) => setSubTab(tab)}
             />
+          </TabsContent>
+
+          {/* Quant Tab - 量化因子 */}
+          <TabsContent value="quant">
+            <div className="grid gap-6 lg:grid-cols-3">
+              <div className="lg:col-span-2">
+                <QlibFactorPanel
+                  symbol={upperSymbol}
+                  market={quote?.market ?? 'US'}
+                />
+              </div>
+              <div className="space-y-4">
+                {/* Key stats sidebar - reuse from traditional tab */}
+                <Card>
+                  <CardHeader>
+                    <CardTitle>{t('stock.overview')}</CardTitle>
+                  </CardHeader>
+                  <CardContent>
+                    {isLoadingQuote ? (
+                      <div className="flex h-[200px] items-center justify-center">
+                        <Loader2 className="h-6 w-6 animate-spin" />
+                      </div>
+                    ) : quote ? (
+                      isMetalAsset ? (
+                        <MetalStatsGrid quote={quote} symbol={upperSymbol} />
+                      ) : (
+                        <StockStatsGrid quote={quote} />
+                      )
+                    ) : null}
+                  </CardContent>
+                </Card>
+              </div>
+            </div>
           </TabsContent>
         </Tabs>
 

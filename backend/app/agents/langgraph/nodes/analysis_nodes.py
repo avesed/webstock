@@ -106,6 +106,7 @@ AGENT_SKILLS: Dict[str, List[str]] = {
         "get_stock_quote", "get_stock_info", "get_stock_financials",
         "get_institutional_holders", "get_fund_holdings_cn",
         "get_northbound_holding", "get_sector_industry",
+        "qlib_compute_factors",
     ],
     "technical": [
         "get_stock_quote", "get_stock_history",
@@ -143,6 +144,8 @@ def _build_skill_kwargs(
         return {"symbol": symbol, "market": market}
     elif name in ("get_fund_holdings_cn", "get_northbound_holding"):
         return {"symbol": symbol}
+    elif name == "qlib_compute_factors":
+        return {"symbol": symbol, "market": market.lower()}
     else:
         return {"symbol": symbol}
 
@@ -322,6 +325,23 @@ def _build_fundamental_data_prompt(
 - Industry: {info.get('industry', 'N/A')}
 - Employees: {info.get('employees', 'N/A')}
 """)
+
+    # Qlib quantitative factors section
+    qlib_result = skill_results.get("qlib_compute_factors")
+    if qlib_result and qlib_result.success and qlib_result.data:
+        qlib_data = qlib_result.data
+        top_factors = qlib_data.get("top_factors", [])
+        if top_factors:
+            if language == "zh":
+                lines = ["## 量化因子 (Alpha158)"]
+                for f in top_factors[:10]:
+                    lines.append(f"- {f.get('name', '?')}: {f.get('value', 'N/A')} (z-score: {f.get('z_score', 'N/A')})")
+                sections.append("\n".join(lines))
+            else:
+                lines = ["## Quantitative Factors (Alpha158)"]
+                for f in top_factors[:10]:
+                    lines.append(f"- {f.get('name', '?')}: {f.get('value', 'N/A')} (z-score: {f.get('z_score', 'N/A')})")
+                sections.append("\n".join(lines))
 
     return "\n".join(sections) if sections else (
         "数据有限。请基于股票代码进行分析。" if language == "zh"

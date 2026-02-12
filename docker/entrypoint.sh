@@ -6,12 +6,12 @@ echo "  WebStock App Container Starting"
 echo "=========================================="
 
 # Create directories
-mkdir -p /app/logs /app/data /var/run/redis
+mkdir -p /app/logs /app/data
 chmod 777 /app/logs
 chown -R appuser:appgroup /app/data
 
 # ============ Configure Nginx ============
-echo "[1/4] Configuring Nginx..."
+echo "[1/5] Configuring Nginx..."
 
 cat > /etc/nginx/nginx.conf << 'NGINXEOF'
 user www-data;
@@ -57,6 +57,8 @@ http {
     # Rate limiting
     limit_req_zone $binary_remote_addr zone=api_limit:10m rate=10r/s;
     limit_req_zone $binary_remote_addr zone=auth_limit:10m rate=5r/s;
+    limit_req_zone $binary_remote_addr zone=chat_limit:10m rate=20r/s;
+    limit_req_zone $binary_remote_addr zone=qlib_limit:10m rate=5r/s;
 
     upstream backend {
         server 127.0.0.1:8000;
@@ -69,9 +71,9 @@ http {
         root /var/www/html;
         index index.html;
 
-        # API endpoints
-        location /api/ {
-            limit_req zone=api_limit burst=20 nodelay;
+        # Qlib quantitative endpoints (longer timeout for factor computation)
+        location /api/v1/qlib/ {
+            limit_req zone=qlib_limit burst=10 nodelay;
 
             proxy_pass http://backend;
             proxy_http_version 1.1;
@@ -80,9 +82,10 @@ http {
             proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
             proxy_set_header X-Forwarded-Proto $scheme;
             proxy_set_header Connection "";
-            proxy_connect_timeout 60s;
-            proxy_send_timeout 60s;
-            proxy_read_timeout 60s;
+
+            proxy_connect_timeout 30s;
+            proxy_send_timeout 120s;
+            proxy_read_timeout 120s;
         }
 
         # Auth endpoints (stricter rate limit)
@@ -117,6 +120,8 @@ http {
 
         # SSE endpoints (chat streaming)
         location /api/v1/chat/ {
+            limit_req zone=chat_limit burst=30 nodelay;
+
             proxy_pass http://backend;
             proxy_http_version 1.1;
             proxy_set_header Host $host;
@@ -130,6 +135,22 @@ http {
             proxy_read_timeout 300s;
             proxy_send_timeout 300s;
             chunked_transfer_encoding on;
+        }
+
+        # API endpoints
+        location /api/ {
+            limit_req zone=api_limit burst=20 nodelay;
+
+            proxy_pass http://backend;
+            proxy_http_version 1.1;
+            proxy_set_header Host $host;
+            proxy_set_header X-Real-IP $remote_addr;
+            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+            proxy_set_header X-Forwarded-Proto $scheme;
+            proxy_set_header Connection "";
+            proxy_connect_timeout 60s;
+            proxy_send_timeout 60s;
+            proxy_read_timeout 60s;
         }
 
         # Frontend SPA
@@ -161,8 +182,28 @@ http {
 }
 NGINXEOF
 
+# ============ Wait for Redis ============
+echo "[2/5] Waiting for Redis..."
+
+REDIS_URL="${REDIS_URL:-redis://localhost:6379/0}"
+REDIS_HOST=$(echo "$REDIS_URL" | sed -n 's|redis://\([^:]*\):.*|\1|p')
+REDIS_PORT=$(echo "$REDIS_URL" | sed -n 's|redis://[^:]*:\([0-9]*\).*|\1|p')
+REDIS_HOST="${REDIS_HOST:-localhost}"
+REDIS_PORT="${REDIS_PORT:-6379}"
+
+for i in $(seq 1 30); do
+    if python3 -c "import socket; s=socket.socket(); s.settimeout(2); s.connect(('$REDIS_HOST', $REDIS_PORT)); s.close()" 2>/dev/null; then
+        echo "  -> Redis is reachable at ${REDIS_HOST}:${REDIS_PORT}"
+        break
+    fi
+    if [ "$i" -eq 30 ]; then
+        echo "  -> WARNING: Redis not reachable after 30s, starting anyway"
+    fi
+    sleep 1
+done
+
 # ============ Wait for PostgreSQL ============
-echo "[2/4] Waiting for PostgreSQL..."
+echo "[3/5] Waiting for PostgreSQL..."
 
 DB_HOST=$(echo "$DATABASE_URL" | sed -n 's/.*@\([^:\/]*\).*/\1/p')
 DB_PORT=5432
@@ -179,7 +220,7 @@ for i in $(seq 1 60); do
 done
 
 # ============ Run Database Migrations ============
-echo "[3/4] Running database migrations..."
+echo "[4/5] Running database migrations..."
 
 cd /app/backend
 if alembic upgrade head; then
@@ -191,13 +232,14 @@ fi
 cd /app
 
 # ============ Ready ============
-echo "[4/4] Starting services..."
+echo "[5/5] Starting services..."
 echo ""
 echo "=========================================="
-echo "  Redis      : 127.0.0.1:6379 (internal)"
-echo "  Backend    : 127.0.0.1:8000 (internal)"
-echo "  Nginx      : 0.0.0.0:80 (exposed)"
-echo "  PostgreSQL : ${DB_HOST}:${DB_PORT} (external)"
+echo "  Redis        : ${REDIS_HOST}:${REDIS_PORT} (external container)"
+echo "  Backend      : 127.0.0.1:8000 (internal)"
+echo "  Nginx        : 0.0.0.0:80 (exposed)"
+echo "  PostgreSQL   : ${DB_HOST}:${DB_PORT} (external container)"
+echo "  Qlib Service : qlib-service:8001 (external container)"
 echo "=========================================="
 echo ""
 

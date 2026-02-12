@@ -5,14 +5,15 @@ import os
 from celery import Celery
 from celery.schedules import crontab
 
-# Redis URL - use localhost for all-in-one, redis for docker-compose
-REDIS_HOST = os.environ.get("REDIS_HOST", "localhost")
+# Redis configuration from environment variables
+CELERY_BROKER_URL = os.environ.get("CELERY_BROKER_URL", "redis://localhost:6379/1")
+CELERY_RESULT_BACKEND = os.environ.get("CELERY_RESULT_BACKEND", "redis://localhost:6379/2")
 
 # Create Celery app
 celery_app = Celery(
     "webstock",
-    broker=f"redis://{REDIS_HOST}:6379/1",
-    backend=f"redis://{REDIS_HOST}:6379/2",
+    broker=CELERY_BROKER_URL,
+    backend=CELERY_RESULT_BACKEND,
     include=[
         "worker.tasks",
         "worker.tasks.news_monitor",
@@ -22,6 +23,7 @@ celery_app = Celery(
         "worker.tasks.embedding_tasks",
         "worker.tasks.full_content_tasks",
         "worker.tasks.stock_list_tasks",
+        "worker.tasks.backtest_cleanup",
     ],
 )
 
@@ -98,6 +100,10 @@ celery_app.conf.update(
         "update-stock-list": {
             "task": "worker.tasks.stock_list_tasks.update_stock_list",
             "schedule": crontab(hour=5, minute=30),  # Daily at 5:30 AM UTC
+        },
+        "cleanup-old-backtests": {
+            "task": "worker.tasks.backtest_cleanup.cleanup_old_backtests",
+            "schedule": crontab(hour=5, minute=15),  # Daily at 5:15 AM UTC
         },
         # JWT Key Rotation - DISABLED by default
         # Manual rotation recommended: python worker/scripts/manage_keys.py rotate

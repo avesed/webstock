@@ -121,6 +121,9 @@ class Settings(BaseSettings):
     CELERY_BROKER_URL: str = "redis://redis:6379/1"
     CELERY_RESULT_BACKEND: str = "redis://redis:6379/2"
 
+    # Qlib Service
+    QLIB_SERVICE_URL: str = "http://qlib-service:8001"
+
     # Email (SMTP)
     SMTP_HOST: Optional[str] = None
     SMTP_PORT: int = 587

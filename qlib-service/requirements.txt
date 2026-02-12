@@ -1,0 +1,28 @@
+# Core
+pyqlib>=0.9.0
+fastapi>=0.109.0
+uvicorn>=0.27.0
+
+# Data sources
+yfinance>=0.2.36
+akshare>=1.12.0
+
+# Data processing
+pandas>=2.0.0,<3.0.0
+numpy>=1.24.0
+scipy>=1.10.0
+
+# Scheduling
+apscheduler>=3.10.0
+
+# Redis (for factor caching, backtest progress, sync status)
+redis>=5.0.0
+
+# HTTP client
+httpx>=0.26.0
+
+# Utilities
+msgpack>=1.0.0
+pydantic>=2.5.0
+pydantic-settings>=2.1.0
+python-dotenv>=1.0.0

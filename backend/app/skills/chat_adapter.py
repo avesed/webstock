@@ -36,6 +36,10 @@ CHAT_SKILL_NAMES = [
     "get_portfolio",
     "get_watchlist",
     "search_knowledge_base",
+    "qlib_compute_factors",
+    "qlib_evaluate_expression",
+    "qlib_create_backtest",
+    "optimize_portfolio",
 ]
 
 # Friendly display labels for tool calls (used by SSE events)
@@ -49,11 +53,15 @@ TOOL_LABELS = {
     "get_portfolio": "查看投资组合",
     "get_watchlist": "查看关注列表",
     "search_knowledge_base": "搜索知识库",
+    "qlib_compute_factors": "计算量化因子",
+    "qlib_evaluate_expression": "计算量化表达式",
+    "qlib_create_backtest": "创建量化回测",
+    "optimize_portfolio": "优化投资组合",
 }
 
 # Skills that need user_id and db injection
-_USER_SCOPED_SKILLS = {"get_portfolio", "get_watchlist"}
-_DB_SCOPED_SKILLS = {"get_portfolio", "get_watchlist", "search_knowledge_base", "get_news"}
+_USER_SCOPED_SKILLS = {"get_portfolio", "get_watchlist", "qlib_create_backtest"}
+_DB_SCOPED_SKILLS = {"get_portfolio", "get_watchlist", "search_knowledge_base", "get_news", "qlib_create_backtest"}
 
 
 def skill_to_tool_definition(skill: BaseSkill) -> ToolDefinition:

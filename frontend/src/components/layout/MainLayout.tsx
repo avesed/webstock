@@ -7,6 +7,7 @@ import {
   FileText,
   Newspaper,
   MessageSquare,
+  FlaskConical,
   Settings,
   LogOut,
   Moon,
@@ -54,6 +55,7 @@ const navItems = [
   { href: '/reports', icon: FileText, labelKey: 'navigation.reports' as const },
   { href: '/news', icon: Newspaper, labelKey: 'navigation.news' as const },
   { href: '/chat', icon: MessageSquare, labelKey: 'navigation.chat' as const },
+  { href: '/backtests', icon: FlaskConical, labelKey: 'navigation.backtests' as const },
 ] as const
 
 const themeOptions = [
@@ -63,7 +65,7 @@ const themeOptions = [
 ] as const
 
 // Breadcrumb configuration
-type CommonNavigationKey = 'navigation.dashboard' | 'navigation.watchlist' | 'navigation.portfolio' | 'navigation.alerts' | 'navigation.reports' | 'navigation.news' | 'navigation.chat' | 'navigation.analysis' | 'navigation.admin'
+type CommonNavigationKey = 'navigation.dashboard' | 'navigation.watchlist' | 'navigation.portfolio' | 'navigation.alerts' | 'navigation.reports' | 'navigation.news' | 'navigation.chat' | 'navigation.backtests' | 'navigation.analysis' | 'navigation.admin'
 
 interface BreadcrumbConfig {
   path: string
@@ -80,6 +82,7 @@ const breadcrumbConfig: BreadcrumbConfig[] = [
   { path: '/reports', labelKey: 'navigation.reports' },
   { path: '/news', labelKey: 'navigation.news' },
   { path: '/chat', labelKey: 'navigation.chat' },
+  { path: '/backtests', labelKey: 'navigation.backtests' },
   { path: '/admin', labelKey: 'navigation.admin' },
   { path: '/stock', labelKey: 'navigation.analysis', match: /^\/stock\//, dynamic: true },
 ]

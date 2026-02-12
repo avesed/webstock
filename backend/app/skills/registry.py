@@ -111,6 +111,12 @@ def _register_all_skills(registry: SkillRegistry) -> None:
     from app.skills.knowledge.search_kb import SearchKnowledgeBaseSkill
     from app.skills.knowledge.embed_document import EmbedDocumentSkill
 
+    # Quantitative (Qlib)
+    from app.skills.qlib.factor_skill import QlibFactorSkill
+    from app.skills.qlib.expression_skill import QlibExpressionSkill
+    from app.skills.qlib.backtest_skill import QlibBacktestSkill
+    from app.skills.qlib.portfolio_skill import PortfolioOptimizationSkill
+
     for skill_class in [
         # Market data
         GetStockQuoteSkill,
@@ -140,6 +146,11 @@ def _register_all_skills(registry: SkillRegistry) -> None:
         # Knowledge
         SearchKnowledgeBaseSkill,
         EmbedDocumentSkill,
+        # Quantitative (Qlib)
+        QlibFactorSkill,
+        QlibExpressionSkill,
+        QlibBacktestSkill,
+        PortfolioOptimizationSkill,
     ]:
         registry.register(skill_class())
 

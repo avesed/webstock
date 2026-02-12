@@ -4,6 +4,7 @@ from fastapi import APIRouter
 
 from app.api.v1.admin import router as admin_router
 from app.api.v1.alerts import router as alerts_router
+from app.api.v1.qlib import router as qlib_router
 from app.api.v1.alerts import push_router
 from app.api.v1.analysis import router as analysis_router
 from app.api.v1.chat import router as chat_router
@@ -34,3 +35,4 @@ api_router.include_router(push_router)
 api_router.include_router(reports_router)
 api_router.include_router(settings_router)
 api_router.include_router(admin_router)
+api_router.include_router(qlib_router)

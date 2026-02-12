@@ -1,6 +1,6 @@
 
 # =============================================================================
-# WebStock Docker Compose - 2 Services: PostgreSQL + App
+# WebStock Docker Compose - 4 Services: PostgreSQL + Redis + App + Qlib
 # =============================================================================
 
 services:
@@ -80,7 +80,37 @@ services:
         max-file: "5"
 
   # ===========================================================================
-  # App (Redis + Backend + Frontend + Worker + Beat + Nginx)
+  # Redis (shared cache + message broker)
+  # ===========================================================================
+  redis:
+    image: redis:7-alpine
+    container_name: webstock-redis
+    command: >
+      redis-server
+      --maxmemory 512mb --maxmemory-policy allkeys-lru
+      --appendonly yes --save 900 1 --save 300 10
+    volumes:
+      - redis_data:/data
+    networks:
+      - webstock-network
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "50m"
+        max-file: "5"
+
+  # ===========================================================================
+  # App (Backend + Frontend + Worker + Beat + Nginx)
   # ===========================================================================
   app:
     build:
@@ -92,9 +122,10 @@ services:
       - "443:443"
     environment:
       - DATABASE_URL=postgresql+asyncpg://webstock:${POSTGRES_PASSWORD:-webstock}@postgres:5432/webstock?ssl=disable
-      - REDIS_URL=redis://127.0.0.1:6379/0
-      - CELERY_BROKER_URL=redis://127.0.0.1:6379/1
-      - CELERY_RESULT_BACKEND=redis://127.0.0.1:6379/2
+      - REDIS_URL=redis://redis:6379/0
+      - CELERY_BROKER_URL=redis://redis:6379/1
+      - CELERY_RESULT_BACKEND=redis://redis:6379/2
+      - QLIB_SERVICE_URL=http://qlib-service:8001
       - JWT_SECRET_KEY=${JWT_SECRET_KEY:-change-me-in-production}
       - JWT_SECRET_KEY_PREVIOUS=${JWT_SECRET_KEY_PREVIOUS:-}
       - DEBUG=${DEBUG:-false}
@@ -115,6 +146,8 @@ services:
       - ./nginx/ssl:/etc/nginx/ssl:ro
     depends_on:
       postgres:
+        condition: service_healthy
+      redis:
         condition: service_healthy
     restart: unless-stopped
     networks:
@@ -139,6 +172,47 @@ services:
         max-size: "50m"
         max-file: "5"
 
+  # ===========================================================================
+  # Qlib Service (quantitative analysis)
+  # ===========================================================================
+  qlib-service:
+    build:
+      context: ./qlib-service
+      dockerfile: Dockerfile
+    container_name: webstock-qlib
+    depends_on:
+      redis:
+        condition: service_healthy
+    volumes:
+      - qlib_data:/app/data/qlib
+    networks:
+      - webstock-network
+    environment:
+      - QLIB_DATA_DIR=/app/data/qlib
+      - REDIS_URL=redis://redis:6379/3
+      - DEFAULT_MARKET=us
+      - LOG_LEVEL=info
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://127.0.0.1:8001/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          cpus: "4"
+          memory: 12G
+        reservations:
+          cpus: "1"
+          memory: 2G
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "50m"
+        max-file: "5"
+
 # =============================================================================
 # Networks
 # =============================================================================
@@ -152,7 +226,11 @@ networks:
 volumes:
   postgres_data:
     driver: local
+  redis_data:
+    driver: local
   app_data:
     driver: local
   app_logs:
+    driver: local
+  qlib_data:
     driver: local

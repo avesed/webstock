@@ -4,7 +4,7 @@ import { useCallback, useMemo } from 'react'
 /**
  * Primary tab values for stock detail page
  */
-export type PrimaryTab = 'traditional' | 'ai'
+export type PrimaryTab = 'traditional' | 'ai' | 'quant'
 
 /**
  * Sub-tab values for Traditional tab
@@ -17,14 +17,19 @@ export type TraditionalSubTab = 'financials' | 'news'
 export type AISubTab = 'analysis' | 'extension'
 
 /**
+ * Sub-tab values for Quant tab
+ */
+export type QuantSubTab = 'factors'
+
+/**
  * Combined sub-tab type
  */
-export type SubTab = TraditionalSubTab | AISubTab
+export type SubTab = TraditionalSubTab | AISubTab | QuantSubTab
 
 /**
  * Valid primary tab values for validation
  */
-const VALID_PRIMARY_TABS: PrimaryTab[] = ['traditional', 'ai']
+const VALID_PRIMARY_TABS: PrimaryTab[] = ['traditional', 'ai', 'quant']
 
 /**
  * Valid sub-tab values grouped by primary tab
@@ -32,6 +37,7 @@ const VALID_PRIMARY_TABS: PrimaryTab[] = ['traditional', 'ai']
 const VALID_SUB_TABS: Record<PrimaryTab, SubTab[]> = {
   traditional: ['financials', 'news'],
   ai: ['analysis', 'extension'],
+  quant: ['factors'],
 }
 
 /**
@@ -40,6 +46,7 @@ const VALID_SUB_TABS: Record<PrimaryTab, SubTab[]> = {
 const DEFAULT_SUB_TABS: Record<PrimaryTab, SubTab> = {
   traditional: 'financials',
   ai: 'analysis',
+  quant: 'factors',
 }
 
 /**
