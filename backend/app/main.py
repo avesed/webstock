@@ -18,6 +18,80 @@ from app.services.stock_service import cleanup_stock_service
 
 logger = logging.getLogger(__name__)
 
+# ── Default RSS feeds (seeded on first boot when table is empty) ─────────
+DEFAULT_RSS_FEEDS = [
+    {
+        "name": "Reuters Business",
+        "rsshub_route": "/reuters/business",
+        "description": "Reuters global business & markets news",
+        "category": "media",
+        "symbol": None,
+        "market": "US",
+        "poll_interval_minutes": 30,
+        "fulltext_mode": False,
+    },
+    {
+        "name": "CNBC Top News",
+        "rsshub_route": "/cnbc/rss",
+        "description": "CNBC US top news and market analysis",
+        "category": "media",
+        "symbol": None,
+        "market": "US",
+        "poll_interval_minutes": 30,
+        "fulltext_mode": False,
+    },
+    {
+        "name": "华尔街见闻",
+        "rsshub_route": "/wallstreetcn/news/global",
+        "description": "华尔街见闻全球财经资讯",
+        "category": "media",
+        "symbol": None,
+        "market": "US",
+        "poll_interval_minutes": 15,
+        "fulltext_mode": False,
+    },
+    {
+        "name": "财联社电报",
+        "rsshub_route": "/cls/telegraph",
+        "description": "财联社7×24小时实时财经电报",
+        "category": "media",
+        "symbol": None,
+        "market": "CN",
+        "poll_interval_minutes": 10,
+        "fulltext_mode": False,
+    },
+    {
+        "name": "金十数据",
+        "rsshub_route": "/jin10",
+        "description": "金十数据全球财经快讯",
+        "category": "media",
+        "symbol": None,
+        "market": "US",
+        "poll_interval_minutes": 10,
+        "fulltext_mode": False,
+    },
+    {
+        "name": "财新网",
+        "rsshub_route": "/caixin/latest",
+        "description": "财新网最新财经深度报道",
+        "category": "media",
+        "symbol": None,
+        "market": "CN",
+        "poll_interval_minutes": 30,
+        "fulltext_mode": True,
+    },
+    {
+        "name": "东方财富策略报告",
+        "rsshub_route": "/eastmoney/report/strategyreport",
+        "description": "东方财富网券商策略研报",
+        "category": "media",
+        "symbol": None,
+        "market": "CN",
+        "poll_interval_minutes": 60,
+        "fulltext_mode": True,
+    },
+]
+
 
 async def create_first_admin() -> None:
     """Create or promote the first admin user on startup if configured.
@@ -69,6 +143,26 @@ async def create_first_admin() -> None:
             )
 
 
+async def seed_default_rss_feeds() -> None:
+    """Seed default RSS feeds on first boot if the table is empty."""
+    from sqlalchemy import func, select
+
+    from app.models.rss_feed import RssFeed
+
+    async with AsyncSessionLocal() as db:
+        result = await db.execute(select(func.count()).select_from(RssFeed))
+        count = result.scalar() or 0
+        if count > 0:
+            logger.debug("RSS feeds table already has %d entries, skipping seed", count)
+            return
+
+        logger.info("Seeding %d default RSS feeds...", len(DEFAULT_RSS_FEEDS))
+        for feed_data in DEFAULT_RSS_FEEDS:
+            db.add(RssFeed(**feed_data))
+        await db.commit()
+        logger.info("Default RSS feeds seeded successfully")
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     """Application lifespan manager for startup and shutdown events."""
@@ -88,6 +182,9 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     # Create first admin user if configured
     logger.debug("Checking first admin configuration...")
     await create_first_admin()
+
+    # Seed default RSS feeds if table is empty
+    await seed_default_rss_feeds()
 
     yield
 

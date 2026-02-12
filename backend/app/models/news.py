@@ -238,6 +238,15 @@ class News(Base):
         comment="投资导向摘要 (2-3句，由精筛生成)",
     )
 
+    # === RSS Feed 来源追踪 ===
+    rss_feed_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("rss_feeds.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+        comment="来源 RSS Feed ID（如有）",
+    )
+
     # 复合索引用于 RAG 查询优化
     __table_args__ = (
         Index("ix_news_stock_entities_score", "has_stock_entities", "max_entity_score"),

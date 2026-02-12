@@ -627,6 +627,73 @@ export interface SystemConfig {
   modelAssignments?: ModelAssignmentsConfig
 }
 
+// RSS Feed types
+export type FeedCategory = 'media' | 'exchange' | 'social'
+
+export interface RssFeed {
+  id: string
+  name: string
+  rsshubRoute: string
+  description: string | null
+  category: FeedCategory
+  symbol: string | null
+  market: string
+  pollIntervalMinutes: number
+  fulltextMode: boolean
+  isEnabled: boolean
+  lastPolledAt: string | null
+  lastError: string | null
+  consecutiveErrors: number
+  articleCount: number
+  createdAt: string
+  updatedAt: string
+}
+
+export interface RssFeedCreate {
+  name: string
+  rsshubRoute: string
+  description?: string | null
+  category?: FeedCategory
+  symbol?: string | null
+  market?: string
+  pollIntervalMinutes?: number
+  fulltextMode?: boolean
+}
+
+export interface RssFeedUpdate extends Partial<RssFeedCreate> {
+  isEnabled?: boolean
+}
+
+export interface RssFeedTestResult {
+  route: string
+  articleCount: number
+  articles: RssFeedTestArticle[]
+  error: string | null
+}
+
+export interface RssFeedTestArticle {
+  title: string
+  url: string
+  summary: string | null
+  publishedAt: string | null
+  source: string | null
+}
+
+export interface RssFeedStats {
+  periodDays: number
+  feeds: RssFeedStatsItem[]
+}
+
+export interface RssFeedStatsItem {
+  feedId: string
+  feedName: string
+  totalArticles: number
+  keptArticles: number
+  deletedArticles: number
+  embeddedArticles: number
+  keepRate: number | null
+}
+
 // Admin System Monitor types
 export interface SystemMonitorStats {
   users: {

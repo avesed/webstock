@@ -124,6 +124,10 @@ class Settings(BaseSettings):
     # Qlib Service
     QLIB_SERVICE_URL: str = "http://qlib-service:8001"
 
+    # RSSHub
+    RSSHUB_URL: str = "http://rsshub:1200"
+    RSSHUB_ACCESS_KEY: str = ""
+
     # Email (SMTP)
     SMTP_HOST: Optional[str] = None
     SMTP_PORT: int = 587

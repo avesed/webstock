@@ -1,6 +1,6 @@
 
 # =============================================================================
-# WebStock Docker Compose - 4 Services: PostgreSQL + Redis + App + Qlib
+# WebStock Docker Compose - 5 Services: PostgreSQL + Redis + RSSHub + App + Qlib
 # =============================================================================
 
 services:
@@ -110,6 +110,46 @@ services:
         max-file: "5"
 
   # ===========================================================================
+  # RSSHub (RSS feed aggregator)
+  # ===========================================================================
+  rsshub:
+    image: diygod/rsshub:latest
+    container_name: webstock-rsshub
+    environment:
+      - NODE_ENV=production
+      - CACHE_TYPE=redis
+      - REDIS_URL=redis://redis:6379/4
+      - CACHE_EXPIRE=300
+      - REQUEST_TIMEOUT=30000
+      - LISTEN_INADDR_ANY=1
+      - ACCESS_KEY=${RSSHUB_ACCESS_KEY:-}
+    depends_on:
+      redis:
+        condition: service_healthy
+    networks:
+      - webstock-network
+    healthcheck:
+      test: ["CMD", "node", "-e", "require('http').get('http://127.0.0.1:1200/',r=>{process.exit(r.statusCode===200?0:1)}).on('error',()=>process.exit(1))"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          cpus: "1"
+          memory: 512M
+        reservations:
+          cpus: "0.25"
+          memory: 128M
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "30m"
+        max-file: "3"
+
+  # ===========================================================================
   # App (Backend + Frontend + Worker + Beat + Nginx)
   # ===========================================================================
   app:
@@ -140,6 +180,8 @@ services:
       - SMTP_USER=${SMTP_USER:-}
       - SMTP_PASSWORD=${SMTP_PASSWORD:-}
       - SMTP_FROM_EMAIL=${SMTP_FROM_EMAIL:-}
+      - RSSHUB_URL=${RSSHUB_URL:-http://rsshub:1200}
+      - RSSHUB_ACCESS_KEY=${RSSHUB_ACCESS_KEY:-}
     volumes:
       - app_data:/app/data
       - app_logs:/app/logs

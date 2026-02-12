@@ -24,6 +24,7 @@ celery_app = Celery(
         "worker.tasks.full_content_tasks",
         "worker.tasks.stock_list_tasks",
         "worker.tasks.backtest_cleanup",
+        "worker.tasks.rss_monitor",
     ],
 )
 
@@ -104,6 +105,10 @@ celery_app.conf.update(
         "cleanup-old-backtests": {
             "task": "worker.tasks.backtest_cleanup.cleanup_old_backtests",
             "schedule": crontab(hour=5, minute=15),  # Daily at 5:15 AM UTC
+        },
+        "monitor-rss-feeds": {
+            "task": "worker.tasks.rss_monitor.monitor_rss_feeds",
+            "schedule": crontab(minute="*/5"),
         },
         # JWT Key Rotation - DISABLED by default
         # Manual rotation recommended: python worker/scripts/manage_keys.py rotate

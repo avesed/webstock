@@ -20,6 +20,7 @@ from app.models.chat import Conversation, ChatMessage
 from app.models.llm_provider import LlmProvider
 from app.models.pipeline_event import PipelineEvent
 from app.models.qlib_backtest import QlibBacktest, BacktestStatus
+from app.models.rss_feed import RssFeed, FeedCategory
 
 __all__ = [
     "User",
@@ -51,4 +52,6 @@ __all__ = [
     "PipelineEvent",
     "QlibBacktest",
     "BacktestStatus",
+    "RssFeed",
+    "FeedCategory",
 ]

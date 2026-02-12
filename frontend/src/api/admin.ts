@@ -16,6 +16,11 @@ import type {
   LlmProviderCreate,
   LlmProviderUpdate,
   ModelAssignmentsConfig,
+  RssFeed,
+  RssFeedCreate,
+  RssFeedUpdate,
+  RssFeedTestResult,
+  RssFeedStats,
 } from '@/types'
 
 // Backend API format (has separate langgraph section + modelAssignments)
@@ -316,6 +321,47 @@ export const adminApi = {
     const response = await apiClient.get<SourceStats>('/admin/news/source-stats', {
       params: { days },
     })
+    return response.data
+  },
+
+  // RSS Feed Management
+  listRssFeeds: async (params?: { category?: string; isEnabled?: boolean }): Promise<{ feeds: RssFeed[]; total: number }> => {
+    const response = await apiClient.get<{ feeds: RssFeed[]; total: number }>('/admin/rss-feeds', { params })
+    return response.data
+  },
+
+  createRssFeed: async (data: RssFeedCreate): Promise<RssFeed> => {
+    const response = await apiClient.post<RssFeed>('/admin/rss-feeds', data)
+    return response.data
+  },
+
+  updateRssFeed: async (id: string, data: RssFeedUpdate): Promise<RssFeed> => {
+    const response = await apiClient.put<RssFeed>(`/admin/rss-feeds/${id}`, data)
+    return response.data
+  },
+
+  deleteRssFeed: async (id: string): Promise<{ message: string }> => {
+    const response = await apiClient.delete<{ message: string }>(`/admin/rss-feeds/${id}`)
+    return response.data
+  },
+
+  toggleRssFeed: async (id: string): Promise<RssFeed> => {
+    const response = await apiClient.post<RssFeed>(`/admin/rss-feeds/${id}/toggle`)
+    return response.data
+  },
+
+  testRssFeed: async (rsshubRoute: string, fulltextMode: boolean = false): Promise<RssFeedTestResult> => {
+    const response = await apiClient.post<RssFeedTestResult>('/admin/rss-feeds/test', { rsshubRoute, fulltextMode })
+    return response.data
+  },
+
+  getRssFeedStats: async (days: number = 7): Promise<RssFeedStats> => {
+    const response = await apiClient.get<RssFeedStats>('/admin/rss-feeds/stats', { params: { days } })
+    return response.data
+  },
+
+  triggerRssMonitor: async (): Promise<{ message: string; taskId?: string }> => {
+    const response = await apiClient.post<{ message: string; taskId?: string }>('/admin/rss-feeds/trigger')
     return response.data
   },
 }
