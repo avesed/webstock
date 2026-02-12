@@ -267,7 +267,7 @@ async def _monitor_rss_feeds_async() -> Dict[str, Any]:
                             "source": news_obj.source or "",
                             "published_at": news_obj.published_at.isoformat() if news_obj.published_at else None,
                             "use_two_phase": use_two_phase,
-                            "content_source": "scraper",
+                            "content_source": "trafilatura",
                         })
                 except Exception as e:
                     logger.warning(

@@ -107,8 +107,8 @@ class UserSettings(Base):
     full_content_source: Mapped[Optional[str]] = mapped_column(
         String(20),
         nullable=True,
-        default="scraper",
-        comment="全文抓取来源: scraper (newspaper4k) 或 polygon",
+        default="trafilatura",
+        comment="全文抓取来源: trafilatura 或 polygon",
     )
 
     polygon_api_key: Mapped[Optional[str]] = mapped_column(

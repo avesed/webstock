@@ -28,6 +28,7 @@ const DEFAULT_MODEL_ASSIGNMENTS: ModelAssignmentsConfig = {
   synthesis: { providerId: null, model: 'gpt-4o' },
   embedding: { providerId: null, model: 'text-embedding-3-small' },
   newsFilter: { providerId: null, model: 'gpt-4o-mini' },
+  contentExtraction: { providerId: null, model: 'gpt-4o-mini' },
 }
 
 const DEFAULT_CONFIG: SystemConfig = {
@@ -44,12 +45,14 @@ const DEFAULT_CONFIG: SystemConfig = {
     anthropicBaseUrl: null,
   },
   news: {
-    defaultSource: 'scraper',
+    defaultSource: 'trafilatura',
     retentionDays: 30,
     embeddingModel: 'text-embedding-3-small',
     filterModel: 'gpt-4o-mini',
     autoFetchEnabled: true,
     finnhubApiKey: null,
+    tavilyApiKey: null,
+    enableMcpExtraction: false,
   },
   features: {
     allowUserApiKeys: true,
@@ -58,6 +61,7 @@ const DEFAULT_CONFIG: SystemConfig = {
     enableStockAnalysis: true,
     requireRegistrationApproval: false,
     useTwoPhaseFilter: false,
+    enableMcpExtraction: false,
   },
   modelAssignments: DEFAULT_MODEL_ASSIGNMENTS,
 }
@@ -320,11 +324,13 @@ export function SystemSettings() {
                     <select
                       id="news-source"
                       value={formData.news.defaultSource}
-                      onChange={(e) => handleChange('news', 'defaultSource', e.target.value as 'scraper' | 'polygon')}
+                      onChange={(e) => handleChange('news', 'defaultSource', e.target.value as 'trafilatura' | 'polygon' | 'tavily' | 'playwright')}
                       className="w-full h-10 px-3 rounded-md border border-input bg-background text-sm"
                     >
-                      <option value="scraper">{t('settings.sourceScraper')}</option>
+                      <option value="trafilatura">{t('settings.sourceTrafilatura')}</option>
                       <option value="polygon">{t('settings.sourcePolygon')}</option>
+                      <option value="tavily">{t('settings.sourceTavily')}</option>
+                      <option value="playwright">{t('settings.sourcePlaywright')}</option>
                     </select>
                   </div>
 
@@ -387,6 +393,34 @@ export function SystemSettings() {
                     <p className="text-xs text-muted-foreground">{t('settings.apiKeySetHint')}</p>
                   )}
                   <p className="text-xs text-muted-foreground">{t('settings.finnhubApiKeyHint')}</p>
+                </div>
+
+                <div className="space-y-2">
+                  <Label htmlFor="news-tavily-key">{t('settings.tavilyApiKey')}</Label>
+                  <Input
+                    id="news-tavily-key"
+                    type="password"
+                    value={formData.news.tavilyApiKey === '***' ? '' : (formData.news.tavilyApiKey || '')}
+                    onChange={(e) => handleChange('news', 'tavilyApiKey', e.target.value || null)}
+                    placeholder={formData.news.tavilyApiKey === '***' ? t('settings.apiKeySet') : t('settings.apiKeyPlaceholder')}
+                  />
+                  {formData.news.tavilyApiKey === '***' && (
+                    <p className="text-xs text-muted-foreground">{t('settings.apiKeySetHint')}</p>
+                  )}
+                  <p className="text-xs text-muted-foreground">{t('settings.tavilyApiKeyHint')}</p>
+                </div>
+
+                <Separator />
+
+                <div className="flex items-center justify-between">
+                  <div className="space-y-0.5">
+                    <Label>{t('settings.enableMcpExtraction')}</Label>
+                    <p className="text-sm text-muted-foreground">{t('settings.enableMcpExtractionDescription')}</p>
+                  </div>
+                  <ToggleSwitch
+                    checked={formData.news.enableMcpExtraction}
+                    onCheckedChange={(checked) => handleChange('news', 'enableMcpExtraction', checked)}
+                  />
                 </div>
 
               </CardContent>

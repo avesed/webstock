@@ -31,7 +31,7 @@ class NewsSourceSettings(BaseModel):
 
 class NewsContentSettings(BaseModel):
     """News full content settings."""
-    source: str = "scraper"  # Options: "scraper", "polygon"
+    source: str = "trafilatura"  # Options: "trafilatura", "polygon", "tavily", "playwright"
     polygon_api_key: Optional[str] = None
     retention_days: int = 30
 
@@ -76,7 +76,7 @@ class UpdateNewsSourceSettings(BaseModel):
 
 class UpdateNewsContentSettings(BaseModel):
     """Update news content settings request."""
-    source: Optional[str] = Field(None, pattern="^(scraper|polygon)$")
+    source: Optional[str] = Field(None, pattern="^(trafilatura|polygon|tavily|playwright)$")
     polygon_api_key: Optional[str] = Field(None, max_length=1000)
     retention_days: Optional[int] = Field(None, ge=7, le=365)
 

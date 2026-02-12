@@ -79,7 +79,7 @@ class Settings(BaseSettings):
 
     # News Full Content Settings
     FULL_CONTENT_ENABLED: bool = True
-    FULL_CONTENT_DEFAULT_SOURCE: str = "scraper"  # scraper / polygon
+    FULL_CONTENT_DEFAULT_SOURCE: str = "trafilatura"  # trafilatura / polygon
     POLYGON_API_KEY: Optional[str] = None
     SCRAPER_RATE_LIMIT: int = 10  # requests per minute per domain
     SCRAPER_TIMEOUT: int = 30  # seconds
@@ -127,6 +127,13 @@ class Settings(BaseSettings):
     # RSSHub
     RSSHUB_URL: str = "http://rsshub:1200"
     RSSHUB_ACCESS_KEY: str = ""
+
+    # Tavily Extract API (optional, for content fetching fallback)
+    TAVILY_API_KEY: Optional[str] = None
+
+    # Playwright Service (optional, for JS-heavy content)
+    # None by default; only register PlaywrightProvider when explicitly configured
+    PLAYWRIGHT_SERVICE_URL: Optional[str] = None
 
     # Email (SMTP)
     SMTP_HOST: Optional[str] = None

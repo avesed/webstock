@@ -144,7 +144,7 @@ class News(Base):
         comment="文章语言: en, zh 等",
     )
 
-    # === newspaper4k 元数据 ===
+    # === 内容提取元数据 ===
     authors: Mapped[Optional[list]] = mapped_column(
         JSON,
         nullable=True,

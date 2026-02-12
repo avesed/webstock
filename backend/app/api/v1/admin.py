@@ -617,6 +617,7 @@ async def get_system_settings(
         news_retention_days=settings.news_retention_days,
         finnhub_api_key_set=bool(settings.finnhub_api_key),
         polygon_api_key_set=bool(settings.polygon_api_key),
+        tavily_api_key_set=bool(settings.tavily_api_key),
         allow_user_custom_api_keys=settings.allow_user_custom_api_keys,
         require_registration_approval=settings.require_registration_approval,
         # LangGraph settings
@@ -677,6 +678,8 @@ async def update_system_settings(
         settings.finnhub_api_key = data.finnhub_api_key or None
     if data.polygon_api_key is not None:
         settings.polygon_api_key = data.polygon_api_key or None
+    if data.tavily_api_key is not None:
+        settings.tavily_api_key = data.tavily_api_key or None
     if data.allow_user_custom_api_keys is not None:
         settings.allow_user_custom_api_keys = data.allow_user_custom_api_keys
 
@@ -744,6 +747,7 @@ async def update_system_settings(
         news_retention_days=settings.news_retention_days,
         finnhub_api_key_set=bool(settings.finnhub_api_key),
         polygon_api_key_set=bool(settings.polygon_api_key),
+        tavily_api_key_set=bool(settings.tavily_api_key),
         allow_user_custom_api_keys=settings.allow_user_custom_api_keys,
         require_registration_approval=settings.require_registration_approval,
         # LangGraph settings
@@ -876,6 +880,10 @@ async def get_system_config(
             provider_id=str(settings.news_filter_provider_id) if settings.news_filter_provider_id else None,
             model=settings.news_filter_model or "gpt-4o-mini",
         ),
+        content_extraction=ModelAssignment(
+            provider_id=str(settings.content_extraction_provider_id) if settings.content_extraction_provider_id else None,
+            model=settings.content_extraction_model or "gpt-4o-mini",
+        ),
     )
 
     return SystemConfigResponse(
@@ -889,12 +897,14 @@ async def get_system_config(
             anthropic_base_url=settings.anthropic_base_url,
         ),
         news=NewsConfig(
-            default_source="scraper",
+            default_source="trafilatura",
             retention_days=settings.news_retention_days,
             embedding_model=settings.embedding_model or "text-embedding-3-small",
             filter_model=settings.news_filter_model or "gpt-4o-mini",
             auto_fetch_enabled=True,
             finnhub_api_key="***" if settings.finnhub_api_key else None,
+            tavily_api_key="***" if settings.tavily_api_key else None,
+            enable_mcp_extraction=settings.enable_mcp_extraction,
         ),
         features=FeaturesConfig(
             allow_user_api_keys=settings.allow_user_custom_api_keys,
@@ -903,6 +913,7 @@ async def get_system_config(
             enable_stock_analysis=settings.enable_stock_analysis,
             require_registration_approval=settings.require_registration_approval,
             use_two_phase_filter=settings.use_two_phase_filter,
+            enable_mcp_extraction=settings.enable_mcp_extraction,
         ),
         langgraph=LangGraphConfig(
             local_llm_base_url=settings.local_llm_base_url,
@@ -961,6 +972,11 @@ async def update_system_config(
         # Handle finnhub_api_key - only update if not masked
         if data.news.finnhub_api_key and data.news.finnhub_api_key != "***":
             settings.finnhub_api_key = data.news.finnhub_api_key or None
+        # Handle tavily_api_key - only update if not masked
+        if data.news.tavily_api_key and data.news.tavily_api_key != "***":
+            settings.tavily_api_key = data.news.tavily_api_key or None
+        if data.news.enable_mcp_extraction is not None:
+            settings.enable_mcp_extraction = data.news.enable_mcp_extraction
 
     # Update feature flags
     if data.features:
@@ -974,6 +990,8 @@ async def update_system_config(
             settings.require_registration_approval = data.features.require_registration_approval
         if data.features.use_two_phase_filter is not None:
             settings.use_two_phase_filter = data.features.use_two_phase_filter
+        if data.features.enable_mcp_extraction is not None:
+            settings.enable_mcp_extraction = data.features.enable_mcp_extraction
 
     # Update LangGraph settings
     if data.langgraph:
@@ -1008,6 +1026,9 @@ async def update_system_config(
         if ma.news_filter:
             settings.news_filter_model = ma.news_filter.model or None
             settings.news_filter_provider_id = UUID(ma.news_filter.provider_id) if ma.news_filter.provider_id else None
+        if ma.content_extraction:
+            settings.content_extraction_model = ma.content_extraction.model or None
+            settings.content_extraction_provider_id = UUID(ma.content_extraction.provider_id) if ma.content_extraction.provider_id else None
 
     settings.updated_at = datetime.now(timezone.utc)
     settings.updated_by = admin.id
@@ -1285,6 +1306,8 @@ async def delete_llm_provider(
         active_assignments.append("embedding")
     if settings.news_filter_provider_id == provider_id:
         active_assignments.append("news_filter")
+    if settings.content_extraction_provider_id == provider_id:
+        active_assignments.append("content_extraction")
 
     if active_assignments:
         raise HTTPException(

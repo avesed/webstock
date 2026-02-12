@@ -510,7 +510,7 @@ export interface ToolCallStatus {
 }
 
 // News content settings types
-export type NewsContentSource = 'scraper' | 'polygon'
+export type NewsContentSource = 'trafilatura' | 'polygon' | 'tavily' | 'playwright'
 
 export interface NewsContentSettings {
   source: NewsContentSource
@@ -591,6 +591,7 @@ export interface ModelAssignmentsConfig {
   synthesis: ModelAssignment
   embedding: ModelAssignment
   newsFilter: ModelAssignment
+  contentExtraction: ModelAssignment
 }
 
 // Admin System Configuration types
@@ -615,6 +616,8 @@ export interface SystemConfig {
     filterModel: string
     autoFetchEnabled: boolean
     finnhubApiKey: string | null  // Finnhub API key for news data
+    tavilyApiKey: string | null  // Tavily API key for content extraction
+    enableMcpExtraction: boolean  // Whether to use LLM+MCP for content extraction
   }
   features: {
     allowUserApiKeys: boolean
@@ -623,6 +626,7 @@ export interface SystemConfig {
     enableStockAnalysis: boolean
     requireRegistrationApproval: boolean
     useTwoPhaseFilter: boolean
+    enableMcpExtraction: boolean
   }
   modelAssignments?: ModelAssignmentsConfig
 }

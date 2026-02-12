@@ -110,6 +110,12 @@ class SystemSettings(Base):
         comment="系统级 Polygon.io API Key（加密存储）",
     )
 
+    tavily_api_key: Mapped[Optional[str]] = mapped_column(
+        Text,
+        nullable=True,
+        comment="系统级 Tavily API Key（用于内容抓取兜底）",
+    )
+
     # === User Permission Settings ===
     allow_user_custom_api_keys: Mapped[bool] = mapped_column(
         Boolean,
@@ -227,6 +233,28 @@ class SystemSettings(Base):
         comment="Provider for news filter model (news_filter_model stores model name)",
     )
 
+    # === MCP Content Extraction ===
+    enable_mcp_extraction: Mapped[bool] = mapped_column(
+        Boolean,
+        nullable=False,
+        default=False,
+        comment="是否启用 LLM+MCP 抓取新闻全文（需 Playwright MCP 服务）",
+    )
+
+    content_extraction_model: Mapped[Optional[str]] = mapped_column(
+        String(100),
+        nullable=True,
+        default="gpt-4o-mini",
+        comment="MCP 内容抓取使用的 LLM 模型",
+    )
+
+    content_extraction_provider_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("llm_providers.id", ondelete="SET NULL"),
+        nullable=True,
+        comment="Provider for MCP content extraction model",
+    )
+
     # === Audit Fields ===
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
@@ -249,6 +277,7 @@ class SystemSettings(Base):
     synthesis_provider = relationship("LlmProvider", foreign_keys=[synthesis_provider_id])
     embedding_provider = relationship("LlmProvider", foreign_keys=[embedding_provider_id])
     news_filter_provider = relationship("LlmProvider", foreign_keys=[news_filter_provider_id])
+    content_extraction_provider = relationship("LlmProvider", foreign_keys=[content_extraction_provider_id])
 
     def __repr__(self) -> str:
         return f"<SystemSettings(id={self.id}, updated_at={self.updated_at})>"

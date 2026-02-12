@@ -14,7 +14,7 @@ import {
 } from '@/components/ui/select'
 import { Eye, EyeOff, Newspaper, Database, Clock } from 'lucide-react'
 
-export type NewsContentSource = 'scraper' | 'polygon'
+export type NewsContentSource = 'trafilatura' | 'polygon' | 'tavily' | 'playwright'
 
 export interface NewsContentSettings {
   source: NewsContentSource
@@ -29,7 +29,7 @@ interface NewsSettingsProps {
 }
 
 const DEFAULT_SETTINGS: NewsContentSettings = {
-  source: 'scraper',
+  source: 'trafilatura',
   polygonApiKey: null,
   retentionDays: 30,
 }
@@ -104,11 +104,17 @@ export default function NewsSettings({ settings, onUpdate, isLoading = false }: 
               <SelectValue />
             </SelectTrigger>
             <SelectContent>
-              <SelectItem value="scraper">
-                {t('newsContent.source.scraper')}
+              <SelectItem value="trafilatura">
+                {t('newsContent.source.trafilatura')}
               </SelectItem>
               <SelectItem value="polygon">
                 {t('newsContent.source.polygon')}
+              </SelectItem>
+              <SelectItem value="tavily">
+                {t('newsContent.source.tavily')}
+              </SelectItem>
+              <SelectItem value="playwright">
+                {t('newsContent.source.playwright')}
               </SelectItem>
             </SelectContent>
           </Select>

@@ -101,7 +101,7 @@ async def get_settings(
             source=getattr(settings, 'news_source', None) or "auto",
         )
         response.news_content = NewsContentSettings(
-            source=getattr(settings, 'full_content_source', None) or "scraper",
+            source=getattr(settings, 'full_content_source', None) or "trafilatura",
             polygon_api_key=getattr(settings, 'polygon_api_key', None),
             retention_days=getattr(settings, 'news_retention_days', None) or 30,
         )
@@ -228,7 +228,7 @@ async def update_settings(
             source=getattr(settings, 'news_source', None) or "auto",
         )
         response.news_content = NewsContentSettings(
-            source=getattr(settings, 'full_content_source', None) or "scraper",
+            source=getattr(settings, 'full_content_source', None) or "trafilatura",
             polygon_api_key=getattr(settings, 'polygon_api_key', None),
             retention_days=getattr(settings, 'news_retention_days', None) or 30,
         )

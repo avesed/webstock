@@ -13,7 +13,7 @@ logger = logging.getLogger(__name__)
 
 
 class FetchFullContentSkill(BaseSkill):
-    """Fetch full article content via scraper/Polygon and persist to file storage.
+    """Fetch full article content via trafilatura/Tavily/Playwright/Polygon and persist to file storage.
 
     Wraps ``FullContentService.fetch_with_fallback`` for content fetching and
     ``NewsStorageService.save_content`` for persisting the result as a JSON
@@ -27,9 +27,9 @@ class FetchFullContentSkill(BaseSkill):
             name="fetch_full_content",
             description=(
                 "Fetch the full text of a news article from its URL using "
-                "newspaper4k (scraper) or Polygon.io, then save the content "
-                "to file storage. Returns full_text, word_count, language, "
-                "and file_path."
+                "trafilatura, Tavily Extract API, Playwright, or Polygon.io, "
+                "then save the content to file storage. Returns full_text, "
+                "word_count, language, and file_path."
             ),
             category="news",
             parameters=[
@@ -61,10 +61,13 @@ class FetchFullContentSkill(BaseSkill):
                 SkillParameter(
                     name="content_source",
                     type="string",
-                    description="Primary content source: 'scraper' or 'polygon'. Default 'scraper'.",
+                    description=(
+                        "Primary content source: 'trafilatura', 'tavily', "
+                        "'playwright', or 'polygon'. Default 'trafilatura'."
+                    ),
                     required=False,
-                    default="scraper",
-                    enum=["scraper", "polygon"],
+                    default="trafilatura",
+                    enum=["trafilatura", "polygon", "tavily", "playwright"],
                 ),
                 SkillParameter(
                     name="polygon_api_key",
@@ -84,7 +87,7 @@ class FetchFullContentSkill(BaseSkill):
     async def execute(self, **kwargs: Any) -> SkillResult:
         from app.services.full_content_service import (
             ContentSource,
-            FullContentService,
+            get_full_content_service,
         )
         from app.services.news_storage_service import get_news_storage_service
 
@@ -92,7 +95,7 @@ class FetchFullContentSkill(BaseSkill):
         news_id_str = kwargs.get("news_id")
         symbol = kwargs.get("symbol")
         market = kwargs.get("market", "US")
-        content_source_str = kwargs.get("content_source", "scraper")
+        content_source_str = kwargs.get("content_source", "trafilatura")
         polygon_api_key = kwargs.get("polygon_api_key")
         published_at_str = kwargs.get("published_at")
 
@@ -126,17 +129,18 @@ class FetchFullContentSkill(BaseSkill):
         # Determine content source enum
         if content_source_str == "polygon":
             primary_source = ContentSource.POLYGON
+        elif content_source_str == "tavily":
+            primary_source = ContentSource.TAVILY
+        elif content_source_str == "playwright":
+            primary_source = ContentSource.PLAYWRIGHT
         else:
-            primary_source = ContentSource.SCRAPER
+            primary_source = ContentSource.TRAFILATURA
 
         # Detect expected language from market
         language = "zh" if market in ("SH", "SZ") else "en"
 
-        # Fetch content with fallback
-        service = FullContentService(
-            default_source=primary_source,
-            polygon_api_key=polygon_api_key,
-        )
+        # Fetch content with fallback (uses singleton with all configured providers)
+        service = get_full_content_service()
 
         fetch_result = await service.fetch_with_fallback(
             url=url,

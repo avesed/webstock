@@ -152,8 +152,10 @@
     "source": {
       "label": "Data Source",
       "description": "Choose how to fetch full news content",
-      "scraper": "Web Scraper (default, free)",
-      "polygon": "Polygon API (paid, more reliable)"
+      "trafilatura": "Trafilatura (default, free)",
+      "polygon": "Polygon API (paid, more reliable)",
+      "tavily": "Tavily Extract (AI-powered, free tier)",
+      "playwright": "Playwright (JS rendering, self-hosted)"
     },
     "polygonKey": {
       "label": "Polygon API Key",

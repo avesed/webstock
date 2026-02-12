@@ -152,8 +152,10 @@
     "source": {
       "label": "数据来源",
       "description": "选择新闻全文内容的抓取方式",
-      "scraper": "网页抓取 (默认，免费)",
-      "polygon": "Polygon API (付费，更稳定)"
+      "trafilatura": "Trafilatura (默认，免费)",
+      "polygon": "Polygon API (付费，更稳定)",
+      "tavily": "Tavily Extract (AI提取，免费额度)",
+      "playwright": "Playwright (JS渲染，自托管)"
     },
     "polygonKey": {
       "label": "Polygon API Key",

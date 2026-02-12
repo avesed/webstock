@@ -75,6 +75,7 @@ class SystemSettingsResponse(CamelModel):
     # External API keys (only show if set)
     finnhub_api_key_set: bool
     polygon_api_key_set: bool
+    tavily_api_key_set: bool
 
     # User permission settings
     allow_user_custom_api_keys: bool = False
@@ -119,6 +120,7 @@ class UpdateSystemSettingsRequest(CamelModel):
     # External API keys
     finnhub_api_key: Optional[str] = Field(None, max_length=500)
     polygon_api_key: Optional[str] = Field(None, max_length=500)
+    tavily_api_key: Optional[str] = Field(None, max_length=500)
 
     # User permission settings
     allow_user_custom_api_keys: Optional[bool] = None
@@ -190,12 +192,14 @@ class LangGraphConfig(CamelModel):
 class NewsConfig(CamelModel):
     """News processing configuration."""
 
-    default_source: str = "scraper"
+    default_source: str = "trafilatura"
     retention_days: int = 30
     embedding_model: str = "text-embedding-3-small"
     filter_model: str = "gpt-4o-mini"
     auto_fetch_enabled: bool = True
     finnhub_api_key: Optional[str] = None  # Finnhub API key for news data
+    tavily_api_key: Optional[str] = None  # Tavily API key for content extraction
+    enable_mcp_extraction: bool = False  # Whether to use LLM+MCP for content extraction
 
 
 class FeaturesConfig(CamelModel):
@@ -207,6 +211,7 @@ class FeaturesConfig(CamelModel):
     enable_stock_analysis: bool = True
     require_registration_approval: bool = False
     use_two_phase_filter: bool = False
+    enable_mcp_extraction: bool = False
 
 
 class ModelAssignment(CamelModel):
@@ -224,6 +229,7 @@ class ModelAssignmentsConfig(CamelModel):
     synthesis: ModelAssignment = ModelAssignment(model="gpt-4o")
     embedding: ModelAssignment = ModelAssignment(model="text-embedding-3-small")
     news_filter: ModelAssignment = ModelAssignment(model="gpt-4o-mini")
+    content_extraction: ModelAssignment = ModelAssignment(model="gpt-4o-mini")
 
 
 class SystemConfigResponse(CamelModel):

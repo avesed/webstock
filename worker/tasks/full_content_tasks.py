@@ -49,6 +49,11 @@ def run_async_task(coro_func: Callable[..., T], *args, **kwargs) -> T:
             reset_redis()
         except Exception as e:
             logger.warning("Failed to reset Redis client: %s", e)
+        try:
+            from app.services.full_content_service import reset_full_content_service
+            reset_full_content_service()
+        except Exception as e:
+            logger.warning("Failed to reset full content service: %s", e)
 
 
 @celery_app.task(bind=True, max_retries=3)
@@ -281,7 +286,7 @@ async def _fetch_single_article(article: Dict[str, Any]) -> Dict[str, Any]:
         news_id=news_id,
         symbol=article.get("symbol", ""),
         market=article.get("market", "US"),
-        content_source=article.get("content_source", "scraper"),
+        content_source=article.get("content_source", "trafilatura"),
         polygon_api_key=article.get("polygon_api_key"),
         published_at=article.get("published_at"),
         title=article.get("title", ""),
@@ -330,6 +335,17 @@ async def _fetch_single_article(article: Dict[str, Any]) -> Dict[str, Any]:
                 return {"success": False, "error": error_msg}
 
             data = result.data
+
+            if not data or not isinstance(data, dict):
+                logger.warning(
+                    "batch_fetch: fetch succeeded but returned empty/invalid data for news_id=%s",
+                    news_id,
+                )
+                news.content_status = ContentStatus.FAILED.value
+                news.content_error = "Fetch succeeded but returned no data"
+                news.content_fetched_at = now
+                await db.commit()
+                return {"success": False, "error": "Fetch succeeded but returned no data"}
 
             # Update News record with fetched content metadata
             if data.get("is_partial"):
