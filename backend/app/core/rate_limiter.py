@@ -155,11 +155,15 @@ def rate_limit(
         # Get client IP
         forwarded_for = request.headers.get("X-Forwarded-For")
         if forwarded_for:
-            identifier = forwarded_for.split(",")[0].strip()
+            client_ip = forwarded_for.split(",")[0].strip()
         elif request.client:
-            identifier = request.client.host
+            client_ip = request.client.host
         else:
-            identifier = "unknown"
+            client_ip = "unknown"
+
+        # Include route path so each endpoint has its own counter
+        route_path = request.scope.get("path", "")
+        identifier = f"{client_ip}:{route_path}"
 
         await limiter.check(identifier)
 

@@ -744,7 +744,11 @@ class ReportGenerator:
             else:
                 gateway_kwargs["system_api_key"] = self._api_key
                 gateway_kwargs["system_base_url"] = self._base_url
-            response = await gateway.chat(chat_request, **gateway_kwargs)
+            response = await gateway.chat(
+                chat_request,
+                **gateway_kwargs,
+                purpose="report",
+            )
 
             return response.content
 

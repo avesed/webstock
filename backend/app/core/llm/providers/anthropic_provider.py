@@ -238,12 +238,16 @@ class AnthropicProvider(LLMProvider):
 
         usage = None
         if response.usage:
+            cached = (
+                getattr(response.usage, "cache_read_input_tokens", 0) or 0
+            )
             usage = TokenUsage(
                 prompt_tokens=response.usage.input_tokens,
                 completion_tokens=response.usage.output_tokens,
                 total_tokens=(
                     response.usage.input_tokens + response.usage.output_tokens
                 ),
+                cached_tokens=cached,
             )
 
         # Normalize stop_reason
@@ -303,6 +307,7 @@ class AnthropicProvider(LLMProvider):
         current_tool: Optional[Dict[str, Any]] = None
         input_tokens = 0
         output_tokens = 0
+        cached_tokens = 0
         stop_reason = None
 
         try:
@@ -313,6 +318,9 @@ class AnthropicProvider(LLMProvider):
                     if event_type == "message_start":
                         if hasattr(event, "message") and event.message.usage:
                             input_tokens = event.message.usage.input_tokens
+                            cached_tokens = (
+                                getattr(event.message.usage, "cache_read_input_tokens", 0) or 0
+                            )
 
                     elif event_type == "content_block_start":
                         block = event.content_block
@@ -366,6 +374,7 @@ class AnthropicProvider(LLMProvider):
                     prompt_tokens=input_tokens,
                     completion_tokens=output_tokens,
                     total_tokens=input_tokens + output_tokens,
+                    cached_tokens=cached_tokens,
                 )
             )
 

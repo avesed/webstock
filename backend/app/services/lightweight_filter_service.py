@@ -130,6 +130,8 @@ class LightweightFilterService:
                 system_api_key=model_config.api_key,
                 system_base_url=model_config.base_url,
                 use_user_config=False,
+                purpose="layer3_lightweight",
+                usage_metadata={"url": url[:200]},
             )
 
             llm_elapsed_ms = (time.monotonic() - llm_start) * 1000

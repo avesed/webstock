@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { useTranslation } from 'react-i18next'
-import { AlertTriangle, BarChart3, CheckCircle, Filter, Coins, TrendingUp, TrendingDown, Play, Loader2, Clock, Zap, Database, Download, ImageIcon, Sparkles, Calendar, X } from 'lucide-react'
+import { AlertTriangle, BarChart3, CheckCircle, Filter, TrendingUp, TrendingDown, Play, Loader2, Clock, Zap, Download, ImageIcon, Sparkles, Calendar, X } from 'lucide-react'
 
 import { adminApi, FilterStats as FilterStatsType, MonitorStatus, SourceStats, NewsPipelineStats, Layer15Stats } from '@/api/admin'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
@@ -40,17 +40,6 @@ function StatCard({ title, value, subtitle, icon, trend, className }: StatCardPr
       </CardContent>
     </Card>
   )
-}
-
-function formatNumber(n: number): string {
-  if (n >= 1000000) return `${(n / 1000000).toFixed(1)}M`
-  if (n >= 1000) return `${(n / 1000).toFixed(1)}K`
-  return n.toString()
-}
-
-function formatCost(cost: number): string {
-  if (cost < 0.01) return `$${cost.toFixed(4)}`
-  return `$${cost.toFixed(2)}`
 }
 
 function useCountdown(targetIso: string | null | undefined) {
@@ -185,9 +174,6 @@ export default function FilterStats() {
     )
   }
 
-  // Defensive defaults for API response structure
-  const defaultTokenUsage = { inputTokens: 0, outputTokens: 0, totalTokens: 0, estimatedCostUsd: 0 }
-
   const initialFilter = stats.counts?.initialFilter ?? { useful: 0, uncertain: 0, skip: 0, total: 0 }
   const deepFilter = stats.counts?.deepFilter ?? { keep: 0, delete: 0, total: 0 }
   const errors = stats.counts?.errors ?? { filterError: 0, embeddingError: 0 }
@@ -202,15 +188,9 @@ export default function FilterStats() {
     embeddingErrorRate: 0,
   }
 
-  const initialTokens = stats.tokens?.initialFilter ?? defaultTokenUsage
-  const deepTokens = stats.tokens?.deepFilter ?? defaultTokenUsage
-  const totalTokens = stats.tokens?.total ?? defaultTokenUsage
   // Layer 1 three-agent scoring
   const layer1Scoring = stats.counts?.layer1Scoring ?? null
   const hasLayer1 = (layer1Scoring?.total ?? 0) > 0
-  const l1MacroTokens = stats.tokens?.layer1Macro ?? null
-  const l1MarketTokens = stats.tokens?.layer1Market ?? null
-  const l1SignalTokens = stats.tokens?.layer1Signal ?? null
 
   const alerts = stats.alerts ?? []
 
@@ -343,7 +323,7 @@ export default function FilterStats() {
       )}
 
       {/* Summary Cards */}
-      <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
+      <div className="grid gap-4 md:grid-cols-2">
         <StatCard
           title={hasLayer1 ? t('filter.layer1Scoring') : t('filter.initialFilter')}
           value={hasLayer1 ? layer1Scoring!.total : initialFilter.total}
@@ -357,18 +337,6 @@ export default function FilterStats() {
             ? `${newsPipelineStats?.routing.fullAnalysis ?? 0} ${t('filter.pathFull')} / ${newsPipelineStats?.routing.lightweight ?? 0} ${t('filter.pathLite')}`
             : `${rates.deepKeepRate}% ${t('filter.passRate')}`}
           icon={<CheckCircle className="h-4 w-4 text-muted-foreground" />}
-        />
-        <StatCard
-          title={t('filter.totalTokens')}
-          value={formatNumber(totalTokens.totalTokens)}
-          subtitle={`${formatNumber(totalTokens.inputTokens)} in / ${formatNumber(totalTokens.outputTokens)} out`}
-          icon={<Coins className="h-4 w-4 text-muted-foreground" />}
-        />
-        <StatCard
-          title={t('filter.estimatedCost')}
-          value={formatCost(totalTokens.estimatedCostUsd)}
-          subtitle={`${stats.periodDays ?? 0} ${t('filter.days')}`}
-          icon={<span className="text-muted-foreground">$</span>}
         />
       </div>
 
@@ -423,34 +391,6 @@ export default function FilterStats() {
                   </div>
                 )}
 
-                {/* Layer 1 per-agent token usage */}
-                {(l1MacroTokens || l1MarketTokens || l1SignalTokens) && (
-                  <div className="pt-4 border-t">
-                    <p className="text-sm text-muted-foreground mb-2">{t('filter.inputTokens')} / {t('filter.outputTokens')}</p>
-                    <div className="space-y-2">
-                      {[
-                        { label: t('filter.macroAgent'), tokens: l1MacroTokens },
-                        { label: t('filter.marketAgent'), tokens: l1MarketTokens },
-                        { label: t('filter.signalAgent'), tokens: l1SignalTokens },
-                      ].filter(({ tokens }) => tokens != null).map(({ label, tokens: tk }) => (
-                        <div key={label} className="text-sm">
-                          <span className="text-muted-foreground">{label}:</span>{' '}
-                          <span className="font-medium">{formatNumber(tk!.inputTokens)}</span>
-                          <span className="text-muted-foreground"> in / </span>
-                          <span className="font-medium">{formatNumber(tk!.outputTokens)}</span>
-                          <span className="text-muted-foreground"> out</span>
-                        </div>
-                      ))}
-                    </div>
-                    <p className="text-xs text-muted-foreground mt-1">
-                      {t('filter.layer1Cost')}: {formatCost(
-                        (l1MacroTokens?.estimatedCostUsd ?? 0)
-                        + (l1MarketTokens?.estimatedCostUsd ?? 0)
-                        + (l1SignalTokens?.estimatedCostUsd ?? 0)
-                      )}
-                    </p>
-                  </div>
-                )}
               </>
             ) : (
               <>
@@ -507,23 +447,6 @@ export default function FilterStats() {
                   />
                 </div>
 
-                {/* Token usage for initial filter */}
-                <div className="pt-4 border-t">
-                  <p className="text-sm text-muted-foreground mb-2">{t('filter.inputTokens')} / {t('filter.outputTokens')}</p>
-                  <div className="grid grid-cols-2 gap-2 text-sm">
-                    <div>
-                      <span className="text-muted-foreground">In:</span>{' '}
-                      <span className="font-medium">{formatNumber(initialTokens.inputTokens)}</span>
-                    </div>
-                    <div>
-                      <span className="text-muted-foreground">Out:</span>{' '}
-                      <span className="font-medium">{formatNumber(initialTokens.outputTokens)}</span>
-                    </div>
-                  </div>
-                  <p className="text-xs text-muted-foreground mt-1">
-                    {t('filter.estimatedCost')}: {formatCost(initialTokens.estimatedCostUsd)}
-                  </p>
-                </div>
               </>
             )}
           </CardContent>
@@ -665,23 +588,6 @@ export default function FilterStats() {
                 </div>
               </div>
 
-              {/* Token usage for deep filter */}
-              <div className="pt-4 border-t">
-                <p className="text-sm text-muted-foreground mb-2">{t('filter.inputTokens')} / {t('filter.outputTokens')}</p>
-                <div className="grid grid-cols-2 gap-2 text-sm">
-                  <div>
-                    <span className="text-muted-foreground">In:</span>{' '}
-                    <span className="font-medium">{formatNumber(deepTokens.inputTokens)}</span>
-                  </div>
-                  <div>
-                    <span className="text-muted-foreground">Out:</span>{' '}
-                    <span className="font-medium">{formatNumber(deepTokens.outputTokens)}</span>
-                  </div>
-                </div>
-                <p className="text-xs text-muted-foreground mt-1">
-                  {t('filter.estimatedCost')}: {formatCost(deepTokens.estimatedCostUsd)}
-                </p>
-              </div>
             </CardContent>
           </Card>
         )}
@@ -697,7 +603,7 @@ export default function FilterStats() {
             <h3 className="text-lg font-semibold">
               {hasLayer1 ? t('filter.layer2Title') : t('filter.layer15Title')}
             </h3>
-            <Badge variant="secondary">{hasLayer1 ? 'Layer 2' : 'Layer 1.5'}</Badge>
+            <Badge variant="secondary">Layer 2</Badge>
           </div>
 
           <div className="grid gap-4 md:grid-cols-2">
@@ -980,88 +886,7 @@ export default function FilterStats() {
               </Card>
             )}
 
-            {/* Cost by Stage */}
-            <Card>
-              <CardHeader>
-                <CardTitle className="text-base flex items-center gap-2">
-                  <Coins className="h-4 w-4" />
-                  {t('filter.costByStage')}
-                </CardTitle>
-              </CardHeader>
-              <CardContent>
-                <div className="space-y-3">
-                  {[
-                    { label: t('filter.scoring'), data: newsPipelineStats.tokens.scoring },
-                    { label: t('filter.multiAgent'), data: newsPipelineStats.tokens.multiAgent },
-                    { label: t('filter.lightweight'), data: newsPipelineStats.tokens.lightweight },
-                  ].map((stage) => (
-                    <div key={stage.label} className="flex items-center justify-between text-sm">
-                      <span className="text-muted-foreground">{stage.label}</span>
-                      <div className="text-right">
-                        <span className="font-medium">{formatNumber(stage.data.totalTokens)}</span>
-                        <span className="text-muted-foreground ml-2">{formatCost(stage.data.estimatedCostUsd)}</span>
-                      </div>
-                    </div>
-                  ))}
-                  <div className="pt-2 border-t flex items-center justify-between text-sm font-medium">
-                    <span>{t('filter.stageCostTotal')}</span>
-                    <div className="text-right">
-                      <span>{formatNumber(newsPipelineStats.tokens.total.totalTokens)}</span>
-                      <span className="text-muted-foreground ml-2">{formatCost(newsPipelineStats.tokens.total.estimatedCostUsd)}</span>
-                    </div>
-                  </div>
-                </div>
-              </CardContent>
-            </Card>
-
-            {/* Card 4: Cache Performance (left) */}
-            <Card>
-              <CardHeader>
-                <CardTitle className="text-base flex items-center gap-2">
-                  <Database className="h-4 w-4" />
-                  {t('filter.cachePerformance')}
-                </CardTitle>
-              </CardHeader>
-              <CardContent className="space-y-3">
-                {newsPipelineStats.cacheStats.total > 0 ? (
-                  <>
-                    <div className="flex items-baseline gap-2">
-                      <span className="text-3xl font-bold">
-                        {newsPipelineStats.cacheStats.avgCacheHitRate != null
-                          ? `${(newsPipelineStats.cacheStats.avgCacheHitRate * 100).toFixed(1)}%`
-                          : '-'}
-                      </span>
-                      <span className="text-sm text-muted-foreground">{t('filter.cacheHitRate')}</span>
-                    </div>
-                    <Progress
-                      value={(newsPipelineStats.cacheStats.avgCacheHitRate ?? 0) * 100}
-                      className="h-2"
-                    />
-                    <div className="grid grid-cols-2 gap-2 text-sm">
-                      <div>
-                        <span className="text-muted-foreground">{t('filter.cacheHits')}:</span>{' '}
-                        <span className="font-medium">{newsPipelineStats.cacheStats.cacheHits} / {newsPipelineStats.cacheStats.total}</span>
-                      </div>
-                      <div>
-                        <span className="text-muted-foreground">{t('filter.cachedTokens')}:</span>{' '}
-                        <span className="font-medium">{formatNumber(newsPipelineStats.cacheStats.totalCachedTokens)}</span>
-                      </div>
-                    </div>
-                    {newsPipelineStats.cacheStats.totalPromptTokens > 0 && (
-                      <p className="text-xs text-muted-foreground">
-                        {t('filter.estimatedSavings')}: {formatCost(
-                          newsPipelineStats.cacheStats.totalCachedTokens * 0.0000015
-                        )}
-                      </p>
-                    )}
-                  </>
-                ) : (
-                  <p className="text-sm text-muted-foreground text-center py-4">-</p>
-                )}
-              </CardContent>
-            </Card>
-
-            {/* Card 5: Node Latency Table (right) */}
+            {/* Node Latency Table */}
             <Card>
               <CardHeader>
                 <CardTitle className="text-base flex items-center gap-2">

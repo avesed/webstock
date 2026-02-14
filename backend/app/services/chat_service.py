@@ -371,7 +371,13 @@ class ChatService:
                 finish_reason = None
                 iteration_tokens = 0
 
-                async for event in gateway.chat_stream(request, **provider_kwargs):
+                async for event in gateway.chat_stream(
+                    request,
+                    **provider_kwargs,
+                    purpose="chat",
+                    user_id=user_id,
+                    usage_metadata={"conversation_id": str(conversation_id)},
+                ):
                     if isinstance(event, ContentDelta):
                         full_content.append(event.text)
                         yield _sse({

@@ -54,6 +54,38 @@ async def _finish_progress(stats: Dict[str, Any]):
 
 T = TypeVar("T")
 
+# One-time registration flag for LLM usage recorder in Celery workers
+_recorder_registered = False
+
+
+def _ensure_usage_recorder():
+    """Register the LLM usage recorder once per worker process."""
+    global _recorder_registered
+    if _recorder_registered:
+        return
+    try:
+        from app.core.llm import set_llm_usage_recorder
+        from app.services.llm_cost_service import get_llm_cost_service
+
+        async def _record(
+            purpose: str, model: str, prompt_tokens: int = 0,
+            completion_tokens: int = 0, cached_tokens: int = 0,
+            user_id=None, metadata=None,
+        ):
+            await get_llm_cost_service().record_usage(
+                purpose=purpose, model=model,
+                prompt_tokens=prompt_tokens,
+                completion_tokens=completion_tokens,
+                cached_tokens=cached_tokens,
+                user_id=user_id, metadata=metadata,
+            )
+
+        set_llm_usage_recorder(_record)
+        _recorder_registered = True
+        logger.debug("LLM usage recorder registered for news monitor worker")
+    except Exception as e:
+        logger.warning("Failed to register LLM usage recorder: %s", e)
+
 
 def run_async_task(coro_func: Callable[..., T], *args, **kwargs) -> T:
     """
@@ -63,6 +95,7 @@ def run_async_task(coro_func: Callable[..., T], *args, **kwargs) -> T:
     to avoid "Event loop is closed" errors when tasks reuse singleton clients
     that were bound to different (now closed) event loops.
     """
+    _ensure_usage_recorder()
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
     try:

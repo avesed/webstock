@@ -95,6 +95,10 @@ def get_langchain_model(
             "temperature": temperature,
             "timeout": timeout,
             "max_retries": max_retries,
+            # Always use streaming internally — some OpenAI-compatible proxies
+            # return SSE even for non-streaming requests, which breaks the SDK.
+            # With streaming=True, ainvoke() collects chunks transparently.
+            "streaming": True,
         }
         if config.api_key:
             kwargs["api_key"] = config.api_key

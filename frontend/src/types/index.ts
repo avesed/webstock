@@ -640,7 +640,6 @@ export interface SystemConfig {
     enableNewsAnalysis: boolean
     enableStockAnalysis: boolean
     requireRegistrationApproval: boolean
-    enableLlmPipeline: boolean
     enableMcpExtraction: boolean
   }
   modelAssignments?: ModelAssignmentsConfig
@@ -654,8 +653,7 @@ export interface Phase2ModelAssignment {
 }
 
 export interface Phase2Config {
-  enabled: boolean
-  scoreThreshold: number
+  enableLlmPipeline: boolean
   discardThreshold: number
   fullAnalysisThreshold: number
   layer1Scoring: Phase2ModelAssignment
@@ -663,8 +661,6 @@ export interface Phase2Config {
   layer2Scoring: Phase2ModelAssignment
   layer2Analysis: Phase2ModelAssignment
   layer2Lightweight: Phase2ModelAssignment
-  highValueSources: string[]
-  highValuePct: number
   cacheEnabled: boolean
   cacheTtlMinutes: number
 }
@@ -734,6 +730,67 @@ export interface RssFeedStatsItem {
   deletedArticles: number
   embeddedArticles: number
   keepRate: number | null
+}
+
+// LLM Cost Tracking
+export interface CostBreakdownItem {
+  group: string
+  costUsd: number
+  promptTokens: number
+  completionTokens: number
+  cachedTokens: number
+  totalTokens: number
+  calls: number
+}
+
+export interface CostSummary {
+  periodDays: number
+  totalCostUsd: number
+  totalPromptTokens: number
+  totalCompletionTokens: number
+  totalCachedTokens: number
+  totalTokens: number
+  totalCalls: number
+  byPurpose: CostBreakdownItem[]
+  byModel: CostBreakdownItem[]
+}
+
+export interface DailyCost {
+  date: string
+  costUsd: number
+  promptTokens: number
+  completionTokens: number
+  cachedTokens: number
+  calls: number
+}
+
+export interface ModelPricingItem {
+  id: string
+  model: string
+  inputPrice: number
+  cachedInputPrice: number | null
+  outputPrice: number
+  effectiveFrom: string
+  createdAt: string
+}
+
+export interface ModelPricingCreate {
+  model: string
+  inputPrice: number
+  cachedInputPrice?: number | null
+  outputPrice: number
+  effectiveFrom?: string
+}
+
+export interface CategoryBreakdownItem {
+  purpose: string
+  subGroup: string
+  costUsd: number
+  promptTokens: number
+  completionTokens: number
+  cachedTokens: number
+  totalTokens: number
+  calls: number
 }
 
 // Admin System Monitor types

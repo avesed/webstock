@@ -341,6 +341,8 @@ class Layer1ScoringService:
                 system_api_key=model_config.api_key,
                 system_base_url=model_config.base_url,
                 use_user_config=False,
+                purpose="layer1_scoring",
+                usage_metadata={"agent": agent_name, "batch_size": batch_size},
             )
             elapsed_ms = (time.monotonic() - t0) * 1000
 

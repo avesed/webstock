@@ -11,7 +11,12 @@ Usage:
 """
 
 from app.core.llm.config import ProviderConfig, ProviderType
-from app.core.llm.gateway import LLMGateway, get_llm_gateway, reset_llm_gateway
+from app.core.llm.gateway import (
+    LLMGateway,
+    get_llm_gateway,
+    reset_llm_gateway,
+    set_llm_usage_recorder,
+)
 from app.core.llm.langchain_bridge import (
     get_analysis_langchain_model,
     get_chat_model_config,
@@ -41,6 +46,7 @@ __all__ = [
     "LLMGateway",
     "get_llm_gateway",
     "reset_llm_gateway",
+    "set_llm_usage_recorder",
     # Types
     "ChatRequest",
     "ChatResponse",

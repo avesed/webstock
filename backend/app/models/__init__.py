@@ -21,6 +21,7 @@ from app.models.llm_provider import LlmProvider
 from app.models.pipeline_event import PipelineEvent
 from app.models.qlib_backtest import QlibBacktest, BacktestStatus
 from app.models.rss_feed import RssFeed, FeedCategory
+from app.models.llm_cost import ModelPricing, LlmUsageRecord
 
 __all__ = [
     "User",
@@ -54,4 +55,6 @@ __all__ = [
     "BacktestStatus",
     "RssFeed",
     "FeedCategory",
+    "ModelPricing",
+    "LlmUsageRecord",
 ]

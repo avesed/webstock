@@ -2,7 +2,7 @@
 
 import logging
 from datetime import datetime, timedelta, timezone
-from typing import Optional
+from typing import List, Optional
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
@@ -24,7 +24,11 @@ from app.schemas.admin import (
     ApiStats,
     ApproveUserRequest,
     ArticleTimelineResponse,
+    CategoryBreakdownItem,
+    CostBreakdownItem,
+    CostSummaryResponse,
     CreateUserRequest,
+    DailyCostItem,
     DailyFilterStatsResponse,
     FeaturesConfig,
     FilterStatsResponse,
@@ -36,6 +40,8 @@ from app.schemas.admin import (
     LlmConfig,
     ModelAssignment,
     ModelAssignmentsConfig,
+    ModelPricingCreate,
+    ModelPricingResponse,
     NewsConfig,
     NodeStatsResponse,
     NewsPipelineCacheStats,
@@ -925,7 +931,6 @@ async def get_system_config(
             enable_news_analysis=settings.enable_news_analysis,
             enable_stock_analysis=settings.enable_stock_analysis,
             require_registration_approval=settings.require_registration_approval,
-            enable_llm_pipeline=settings.enable_llm_pipeline,
             enable_mcp_extraction=settings.enable_mcp_extraction,
         ),
         langgraph=LangGraphConfig(
@@ -938,8 +943,7 @@ async def get_system_config(
         ),
         model_assignments=model_assignments,
         phase2=Phase2Config(
-            enabled=getattr(settings, 'phase2_enabled', False),
-            score_threshold=getattr(settings, 'phase2_score_threshold', 50),
+            enable_llm_pipeline=settings.enable_llm_pipeline,
             discard_threshold=getattr(settings, 'layer1_discard_threshold', 105),
             full_analysis_threshold=getattr(settings, 'layer1_full_analysis_threshold', 195),
             layer1_scoring=Phase2ModelAssignment(
@@ -962,8 +966,6 @@ async def get_system_config(
                 provider_id=str(settings.phase2_layer2_lightweight_provider_id) if getattr(settings, 'phase2_layer2_lightweight_provider_id', None) else None,
                 model=getattr(settings, 'phase2_layer2_lightweight_model', '') or 'gpt-4o-mini',
             ),
-            high_value_sources=getattr(settings, 'phase2_high_value_sources', None) or ["reuters", "bloomberg", "sec", "company_announcement"],
-            high_value_pct=getattr(settings, 'phase2_high_value_pct', 0.20),
             cache_enabled=getattr(settings, 'phase2_cache_enabled', True),
             cache_ttl_minutes=getattr(settings, 'phase2_cache_ttl_minutes', 60),
         ),
@@ -1031,8 +1033,6 @@ async def update_system_config(
             settings.enable_stock_analysis = data.features.enable_stock_analysis
         if data.features.require_registration_approval is not None:
             settings.require_registration_approval = data.features.require_registration_approval
-        if data.features.enable_llm_pipeline is not None:
-            settings.enable_llm_pipeline = data.features.enable_llm_pipeline
         if data.features.enable_mcp_extraction is not None:
             settings.enable_mcp_extraction = data.features.enable_mcp_extraction
 
@@ -1076,8 +1076,7 @@ async def update_system_config(
     # Update Phase 2 settings
     if data.phase2:
         p2 = data.phase2
-        settings.phase2_enabled = p2.enabled
-        settings.phase2_score_threshold = p2.score_threshold
+        settings.enable_llm_pipeline = p2.enable_llm_pipeline
         settings.layer1_discard_threshold = p2.discard_threshold
         settings.layer1_full_analysis_threshold = p2.full_analysis_threshold
         if p2.layer1_scoring:
@@ -1095,10 +1094,6 @@ async def update_system_config(
         if p2.layer2_lightweight:
             settings.phase2_layer2_lightweight_model = p2.layer2_lightweight.model or None
             settings.phase2_layer2_lightweight_provider_id = UUID(p2.layer2_lightweight.provider_id) if p2.layer2_lightweight.provider_id else None
-        if p2.high_value_sources is not None:
-            settings.phase2_high_value_sources = p2.high_value_sources
-        if p2.high_value_pct is not None:
-            settings.phase2_high_value_pct = p2.high_value_pct
         if p2.cache_enabled is not None:
             settings.phase2_cache_enabled = p2.cache_enabled
         if p2.cache_ttl_minutes is not None:
@@ -1615,11 +1610,16 @@ async def get_news_pipeline_stats(
     )
 
     tokens_data = redis_stats["tokens"]
+    per_agent_raw = tokens_data.get("per_agent")
+    per_agent = (
+        {name: NewsPipelineTokenStage(**v) for name, v in per_agent_raw.items()}
+        if per_agent_raw else None
+    )
     tokens = NewsPipelineTokenStats(
-        scoring=NewsPipelineTokenStage(**tokens_data["scoring"]),
         multi_agent=NewsPipelineTokenStage(**tokens_data["multi_agent"]),
         lightweight=NewsPipelineTokenStage(**tokens_data["lightweight"]),
         total=NewsPipelineTokenStage(**tokens_data["total"]),
+        per_agent=per_agent,
     )
 
     # 2. Get DB-based pipeline event stats
@@ -2177,3 +2177,169 @@ async def toggle_rss_feed(
         admin.id, feed.id, feed.name, new_status,
     )
     return _feed_to_response(feed)
+
+
+# ============== LLM Cost Tracking Endpoints ==============
+
+
+@router.get(
+    "/llm-costs/summary",
+    response_model=CostSummaryResponse,
+    summary="Get LLM cost summary",
+    description="Get aggregated LLM cost summary with breakdowns by purpose and model.",
+    dependencies=[Depends(rate_limit(max_requests=30, window_seconds=60))],
+)
+async def get_cost_summary(
+    days: int = Query(default=7, ge=1, le=365),
+    start_date: Optional[str] = Query(default=None, description="ISO date start"),
+    end_date: Optional[str] = Query(default=None, description="ISO date end"),
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_admin),
+):
+    """Get cost summary with breakdowns."""
+    from app.services.llm_cost_service import get_llm_cost_service
+
+    service = get_llm_cost_service()
+    return await service.get_cost_summary(
+        db, days=days, start_date=start_date, end_date=end_date,
+    )
+
+
+@router.get(
+    "/llm-costs/daily",
+    response_model=List[DailyCostItem],
+    summary="Get daily LLM costs",
+    description="Get daily cost data for charts with optional purpose/model filters.",
+    dependencies=[Depends(rate_limit(max_requests=30, window_seconds=60))],
+)
+async def get_daily_costs(
+    days: int = Query(default=30, ge=1, le=365),
+    purpose: Optional[str] = Query(default=None),
+    model: Optional[str] = Query(default=None),
+    start_date: Optional[str] = Query(default=None, description="ISO date start"),
+    end_date: Optional[str] = Query(default=None, description="ISO date end"),
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_admin),
+):
+    """Get daily cost data for charts."""
+    from app.services.llm_cost_service import get_llm_cost_service
+
+    service = get_llm_cost_service()
+    return await service.get_daily_costs(
+        db, days=days, purpose=purpose, model=model,
+        start_date=start_date, end_date=end_date,
+    )
+
+
+@router.get(
+    "/llm-costs/category-breakdown",
+    response_model=List[CategoryBreakdownItem],
+    summary="Get LLM cost category breakdown",
+    description="Get usage breakdown with sub-group detail extracted from JSONB metadata.",
+    dependencies=[Depends(rate_limit(max_requests=30, window_seconds=60))],
+)
+async def get_category_breakdown(
+    days: int = Query(default=7, ge=1, le=365),
+    start_date: Optional[str] = Query(default=None, description="ISO date start"),
+    end_date: Optional[str] = Query(default=None, description="ISO date end"),
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_admin),
+):
+    """Get category breakdown with sub-group detail from metadata."""
+    from app.services.llm_cost_service import get_llm_cost_service
+
+    service = get_llm_cost_service()
+    return await service.get_category_breakdown(
+        db, days=days, start_date=start_date, end_date=end_date,
+    )
+
+
+@router.get(
+    "/model-pricing",
+    response_model=List[ModelPricingResponse],
+    summary="Get all model pricing",
+    description="Get all model pricing rows for admin display.",
+    dependencies=[Depends(rate_limit(max_requests=60, window_seconds=60))],
+)
+async def get_model_pricing(
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_admin),
+):
+    """Get all model pricing rows."""
+    from app.services.llm_cost_service import get_llm_cost_service
+
+    service = get_llm_cost_service()
+    rows = await service.get_all_pricing(db)
+    return [
+        ModelPricingResponse(
+            id=str(r.id),
+            model=r.model,
+            input_price=float(r.input_price or 0),
+            cached_input_price=float(r.cached_input_price) if r.cached_input_price is not None else None,
+            output_price=float(r.output_price or 0),
+            effective_from=r.effective_from.isoformat(),
+            created_at=r.created_at.isoformat() if r.created_at else "",
+        )
+        for r in rows
+    ]
+
+
+@router.post(
+    "/model-pricing",
+    response_model=ModelPricingResponse,
+    status_code=201,
+    summary="Create or update model pricing",
+    description="Create or update model pricing for a given model and effective date.",
+    dependencies=[Depends(rate_limit(max_requests=20, window_seconds=60))],
+)
+async def create_model_pricing(
+    data: ModelPricingCreate,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_admin),
+):
+    """Create or update model pricing."""
+    from datetime import date
+    from app.services.llm_cost_service import get_llm_cost_service
+
+    service = get_llm_cost_service()
+    eff_date = date.fromisoformat(data.effective_from) if data.effective_from else None
+    row = await service.set_pricing(
+        db,
+        model=data.model,
+        input_price=data.input_price,
+        output_price=data.output_price,
+        cached_input_price=data.cached_input_price,
+        effective_from=eff_date,
+    )
+    await db.commit()
+    return ModelPricingResponse(
+        id=str(row.id),
+        model=row.model,
+        input_price=float(row.input_price or 0),
+        cached_input_price=float(row.cached_input_price) if row.cached_input_price is not None else None,
+        output_price=float(row.output_price or 0),
+        effective_from=row.effective_from.isoformat(),
+        created_at=row.created_at.isoformat() if row.created_at else "",
+    )
+
+
+@router.delete(
+    "/model-pricing/{pricing_id}",
+    status_code=204,
+    summary="Delete model pricing",
+    description="Delete a model pricing row by ID.",
+    dependencies=[Depends(rate_limit(max_requests=10, window_seconds=60))],
+)
+async def delete_model_pricing(
+    pricing_id: str,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_admin),
+):
+    """Delete a model pricing row."""
+    from app.services.llm_cost_service import get_llm_cost_service
+
+    service = get_llm_cost_service()
+    deleted = await service.delete_pricing(db, pricing_id)
+    if not deleted:
+        raise HTTPException(status_code=404, detail="Pricing not found")
+    await db.commit()

@@ -22,6 +22,11 @@ import type {
   RssFeedUpdate,
   RssFeedTestResult,
   RssFeedStats,
+  CostSummary,
+  DailyCost,
+  ModelPricingItem,
+  ModelPricingCreate,
+  CategoryBreakdownItem,
 } from '@/types'
 
 // Backend API format (has separate langgraph section + modelAssignments)
@@ -320,7 +325,7 @@ export const adminApi = {
     return response.data
   },
 
-  // Layer 1.5 content fetch & cleaning stats
+  // Layer 2 content fetch & cleaning stats
   getLayer15Stats: async (days = 7): Promise<Layer15Stats> => {
     const response = await apiClient.get<Layer15Stats>('/admin/news/layer15-stats', {
       params: { days },
@@ -383,6 +388,42 @@ export const adminApi = {
   triggerRssMonitor: async (): Promise<{ message: string; taskId?: string }> => {
     const response = await apiClient.post<{ message: string; taskId?: string }>('/admin/rss-feeds/trigger')
     return response.data
+  },
+
+  // LLM Cost Tracking
+  getCostSummary: async (days: number = 7, startDate?: string, endDate?: string): Promise<CostSummary> => {
+    const response = await apiClient.get<CostSummary>('/admin/llm-costs/summary', {
+      params: { days, start_date: startDate, end_date: endDate },
+    })
+    return response.data
+  },
+
+  getDailyCosts: async (days: number = 30, purpose?: string, model?: string, startDate?: string, endDate?: string): Promise<DailyCost[]> => {
+    const response = await apiClient.get<DailyCost[]>('/admin/llm-costs/daily', {
+      params: { days, purpose, model, start_date: startDate, end_date: endDate },
+    })
+    return response.data
+  },
+
+  getCategoryBreakdown: async (days: number = 7, startDate?: string, endDate?: string): Promise<CategoryBreakdownItem[]> => {
+    const response = await apiClient.get<CategoryBreakdownItem[]>('/admin/llm-costs/category-breakdown', {
+      params: { days, start_date: startDate, end_date: endDate },
+    })
+    return response.data
+  },
+
+  getModelPricing: async (): Promise<ModelPricingItem[]> => {
+    const response = await apiClient.get<ModelPricingItem[]>('/admin/model-pricing')
+    return response.data
+  },
+
+  createModelPricing: async (pricing: ModelPricingCreate): Promise<ModelPricingItem> => {
+    const response = await apiClient.post<ModelPricingItem>('/admin/model-pricing', pricing)
+    return response.data
+  },
+
+  deleteModelPricing: async (id: string): Promise<void> => {
+    await apiClient.delete(`/admin/model-pricing/${id}`)
   },
 }
 
@@ -554,7 +595,7 @@ export interface SourceStats {
   totalSources: number
 }
 
-// Layer 1.5 content fetch & cleaning types
+// Layer 2 content fetch & cleaning types
 export interface Layer15FetchStats {
   total: number
   success: number
@@ -609,10 +650,10 @@ export interface NewsPipelineTokenStage {
 }
 
 export interface NewsPipelineTokenStats {
-  scoring: NewsPipelineTokenStage
   multiAgent: NewsPipelineTokenStage
   lightweight: NewsPipelineTokenStage
   total: NewsPipelineTokenStage
+  perAgent?: Record<string, NewsPipelineTokenStage>
 }
 
 export interface ScoreDistributionBucket {

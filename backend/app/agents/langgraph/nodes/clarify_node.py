@@ -12,6 +12,7 @@ from typing import Any, Dict, List
 from app.agents.langgraph.state import AnalysisState
 from app.agents.langgraph.utils.json_extractor import safe_json_extract
 from app.core.llm import get_analysis_langchain_model
+from app.core.llm.usage_callback import LlmUsageCallbackHandler
 from app.prompts.loader import load_instructions
 from app.schemas.agent_analysis import (
     AgentAnalysisResult,
@@ -120,9 +121,11 @@ Please provide additional analysis or explanation addressing the above question.
             {"role": "system", "content": instructions},
             {"role": "user", "content": user_prompt},
         ]
-
+        usage_cb = LlmUsageCallbackHandler(
+            purpose="clarification", metadata={"symbol": symbol, "agent_type": target_agent},
+        )
         response = await asyncio.wait_for(
-            llm.ainvoke(messages),
+            llm.ainvoke(messages, config={"callbacks": [usage_cb]}),
             timeout=CLARIFY_TIMEOUT,
         )
         content = response.content

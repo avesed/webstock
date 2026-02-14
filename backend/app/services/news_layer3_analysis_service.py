@@ -362,6 +362,8 @@ class NewsLayer3AnalysisService:
                 system_api_key=llm_settings.api_key,
                 system_base_url=llm_settings.base_url,
                 use_user_config=False,
+                purpose="deep_filter",
+                usage_metadata={"url": url[:200]},
             )
 
             llm_call_elapsed = (_time.monotonic() - llm_start) * 1000

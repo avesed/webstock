@@ -10,7 +10,7 @@ Provider caching policy:
 """
 
 import logging
-from typing import AsyncIterator, Dict, Optional
+from typing import Any, AsyncIterator, Callable, Coroutine, Dict, Optional
 
 from app.config import settings
 from app.core.llm.config import (
@@ -25,9 +25,31 @@ from app.core.llm.types import (
     EmbeddingRequest,
     EmbeddingResponse,
     StreamEvent,
+    TokenUsage,
+    UsageInfo,
 )
 
 logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# Module-level usage recorder — survives reset_llm_gateway() in Celery workers
+# ---------------------------------------------------------------------------
+
+# Signature: async (purpose, model, usage: TokenUsage, user_id?, metadata?) -> None
+_usage_recorder: Optional[Callable[..., Coroutine]] = None
+
+
+def set_llm_usage_recorder(fn: Optional[Callable[..., Coroutine]]) -> None:
+    """Register a callback to record every LLM usage event.
+
+    The callback receives (purpose, model, usage, user_id=, metadata=).
+    Set to None to disable recording.
+
+    This is module-level so it survives reset_llm_gateway() which only
+    resets the _gateway instance (discarding cached providers).
+    """
+    global _usage_recorder
+    _usage_recorder = fn
 
 
 class LLMGateway:
@@ -135,6 +157,34 @@ class LLMGateway:
             return self._get_env_provider(config)
 
     # ------------------------------------------------------------------
+    # Internal: fire usage recording callback
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    async def _record_usage(
+        purpose: str,
+        model: str,
+        usage: Optional[TokenUsage],
+        user_id: Optional[int],
+        metadata: Optional[Dict[str, Any]],
+    ) -> None:
+        """Fire the module-level usage recorder if set. Never raises."""
+        if not _usage_recorder or not usage or not purpose:
+            return
+        try:
+            await _usage_recorder(
+                purpose=purpose,
+                model=model,
+                prompt_tokens=usage.prompt_tokens,
+                completion_tokens=usage.completion_tokens,
+                cached_tokens=usage.cached_tokens,
+                user_id=user_id,
+                metadata=metadata,
+            )
+        except Exception:
+            logger.debug("Usage recording failed", exc_info=True)
+
+    # ------------------------------------------------------------------
     # Chat (non-streaming)
     # ------------------------------------------------------------------
 
@@ -142,6 +192,9 @@ class LLMGateway:
         self,
         request: ChatRequest,
         *,
+        purpose: str = "",
+        user_id: Optional[int] = None,
+        usage_metadata: Optional[Dict[str, Any]] = None,
         system_api_key: Optional[str] = None,
         system_base_url: Optional[str] = None,
         system_anthropic_key: Optional[str] = None,
@@ -161,7 +214,11 @@ class LLMGateway:
             use_local_models=use_local_models,
             use_user_config=use_user_config,
         )
-        return await provider.chat(request)
+        response = await provider.chat(request)
+        await self._record_usage(
+            purpose, request.model, response.usage, user_id, usage_metadata,
+        )
+        return response
 
     # ------------------------------------------------------------------
     # Chat (streaming)
@@ -171,6 +228,9 @@ class LLMGateway:
         self,
         request: ChatRequest,
         *,
+        purpose: str = "",
+        user_id: Optional[int] = None,
+        usage_metadata: Optional[Dict[str, Any]] = None,
         system_api_key: Optional[str] = None,
         system_base_url: Optional[str] = None,
         system_anthropic_key: Optional[str] = None,
@@ -190,8 +250,15 @@ class LLMGateway:
             use_local_models=use_local_models,
             use_user_config=use_user_config,
         )
+        captured_usage: Optional[TokenUsage] = None
         async for event in provider.chat_stream(request):
+            if isinstance(event, UsageInfo):
+                captured_usage = event.usage
             yield event
+        # Record usage after stream completes
+        await self._record_usage(
+            purpose, request.model, captured_usage, user_id, usage_metadata,
+        )
 
     # ------------------------------------------------------------------
     # Embeddings (always OpenAI)
@@ -201,6 +268,9 @@ class LLMGateway:
         self,
         request: EmbeddingRequest,
         *,
+        purpose: str = "",
+        user_id: Optional[int] = None,
+        usage_metadata: Optional[Dict[str, Any]] = None,
         system_api_key: Optional[str] = None,
         system_base_url: Optional[str] = None,
         use_user_config: bool = True,
@@ -221,7 +291,11 @@ class LLMGateway:
                 f"Provider {provider.provider_name} does not support embeddings. "
                 "Use an OpenAI-compatible model for embeddings."
             )
-        return await provider.embed(request)
+        response = await provider.embed(request)
+        await self._record_usage(
+            purpose, request.model, response.usage, user_id, usage_metadata,
+        )
+        return response
 
     # ------------------------------------------------------------------
     # Lifecycle

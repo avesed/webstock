@@ -32,8 +32,7 @@ const DEFAULT_MODEL_ASSIGNMENTS: ModelAssignmentsConfig = {
 }
 
 const DEFAULT_PHASE2_CONFIG: Phase2Config = {
-  enabled: false,
-  scoreThreshold: 50,
+  enableLlmPipeline: false,
   discardThreshold: 105,
   fullAnalysisThreshold: 195,
   layer1Scoring: { providerId: null, model: 'gpt-4o-mini' },
@@ -41,8 +40,6 @@ const DEFAULT_PHASE2_CONFIG: Phase2Config = {
   layer2Scoring: { providerId: null, model: 'gpt-4o-mini' },
   layer2Analysis: { providerId: null, model: 'gpt-4o' },
   layer2Lightweight: { providerId: null, model: 'gpt-4o-mini' },
-  highValueSources: ['reuters', 'bloomberg', 'sec', 'company_announcement'],
-  highValuePct: 0.20,
   cacheEnabled: true,
   cacheTtlMinutes: 60,
 }
@@ -76,7 +73,6 @@ const DEFAULT_CONFIG: SystemConfig = {
     enableNewsAnalysis: true,
     enableStockAnalysis: true,
     requireRegistrationApproval: false,
-    enableLlmPipeline: false,
     enableMcpExtraction: false,
   },
   modelAssignments: DEFAULT_MODEL_ASSIGNMENTS,
@@ -383,8 +379,7 @@ export function SystemSettings() {
         },
         phase2: {
           ...(prev.phase2 ?? DEFAULT_PHASE2_CONFIG),
-          enabled: (config.phase2 ?? DEFAULT_PHASE2_CONFIG).enabled,
-          scoreThreshold: (config.phase2 ?? DEFAULT_PHASE2_CONFIG).scoreThreshold,
+          enableLlmPipeline: (config.phase2 ?? DEFAULT_PHASE2_CONFIG).enableLlmPipeline,
           discardThreshold: (config.phase2 ?? DEFAULT_PHASE2_CONFIG).discardThreshold,
           fullAnalysisThreshold: (config.phase2 ?? DEFAULT_PHASE2_CONFIG).fullAnalysisThreshold,
           layer1Scoring: (config.phase2 ?? DEFAULT_PHASE2_CONFIG).layer1Scoring,
@@ -392,8 +387,6 @@ export function SystemSettings() {
           layer2Scoring: (config.phase2 ?? DEFAULT_PHASE2_CONFIG).layer2Scoring,
           layer2Analysis: (config.phase2 ?? DEFAULT_PHASE2_CONFIG).layer2Analysis,
           layer2Lightweight: (config.phase2 ?? DEFAULT_PHASE2_CONFIG).layer2Lightweight,
-          highValueSources: (config.phase2 ?? DEFAULT_PHASE2_CONFIG).highValueSources,
-          highValuePct: (config.phase2 ?? DEFAULT_PHASE2_CONFIG).highValuePct,
         },
       }))
       setHasNewsChanges(false)
@@ -656,12 +649,12 @@ export function SystemSettings() {
 
                   <div className="flex items-center justify-between">
                     <div className="space-y-0.5">
-                      <Label>{t('settings.phase2.enabled')}</Label>
-                      <p className="text-sm text-muted-foreground">{t('settings.phase2.enabledDescription')}</p>
+                      <Label>{t('settings.enableLlmPipeline')}</Label>
+                      <p className="text-sm text-muted-foreground">{t('settings.enableLlmPipelineDescription')}</p>
                     </div>
                     <ToggleSwitch
-                      checked={phase2.enabled}
-                      onCheckedChange={(checked) => handlePhase2Change('enabled', checked)}
+                      checked={phase2.enableLlmPipeline}
+                      onCheckedChange={(checked) => handlePhase2Change('enableLlmPipeline', checked)}
                     />
                   </div>
 
@@ -693,21 +686,8 @@ export function SystemSettings() {
                     </div>
                   </div>
 
-                  <div className="space-y-2">
-                    <Label htmlFor="phase2-score-threshold">{t('settings.phase2.scoreThreshold')}</Label>
-                    <Input
-                      id="phase2-score-threshold"
-                      type="number"
-                      min={0}
-                      max={100}
-                      value={phase2.scoreThreshold}
-                      onChange={(e) => handlePhase2Change('scoreThreshold', parseInt(e.target.value) || 0)}
-                    />
-                    <p className="text-xs text-muted-foreground">{t('settings.phase2.scoreThresholdHint')}</p>
-                  </div>
-
-                  {/* Phase 2 Layer Models (dimmed when disabled) */}
-                  <div className={cn('space-y-4 transition-opacity', !phase2.enabled && 'opacity-50 pointer-events-none')}>
+                  {/* Pipeline Layer Models (dimmed when disabled) */}
+                  <div className={cn('space-y-4 transition-opacity', !phase2.enableLlmPipeline && 'opacity-50 pointer-events-none')}>
                     <div className="space-y-1">
                       <h4 className="text-sm font-medium">{t('settings.phase2.modelsTitle')}</h4>
                       <p className="text-sm text-muted-foreground">{t('settings.phase2.modelsDescription')}</p>
@@ -733,42 +713,6 @@ export function SystemSettings() {
                         ))}
                       </div>
                     )}
-                  </div>
-                </div>
-
-                <Separator />
-
-                {/* Source Tiering (dimmed when Phase 2 disabled) */}
-                <div className={cn('space-y-4 transition-opacity', !phase2.enabled && 'opacity-50 pointer-events-none')}>
-                  <div className="space-y-1">
-                    <h4 className="text-sm font-medium">{t('settings.phase2.sourceTieringTitle')}</h4>
-                    <p className="text-sm text-muted-foreground">{t('settings.phase2.sourceTieringDescription')}</p>
-                  </div>
-
-                  <div className="space-y-2">
-                    <Label htmlFor="phase2-high-value-sources">{t('settings.phase2.highValueSources')}</Label>
-                    <Input
-                      id="phase2-high-value-sources"
-                      value={phase2.highValueSources?.join(', ') ?? ''}
-                      onChange={(e) =>
-                        handlePhase2Change('highValueSources', e.target.value.split(',').map((s) => s.trim()).filter(Boolean))
-                      }
-                    />
-                    <p className="text-xs text-muted-foreground">{t('settings.phase2.highValueSourcesHint')}</p>
-                  </div>
-
-                  <div className="space-y-2">
-                    <Label htmlFor="phase2-high-value-pct">{t('settings.phase2.highValuePct')}</Label>
-                    <Input
-                      id="phase2-high-value-pct"
-                      type="number"
-                      min={0}
-                      max={1}
-                      step={0.05}
-                      value={phase2.highValuePct}
-                      onChange={(e) => handlePhase2Change('highValuePct', parseFloat(e.target.value) || 0)}
-                    />
-                    <p className="text-xs text-muted-foreground">{t('settings.phase2.highValuePctHint')}</p>
                   </div>
                 </div>
 
@@ -873,18 +817,6 @@ export function SystemSettings() {
                   />
                 </div>
 
-                <Separator />
-
-                <div className="flex items-center justify-between">
-                  <div className="space-y-0.5">
-                    <Label>{t('settings.enableLlmPipeline')}</Label>
-                    <p className="text-sm text-muted-foreground">{t('settings.enableLlmPipelineDescription')}</p>
-                  </div>
-                  <ToggleSwitch
-                    checked={formData.features.enableLlmPipeline}
-                    onCheckedChange={(checked) => handleChange('features', 'enableLlmPipeline', checked)}
-                  />
-                </div>
               </CardContent>
             </Card>
 

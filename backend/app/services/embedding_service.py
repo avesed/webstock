@@ -111,6 +111,7 @@ class EmbeddingService:
                 request,
                 system_api_key=api_key,
                 system_base_url=base_url,
+                purpose="embedding",
             )
             embedding = response.embeddings[0]
             logger.debug(
@@ -177,6 +178,8 @@ class EmbeddingService:
                 request,
                 system_api_key=api_key,
                 system_base_url=base_url,
+                purpose="embedding",
+                usage_metadata={"batch_size": len(valid_texts)},
             )
 
             # Map results back to original indices

@@ -420,7 +420,7 @@ class MultiAgentFilterService:
             },
         }
 
-        # Track aggregate token usage for stats dashboard
+        # Track token usage for stats dashboard (aggregate + per-agent)
         if total_prompt > 0 or total_completion > 0:
             try:
                 from app.services.filter_stats_service import (
@@ -433,6 +433,14 @@ class MultiAgentFilterService:
                     input_tokens=total_prompt,
                     output_tokens=total_completion,
                 )
+                # Per-agent token tracking
+                for name, resp in agent_responses.items():
+                    if resp.success and (resp.prompt_tokens > 0 or resp.completion_tokens > 0):
+                        await stats_service.track_tokens(
+                            stage=f"agent_{name}",
+                            input_tokens=resp.prompt_tokens,
+                            output_tokens=resp.completion_tokens,
+                        )
             except Exception as e:
                 logger.debug(
                     "Failed to track multi-agent token stats: %s", e
@@ -494,6 +502,8 @@ class MultiAgentFilterService:
                 system_api_key=model_config.api_key,
                 system_base_url=model_config.base_url,
                 use_user_config=False,
+                purpose="layer3_analysis",
+                usage_metadata={"agent": agent_name},
             )
 
             elapsed_ms = (time.monotonic() - t0) * 1000

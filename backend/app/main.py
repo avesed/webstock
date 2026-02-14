@@ -186,6 +186,26 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     # Seed default RSS feeds if table is empty
     await seed_default_rss_feeds()
 
+    # Register LLM usage recorder for cost tracking
+    from app.core.llm import set_llm_usage_recorder
+    from app.services.llm_cost_service import get_llm_cost_service
+
+    async def _record_llm_usage(
+        purpose: str, model: str, prompt_tokens: int = 0,
+        completion_tokens: int = 0, cached_tokens: int = 0,
+        user_id=None, metadata=None,
+    ):
+        await get_llm_cost_service().record_usage(
+            purpose=purpose, model=model,
+            prompt_tokens=prompt_tokens,
+            completion_tokens=completion_tokens,
+            cached_tokens=cached_tokens,
+            user_id=user_id, metadata=metadata,
+        )
+
+    set_llm_usage_recorder(_record_llm_usage)
+    logger.info("LLM usage recorder registered for cost tracking")
+
     yield
 
     # Shutdown

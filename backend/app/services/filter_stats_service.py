@@ -74,6 +74,17 @@ class FilterStatsService:
         "deep_multi_agent_output_tokens",
         "lightweight_input_tokens",
         "lightweight_output_tokens",
+        # Layer 3 per-agent token tracking
+        "agent_entity_extractor_input_tokens",
+        "agent_entity_extractor_output_tokens",
+        "agent_sentiment_tags_input_tokens",
+        "agent_sentiment_tags_output_tokens",
+        "agent_summary_generator_input_tokens",
+        "agent_summary_generator_output_tokens",
+        "agent_impact_assessor_input_tokens",
+        "agent_impact_assessor_output_tokens",
+        "agent_report_writer_input_tokens",
+        "agent_report_writer_output_tokens",
         # Layer 1 three-agent token tracking
         "layer1_macro_input_tokens",
         "layer1_macro_output_tokens",
@@ -125,6 +136,9 @@ class FilterStatsService:
             "initial", "deep",
             "layer2_scoring", "deep_multi_agent", "lightweight",
             "layer1_macro", "layer1_market", "layer1_signal",
+            "agent_entity_extractor", "agent_sentiment_tags",
+            "agent_summary_generator", "agent_impact_assessor",
+            "agent_report_writer",
         )
         if stage not in valid_stages:
             logger.warning(f"Unknown filter stage: {stage}")
@@ -426,20 +440,17 @@ class FilterStatsService:
         total_count = full_count + lw_count
 
         # Token breakdown per stage
-        scoring_in = summary.get("layer2_scoring_input_tokens", 0)
-        scoring_out = summary.get("layer2_scoring_output_tokens", 0)
         ma_in = summary.get("deep_multi_agent_input_tokens", 0)
         ma_out = summary.get("deep_multi_agent_output_tokens", 0)
         lw_in = summary.get("lightweight_input_tokens", 0)
         lw_out = summary.get("lightweight_output_tokens", 0)
 
-        # Cost estimates (gpt-4o-mini for scoring/lightweight, gpt-4o for multi-agent)
+        # Cost estimates (gpt-4o-mini for lightweight, gpt-4o for multi-agent)
         mini_in_rate = 0.15 / 1_000_000
         mini_out_rate = 0.60 / 1_000_000
         full_in_rate = 2.50 / 1_000_000
         full_out_rate = 10.0 / 1_000_000
 
-        scoring_cost = (scoring_in * mini_in_rate) + (scoring_out * mini_out_rate)
         ma_cost = (ma_in * full_in_rate) + (ma_out * full_out_rate)
         lw_cost = (lw_in * mini_in_rate) + (lw_out * mini_out_rate)
 
@@ -450,6 +461,18 @@ class FilterStatsService:
                 "total_tokens": inp + out,
                 "estimated_cost_usd": round(cost, 4),
             }
+
+        # Per-agent token breakdown (5 analysis agents, all use gpt-4o rate)
+        agent_names = [
+            "entity_extractor", "sentiment_tags", "summary_generator",
+            "impact_assessor", "report_writer",
+        ]
+        per_agent = {}
+        for name in agent_names:
+            a_in = summary.get(f"agent_{name}_input_tokens", 0)
+            a_out = summary.get(f"agent_{name}_output_tokens", 0)
+            a_cost = (a_in * full_in_rate) + (a_out * full_out_rate)
+            per_agent[name] = _token_block(a_in, a_out, a_cost)
 
         return {
             "routing": {
@@ -463,14 +486,14 @@ class FilterStatsService:
                 ) if total_count > 0 else 0,
             },
             "tokens": {
-                "scoring": _token_block(scoring_in, scoring_out, scoring_cost),
                 "multi_agent": _token_block(ma_in, ma_out, ma_cost),
                 "lightweight": _token_block(lw_in, lw_out, lw_cost),
                 "total": _token_block(
-                    scoring_in + ma_in + lw_in,
-                    scoring_out + ma_out + lw_out,
-                    scoring_cost + ma_cost + lw_cost,
+                    ma_in + lw_in,
+                    ma_out + lw_out,
+                    ma_cost + lw_cost,
                 ),
+                "per_agent": per_agent,
             },
         }
 

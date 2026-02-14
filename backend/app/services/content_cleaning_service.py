@@ -249,6 +249,8 @@ class ContentCleaningService:
                 system_api_key=model_config.api_key,
                 system_base_url=model_config.base_url,
                 use_user_config=False,
+                purpose="content_cleaning",
+                usage_metadata={"url": url_short},
             )
             llm_elapsed_ms = (time.monotonic() - llm_start) * 1000
 

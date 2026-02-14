@@ -27,6 +27,7 @@ from app.agents.langgraph.utils.json_extractor import (
     safe_json_extract,
 )
 from app.core.llm import get_analysis_langchain_model
+from app.core.llm.usage_callback import LlmUsageCallbackHandler
 from app.prompts.loader import load_instructions
 from app.schemas.agent_analysis import (
     ActionRecommendation,
@@ -412,9 +413,11 @@ Please analyze the fundamentals of this stock and output results in JSON format.
                 {"role": "system", "content": instructions},
                 {"role": "user", "content": user_prompt},
             ]
-
+            usage_cb = LlmUsageCallbackHandler(
+                purpose="analysis", metadata={"symbol": symbol, "agent_type": "fundamental"},
+            )
             response = await asyncio.wait_for(
-                llm.ainvoke(messages),
+                llm.ainvoke(messages, config={"callbacks": [usage_cb]}),
                 timeout=LLM_TIMEOUT,
             )
             content = response.content
@@ -633,9 +636,11 @@ Please analyze the technicals of this stock and output results in JSON format.
                 {"role": "system", "content": instructions},
                 {"role": "user", "content": user_prompt},
             ]
-
+            usage_cb = LlmUsageCallbackHandler(
+                purpose="analysis", metadata={"symbol": symbol, "agent_type": "technical"},
+            )
             response = await asyncio.wait_for(
-                llm.ainvoke(messages),
+                llm.ainvoke(messages, config={"callbacks": [usage_cb]}),
                 timeout=LLM_TIMEOUT,
             )
             content = response.content
@@ -845,9 +850,11 @@ Please analyze the market sentiment for this stock and output results in JSON fo
                 {"role": "system", "content": instructions},
                 {"role": "user", "content": user_prompt},
             ]
-
+            usage_cb = LlmUsageCallbackHandler(
+                purpose="analysis", metadata={"symbol": symbol, "agent_type": "sentiment"},
+            )
             response = await asyncio.wait_for(
-                llm.ainvoke(messages),
+                llm.ainvoke(messages, config={"callbacks": [usage_cb]}),
                 timeout=LLM_TIMEOUT,
             )
             content = response.content
@@ -1054,9 +1061,11 @@ Please analyze the impact of these news articles on the stock and output results
                 {"role": "system", "content": instructions},
                 {"role": "user", "content": user_prompt},
             ]
-
+            usage_cb = LlmUsageCallbackHandler(
+                purpose="analysis", metadata={"symbol": symbol, "agent_type": "news"},
+            )
             response = await asyncio.wait_for(
-                llm.ainvoke(messages),
+                llm.ainvoke(messages, config={"callbacks": [usage_cb]}),
                 timeout=LLM_TIMEOUT,
             )
             content = response.content

@@ -45,6 +45,7 @@ celery_app.conf.update(
         "worker.tasks.full_content_tasks.process_news_article": {"queue": "default"},
         "worker.tasks.full_content_tasks.cleanup_expired_news": {"queue": "default"},
         "worker.tasks.full_content_tasks.cleanup_pipeline_events": {"queue": "default"},
+        "worker.tasks.full_content_tasks.cleanup_old_usage_records": {"queue": "default"},
     },
 
     # Task execution settings
@@ -105,6 +106,10 @@ celery_app.conf.update(
         "cleanup-old-backtests": {
             "task": "worker.tasks.backtest_cleanup.cleanup_old_backtests",
             "schedule": crontab(hour=5, minute=15),  # Daily at 5:15 AM UTC
+        },
+        "cleanup-old-usage-records": {
+            "task": "worker.tasks.full_content_tasks.cleanup_old_usage_records",
+            "schedule": crontab(hour=5, minute=0),  # Daily at 5:00 AM UTC
         },
         "monitor-rss-feeds": {
             "task": "worker.tasks.rss_monitor.monitor_rss_feeds",

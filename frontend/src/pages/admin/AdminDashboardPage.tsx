@@ -1,8 +1,8 @@
 import { useTranslation } from 'react-i18next'
-import { Users, Settings, Activity, Filter, GitBranch, Rss } from 'lucide-react'
+import { Users, Settings, Activity, Filter, GitBranch, Rss, DollarSign } from 'lucide-react'
 
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
-import { UserManagement, SystemSettings, SystemMonitor, FilterStats, PipelineTrace, RssFeeds } from '@/components/admin'
+import { UserManagement, SystemSettings, SystemMonitor, FilterStats, PipelineTrace, RssFeeds, CostTracking } from '@/components/admin'
 
 export default function AdminDashboardPage() {
   const { t } = useTranslation('admin')
@@ -40,6 +40,10 @@ export default function AdminDashboardPage() {
             <GitBranch className="h-4 w-4" />
             {t('tabs.pipeline')}
           </TabsTrigger>
+          <TabsTrigger value="costs" className="flex items-center gap-2">
+            <DollarSign className="h-4 w-4" />
+            {t('tabs.costs')}
+          </TabsTrigger>
         </TabsList>
 
         <TabsContent value="users" className="flex-1 overflow-y-auto mt-4 pr-2">
@@ -64,6 +68,10 @@ export default function AdminDashboardPage() {
 
         <TabsContent value="pipeline" className="flex-1 overflow-y-auto mt-4 pr-2">
           <PipelineTrace />
+        </TabsContent>
+
+        <TabsContent value="costs" className="flex-1 overflow-y-auto mt-4 pr-2">
+          <CostTracking />
         </TabsContent>
       </Tabs>
     </div>

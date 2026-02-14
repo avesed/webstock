@@ -413,7 +413,7 @@ class PipelineTraceService:
                         AND metadata IS NOT NULL
                         AND metadata->>'score' IS NOT NULL
                     GROUP BY bucket
-                    ORDER BY bucket
+                    ORDER BY MIN((metadata->>'score')::int)
                 """),
                 {"since": since},
             )
@@ -446,7 +446,7 @@ class PipelineTraceService:
                         AND metadata IS NOT NULL
                         AND metadata->>'score' IS NOT NULL
                     GROUP BY bucket
-                    ORDER BY bucket
+                    ORDER BY MIN((metadata->>'score')::int)
                 """),
                 {"since": since},
             )

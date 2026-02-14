@@ -17,6 +17,7 @@ from app.agents.langgraph.utils.conflict_detection import (
 )
 from app.agents.langgraph.utils.json_extractor import safe_json_extract
 from app.core.llm import get_synthesis_langchain_model
+from app.core.llm.usage_callback import LlmUsageCallbackHandler
 from app.prompts.loader import load_instructions
 from app.schemas.agent_analysis import (
     ActionRecommendation,
@@ -355,9 +356,11 @@ Please synthesize the above analyses and write a comprehensive investment analys
             {"role": "system", "content": instructions},
             {"role": "user", "content": user_prompt},
         ]
-
+        usage_cb = LlmUsageCallbackHandler(
+            purpose="synthesis", metadata={"symbol": symbol},
+        )
         response = await asyncio.wait_for(
-            llm.ainvoke(messages),
+            llm.ainvoke(messages, config={"callbacks": [usage_cb]}),
             timeout=SYNTHESIS_TIMEOUT,
         )
         synthesis_output = response.content

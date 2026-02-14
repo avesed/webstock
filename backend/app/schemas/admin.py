@@ -1,7 +1,7 @@
 """Admin API Pydantic schemas."""
 
 from datetime import datetime
-from typing import Optional, List
+from typing import Dict, Optional, List
 
 from pydantic import Field, EmailStr
 
@@ -210,7 +210,6 @@ class FeaturesConfig(CamelModel):
     enable_news_analysis: bool = True
     enable_stock_analysis: bool = True
     require_registration_approval: bool = False
-    enable_llm_pipeline: bool = False
     enable_mcp_extraction: bool = False
 
 
@@ -242,8 +241,7 @@ class Phase2ModelAssignment(CamelModel):
 class Phase2Config(CamelModel):
     """Phase 2 multi-agent pipeline configuration."""
 
-    enabled: bool = False
-    score_threshold: int = 50
+    enable_llm_pipeline: bool = False
     discard_threshold: int = 105
     full_analysis_threshold: int = 195
     layer1_scoring: Phase2ModelAssignment = Phase2ModelAssignment(model="gpt-4o-mini")
@@ -251,8 +249,6 @@ class Phase2Config(CamelModel):
     layer2_scoring: Phase2ModelAssignment = Phase2ModelAssignment(model="gpt-4o-mini")
     layer2_analysis: Phase2ModelAssignment = Phase2ModelAssignment(model="gpt-4o")
     layer2_lightweight: Phase2ModelAssignment = Phase2ModelAssignment(model="gpt-4o-mini")
-    high_value_sources: list[str] = ["reuters", "bloomberg", "sec", "company_announcement"]
-    high_value_pct: float = 0.20
     cache_enabled: bool = True
     cache_ttl_minutes: int = 60
 
@@ -639,10 +635,10 @@ class NewsPipelineTokenStage(CamelModel):
 class NewsPipelineTokenStats(CamelModel):
     """Token breakdown by news pipeline processing stage."""
 
-    scoring: NewsPipelineTokenStage = NewsPipelineTokenStage()
     multi_agent: NewsPipelineTokenStage = NewsPipelineTokenStage()
     lightweight: NewsPipelineTokenStage = NewsPipelineTokenStage()
     total: NewsPipelineTokenStage = NewsPipelineTokenStage()
+    per_agent: Optional[Dict[str, NewsPipelineTokenStage]] = None
 
 
 class ScoreDistributionBucket(CamelModel):
@@ -686,3 +682,78 @@ class NewsPipelineStatsResponse(CamelModel):
     score_distribution: List[ScoreDistributionBucket] = []
     cache_stats: NewsPipelineCacheStats = NewsPipelineCacheStats()
     node_latency: List[NewsPipelineNodeLatency] = []
+
+
+# ============== LLM Cost Tracking Schemas ==============
+
+
+class CostBreakdownItem(CamelModel):
+    """Single row in a purpose/model breakdown."""
+
+    group: str
+    cost_usd: float
+    prompt_tokens: int
+    completion_tokens: int
+    cached_tokens: int
+    total_tokens: int
+    calls: int
+
+
+class CostSummaryResponse(CamelModel):
+    """Aggregated cost summary."""
+
+    period_days: int
+    total_cost_usd: float
+    total_prompt_tokens: int
+    total_completion_tokens: int
+    total_cached_tokens: int
+    total_tokens: int
+    total_calls: int
+    by_purpose: List[CostBreakdownItem]
+    by_model: List[CostBreakdownItem]
+
+
+class DailyCostItem(CamelModel):
+    """Single day in the daily cost chart."""
+
+    date: str
+    cost_usd: float
+    prompt_tokens: int
+    completion_tokens: int
+    cached_tokens: int
+    calls: int
+
+
+class CategoryBreakdownItem(CamelModel):
+    """Single row in the purpose+sub-group breakdown."""
+
+    purpose: str
+    sub_group: str = ""
+    cost_usd: float
+    prompt_tokens: int
+    completion_tokens: int
+    cached_tokens: int
+    total_tokens: int
+    calls: int
+
+
+class ModelPricingCreate(CamelModel):
+    """Create/update model pricing."""
+
+    model: str
+    input_price: float
+    cached_input_price: Optional[float] = None
+    output_price: float
+    effective_from: Optional[str] = None  # ISO date string, defaults to today
+
+
+class ModelPricingResponse(CamelModel):
+    """Model pricing row."""
+
+    id: str
+    model: str
+    input_price: float
+    cached_input_price: Optional[float] = None
+    output_price: float
+    effective_from: str
+    created_at: str
