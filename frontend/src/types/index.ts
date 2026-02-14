@@ -350,6 +350,12 @@ export interface NewsArticle {
   createdAt: string
 }
 
+// News Reader navigation context
+export interface NewsNavigationContext {
+  articles: Array<{ id: string; title: string }>
+  currentIndex: number
+}
+
 // Sentiment Timeline types
 export interface SentimentTimelineItem {
   date: string

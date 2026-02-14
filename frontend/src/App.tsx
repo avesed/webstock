@@ -20,6 +20,7 @@ import PortfolioPage from '@/pages/PortfolioPage'
 import AlertsPage from '@/pages/AlertsPage'
 import ReportsPage from '@/pages/ReportsPage'
 import NewsPage from '@/pages/NewsPage'
+import NewsReaderPage from '@/pages/NewsReaderPage'
 import ChatPage from '@/pages/ChatPage'
 import SettingsPage from '@/pages/SettingsPage'
 import AdminDashboardPage from '@/pages/admin/AdminDashboardPage'
@@ -136,6 +137,7 @@ function App() {
           <Route path="alerts" element={<AlertsPage />} />
           <Route path="reports" element={<ReportsPage />} />
           <Route path="news" element={<NewsPage />} />
+          <Route path="news/:newsId" element={<NewsReaderPage />} />
           <Route path="chat" element={<ChatPage />} />
           <Route path="backtests" element={<QlibBacktestsPage />} />
           <Route path="settings" element={<SettingsPage />} />

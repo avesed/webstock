@@ -82,7 +82,7 @@ class NewsAnalysisResponse(BaseModel):
     analyzed_at: datetime
 
 
-class NewsFeedResponse(BaseModel):
+class NewsFeedResponse(CamelModel):
     """Paginated response schema for news feed."""
 
     news: List[NewsResponse]

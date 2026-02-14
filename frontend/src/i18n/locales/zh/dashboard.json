@@ -179,7 +179,21 @@
     "viewNewsByStock": "按股票查看新闻",
     "refresh": "刷新",
     "noMoreArticles": "没有更多文章",
-    "noNewsForSymbol": "未找到 {{symbol}} 相关新闻"
+    "processing": "处理中",
+    "noNewsForSymbol": "未找到 {{symbol}} 相关新闻",
+    "reader": {
+      "backToNews": "返回新闻",
+      "summary": "摘要",
+      "detailed": "详细",
+      "analysis": "AI 分析",
+      "noContent": "暂无文章内容。",
+      "noAnalysis": "AI 分析报告暂未生成。",
+      "previousArticle": "上一篇",
+      "nextArticle": "下一篇",
+      "viewOriginal": "查看原文",
+      "articleNotFound": "文章未找到",
+      "articleNotFoundDesc": "该文章可能已被删除或链接无效。"
+    }
   },
   "stock": {
     "title": "股票详情",

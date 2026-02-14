@@ -179,7 +179,21 @@
     "viewNewsByStock": "View news by stock",
     "refresh": "Refresh",
     "noMoreArticles": "No more articles",
-    "noNewsForSymbol": "No news found for {{symbol}}"
+    "processing": "Processing",
+    "noNewsForSymbol": "No news found for {{symbol}}",
+    "reader": {
+      "backToNews": "Back to News",
+      "summary": "Summary",
+      "detailed": "Detailed",
+      "analysis": "AI Analysis",
+      "noContent": "No content available for this article.",
+      "noAnalysis": "AI analysis is not available yet.",
+      "previousArticle": "Previous",
+      "nextArticle": "Next",
+      "viewOriginal": "View Original",
+      "articleNotFound": "Article not found",
+      "articleNotFoundDesc": "This article may have been removed or the link is invalid."
+    }
   },
   "stock": {
     "title": "Stock Details",
