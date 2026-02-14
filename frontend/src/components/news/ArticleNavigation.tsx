@@ -1,6 +1,7 @@
 import { Link } from 'react-router-dom'
 import { useTranslation } from 'react-i18next'
 import { ChevronLeft, ChevronRight } from 'lucide-react'
+import { decodeHtmlEntities } from '@/lib/utils'
 import type { NewsNavigationContext } from '@/types'
 
 interface ArticleNavigationProps {
@@ -31,7 +32,7 @@ export default function ArticleNavigation({ navigation, origin }: ArticleNavigat
               {t('news.reader.previousArticle')}
             </span>
             <span className="text-sm font-medium line-clamp-2 group-hover:text-primary transition-colors">
-              {prevArticle.title}
+              {decodeHtmlEntities(prevArticle.title)}
             </span>
           </Link>
         )}
@@ -48,7 +49,7 @@ export default function ArticleNavigation({ navigation, origin }: ArticleNavigat
               <ChevronRight className="h-3 w-3" />
             </span>
             <span className="text-sm font-medium line-clamp-2 group-hover:text-primary transition-colors">
-              {nextArticle.title}
+              {decodeHtmlEntities(nextArticle.title)}
             </span>
           </Link>
         )}

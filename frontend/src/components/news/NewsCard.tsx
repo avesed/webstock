@@ -14,27 +14,8 @@ import {
   Loader2,
 } from 'lucide-react'
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip'
-import { cn, formatRelativeTime } from '@/lib/utils'
+import { cn, formatRelativeTime, decodeHtmlEntities } from '@/lib/utils'
 import type { NewsArticle, NewsSentiment, NewsNavigationContext } from '@/types'
-
-const HTML_ENTITY_MAP: Record<string, string> = {
-  '&amp;': '&',
-  '&lt;': '<',
-  '&gt;': '>',
-  '&quot;': '"',
-  '&apos;': "'",
-}
-
-function decodeEntities(text: string): string {
-  return text.replace(
-    /&(?:#x([0-9a-fA-F]+)|#(\d+)|amp|lt|gt|quot|apos);/g,
-    (match, hex, dec) => {
-      if (hex != null) return String.fromCodePoint(parseInt(hex, 16))
-      if (dec != null) return String.fromCodePoint(parseInt(dec, 10))
-      return HTML_ENTITY_MAP[match] ?? match
-    }
-  )
-}
 
 interface NewsCardProps {
   article: NewsArticle
@@ -184,7 +165,7 @@ export default function NewsCard({ article, compact = false, className, navigati
           />
         )}
         <div className="flex-1 min-w-0">
-          <h4 className="font-medium text-sm line-clamp-2 mb-1">{decodeEntities(article.title)}</h4>
+          <h4 className="font-medium text-sm line-clamp-2 mb-1">{decodeHtmlEntities(article.title)}</h4>
           <div className="flex items-center gap-2 text-xs text-muted-foreground">
             <span>{article.source}</span>
             <span>-</span>
@@ -232,13 +213,13 @@ export default function NewsCard({ article, compact = false, className, navigati
 
       {/* Title */}
       <h3 className="font-semibold text-[15px] leading-snug line-clamp-2 mb-1 group-hover:text-primary transition-colors">
-        {decodeEntities(article.title)}
+        {decodeHtmlEntities(article.title)}
       </h3>
 
       {/* Summary */}
       {summaryText && (
         <p className="text-sm text-muted-foreground line-clamp-1 mb-2">
-          {decodeEntities(summaryText)}
+          {decodeHtmlEntities(summaryText)}
         </p>
       )}
 

@@ -8,30 +8,11 @@ import { ArrowLeft, ExternalLink, Clock, Loader2, FileWarning } from 'lucide-rea
 import { Button } from '@/components/ui/button'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { Separator } from '@/components/ui/separator'
-import { formatRelativeTime } from '@/lib/utils'
+import { formatRelativeTime, decodeHtmlEntities } from '@/lib/utils'
 import { newsApi } from '@/api'
 import ArticleScoreBadge from '@/components/news/ArticleScoreBadge'
 import ArticleNavigation from '@/components/news/ArticleNavigation'
 import type { NewsArticle, NewsNavigationContext } from '@/types'
-
-const HTML_ENTITY_MAP: Record<string, string> = {
-  '&amp;': '&',
-  '&lt;': '<',
-  '&gt;': '>',
-  '&quot;': '"',
-  '&apos;': "'",
-}
-
-function decodeEntities(text: string): string {
-  return text.replace(
-    /&(?:#x([0-9a-fA-F]+)|#(\d+)|amp|lt|gt|quot|apos);/g,
-    (match, hex, dec) => {
-      if (hex != null) return String.fromCodePoint(parseInt(hex, 16))
-      if (dec != null) return String.fromCodePoint(parseInt(dec, 10))
-      return HTML_ENTITY_MAP[match] ?? match
-    },
-  )
-}
 
 interface LocationState {
   article?: NewsArticle
@@ -137,7 +118,7 @@ export default function NewsReaderPage() {
 
       {/* Title */}
       <h1 className="text-2xl md:text-3xl font-bold tracking-tight leading-tight mb-4">
-        {decodeEntities(article.title)}
+        {decodeHtmlEntities(article.title)}
       </h1>
 
       {/* Meta row */}
@@ -208,7 +189,7 @@ export default function NewsReaderPage() {
           <TabsContent value="summary">
             <div className="prose prose-lg dark:prose-invert max-w-none">
               <p className="text-lg leading-relaxed">
-                {decodeEntities(article.investmentSummary ?? article.summary ?? t('news.reader.noContent'))}
+                {decodeHtmlEntities(article.investmentSummary ?? article.summary ?? t('news.reader.noContent'))}
               </p>
             </div>
           </TabsContent>
