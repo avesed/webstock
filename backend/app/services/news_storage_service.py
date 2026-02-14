@@ -12,7 +12,7 @@ import uuid
 logger = logging.getLogger(__name__)
 
 # Base path for news content storage
-BASE_PATH = Path("data/news_content")
+BASE_PATH = Path("/app/data/news_content")
 
 
 class NewsStorageService:

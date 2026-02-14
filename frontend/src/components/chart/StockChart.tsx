@@ -6,7 +6,6 @@ import {
   type CandlestickData as LWCandlestickData,
   type HistogramData,
   type Time,
-  ColorType,
   CrosshairMode,
   LineStyle,
 } from 'lightweight-charts'
@@ -15,6 +14,7 @@ import { useThemeStore } from '@/stores/themeStore'
 import type { CandlestickData, ChartTimeframe, SentimentTimelineItem, TechnicalIndicatorsData } from '@/types'
 import type { ChartIndicator } from './ChartControls'
 import { resolveInterval } from './ChartControls'
+import { lightTheme, darkTheme, getChartColors } from './chartTheme'
 import { cn, isMetal } from '@/lib/utils'
 
 interface StockChartProps {
@@ -53,61 +53,6 @@ interface CrosshairData {
   macdValue: number | undefined
 }
 
-// Theme configurations for the chart
-const lightTheme = {
-  layout: {
-    background: { type: ColorType.Solid, color: 'transparent' },
-    textColor: '#374151',
-  },
-  grid: {
-    vertLines: { color: '#e5e7eb' },
-    horzLines: { color: '#e5e7eb' },
-  },
-  crosshair: {
-    vertLine: {
-      color: '#6b7280',
-      labelBackgroundColor: '#374151',
-    },
-    horzLine: {
-      color: '#6b7280',
-      labelBackgroundColor: '#374151',
-    },
-  },
-  rightPriceScale: {
-    borderColor: '#e5e7eb',
-  },
-  timeScale: {
-    borderColor: '#e5e7eb',
-  },
-}
-
-const darkTheme = {
-  layout: {
-    background: { type: ColorType.Solid, color: 'transparent' },
-    textColor: '#d1d5db',
-  },
-  grid: {
-    vertLines: { color: '#374151' },
-    horzLines: { color: '#374151' },
-  },
-  crosshair: {
-    vertLine: {
-      color: '#9ca3af',
-      labelBackgroundColor: '#1f2937',
-    },
-    horzLine: {
-      color: '#9ca3af',
-      labelBackgroundColor: '#1f2937',
-    },
-  },
-  rightPriceScale: {
-    borderColor: '#374151',
-  },
-  timeScale: {
-    borderColor: '#374151',
-  },
-}
-
 // Convert our data format to lightweight-charts format
 function convertToChartData(data: CandlestickData[]): LWCandlestickData<Time>[] {
   if (!Array.isArray(data)) return []
@@ -122,28 +67,21 @@ function convertToChartData(data: CandlestickData[]): LWCandlestickData<Time>[] 
     }))
 }
 
-function convertToVolumeData(data: CandlestickData[]): HistogramData<Time>[] {
+function convertToVolumeData(data: CandlestickData[], theme: 'light' | 'dark'): HistogramData<Time>[] {
   if (!Array.isArray(data)) return []
+  const colors = getChartColors(theme)
   return data
     .filter((item) => item.volume !== undefined)
     .map((item) => ({
       time: item.time as Time,
       value: item.volume ?? 0,
-      color: item.close >= item.open ? 'rgba(34, 197, 94, 0.5)' : 'rgba(239, 68, 68, 0.5)',
+      color: item.close >= item.open ? colors.upFill : colors.downFill,
     }))
 }
 
-// Indicator color constants
-const MA_COLORS = ['#2962FF', '#FF6D00', '#AA00FF', '#00BFA5', '#FFD600']
-const RSI_COLOR = '#E040FB'
+// Theme-independent indicator constants
 const RSI_OVERBOUGHT = 70
 const RSI_OVERSOLD = 30
-const MACD_LINE_COLOR = '#2196F3'
-const MACD_SIGNAL_COLOR = '#FF9800'
-const POSITIVE_HIST_COLOR = 'rgba(34, 197, 94, 0.7)'
-const NEGATIVE_HIST_COLOR = 'rgba(239, 68, 68, 0.7)'
-const BB_COLOR = 'rgba(103, 58, 183, 0.7)'
-const BB_BAND_COLOR = 'rgba(103, 58, 183, 0.4)'
 
 export default function StockChart({
   data,
@@ -252,14 +190,15 @@ export default function StockChart({
       },
     })
 
-    // Create candlestick series
+    // Create candlestick series with theme-aware colors
+    const colors = getChartColors(resolvedTheme === 'dark' ? 'dark' : 'light')
     const candlestickSeries = chart.addCandlestickSeries({
-      upColor: '#22c55e',
-      downColor: '#ef4444',
-      borderUpColor: '#22c55e',
-      borderDownColor: '#ef4444',
-      wickUpColor: '#22c55e',
-      wickDownColor: '#ef4444',
+      upColor: colors.up,
+      downColor: colors.down,
+      borderUpColor: colors.up,
+      borderDownColor: colors.down,
+      wickUpColor: colors.up,
+      wickDownColor: colors.down,
     })
 
     // Create volume series
@@ -301,10 +240,10 @@ export default function StockChart({
     })
     sentimentSeries.applyOptions({ visible: false })
 
-    // RSI series
+    // RSI series (theme-aware color)
     const rsiSeries = chart.addLineSeries({
-      color: RSI_COLOR,
-      lineWidth: 1,
+      color: colors.rsiColor,
+      lineWidth: 2,
       priceScaleId: 'rsi',
       lastValueVisible: false,
       priceLineVisible: false,
@@ -314,15 +253,15 @@ export default function StockChart({
       scaleMargins: { top: 0.8, bottom: 0 },
       visible: false,
     })
-    rsiSeries.createPriceLine({ price: RSI_OVERBOUGHT, color: 'rgba(239, 68, 68, 0.4)', lineWidth: 1, lineStyle: LineStyle.Dashed, axisLabelVisible: false })
-    rsiSeries.createPriceLine({ price: RSI_OVERSOLD, color: 'rgba(34, 197, 94, 0.4)', lineWidth: 1, lineStyle: LineStyle.Dashed, axisLabelVisible: false })
+    rsiSeries.createPriceLine({ price: RSI_OVERBOUGHT, color: colors.rsiOverbought, lineWidth: 1, lineStyle: LineStyle.Dashed, axisLabelVisible: false })
+    rsiSeries.createPriceLine({ price: RSI_OVERSOLD, color: colors.rsiOversold, lineWidth: 1, lineStyle: LineStyle.Dashed, axisLabelVisible: false })
     rsiSeries.applyOptions({ visible: false })
     rsiSeriesRef.current = rsiSeries
 
-    // MACD series
+    // MACD series (theme-aware colors)
     const macdLine = chart.addLineSeries({
-      color: MACD_LINE_COLOR,
-      lineWidth: 1,
+      color: colors.macdLineColor,
+      lineWidth: 2,
       priceScaleId: 'macd',
       lastValueVisible: false,
       priceLineVisible: false,
@@ -336,8 +275,8 @@ export default function StockChart({
     macdLineRef.current = macdLine
 
     const macdSignal = chart.addLineSeries({
-      color: MACD_SIGNAL_COLOR,
-      lineWidth: 1,
+      color: colors.macdSignalColor,
+      lineWidth: 2,
       priceScaleId: 'macd',
       lastValueVisible: false,
       priceLineVisible: false,
@@ -354,10 +293,10 @@ export default function StockChart({
     macdHist.applyOptions({ visible: false })
     macdHistRef.current = macdHist
 
-    // Bollinger Bands
+    // Bollinger Bands (theme-aware colors, thicker lines)
     const bbUpper = chart.addLineSeries({
-      color: BB_BAND_COLOR,
-      lineWidth: 1,
+      color: colors.bbBandColor,
+      lineWidth: 2,
       lineStyle: LineStyle.Dashed,
       lastValueVisible: false,
       priceLineVisible: false,
@@ -367,8 +306,8 @@ export default function StockChart({
     bbUpperRef.current = bbUpper
 
     const bbMiddle = chart.addLineSeries({
-      color: BB_COLOR,
-      lineWidth: 1,
+      color: colors.bbColor,
+      lineWidth: 2,
       lastValueVisible: false,
       priceLineVisible: false,
       crosshairMarkerVisible: false,
@@ -377,8 +316,8 @@ export default function StockChart({
     bbMiddleRef.current = bbMiddle
 
     const bbLower = chart.addLineSeries({
-      color: BB_BAND_COLOR,
-      lineWidth: 1,
+      color: colors.bbBandColor,
+      lineWidth: 2,
       lineStyle: LineStyle.Dashed,
       lastValueVisible: false,
       priceLineVisible: false,
@@ -462,7 +401,8 @@ export default function StockChart({
     if (!candlestickSeriesRef.current || !volumeSeriesRef.current || !Array.isArray(data) || data.length === 0) return
 
     const candleData = convertToChartData(data)
-    const volumeData = convertToVolumeData(data)
+    const currentTheme = resolvedTheme === 'dark' ? 'dark' as const : 'light' as const
+    const volumeData = convertToVolumeData(data, currentTheme)
 
     candlestickSeriesRef.current.setData(candleData)
     volumeSeriesRef.current.setData(volumeData)
@@ -482,7 +422,7 @@ export default function StockChart({
         chartRef.current.timeScale().fitContent()
       }
     }
-  }, [data, isZoomMode, timeframe])
+  }, [data, isZoomMode, timeframe, resolvedTheme])
 
   // Apply live bar update via series.update() (avoids full setData redraw)
   useEffect(() => {
@@ -497,16 +437,15 @@ export default function StockChart({
     })
 
     if (latestBar.volume != null && volumeSeriesRef.current) {
-      const color = latestBar.close >= latestBar.open
-        ? 'rgba(34,197,94,0.5)'
-        : 'rgba(239,68,68,0.5)'
+      const liveColors = getChartColors(resolvedTheme === 'dark' ? 'dark' : 'light')
+      const color = latestBar.close >= latestBar.open ? liveColors.upFill : liveColors.downFill
       volumeSeriesRef.current.update({
         time: latestBar.time as Time,
         value: latestBar.volume,
         color,
       })
     }
-  }, [latestBar])
+  }, [latestBar, resolvedTheme])
 
   // Update sentiment data when it changes
   // Sentiment data uses YYYY-MM-DD strings (daily aggregation), which is incompatible
@@ -559,14 +498,15 @@ export default function StockChart({
     maSeriesRefs.current.clear()
 
     if (showMA && indicatorData?.ma) {
+      const themeColors = getChartColors(resolvedTheme === 'dark' ? 'dark' : 'light')
       const maKeys = Object.keys(indicatorData.ma)
       maKeys.forEach((key, idx) => {
         const maData = indicatorData.ma![key]
         if (!maData?.series?.length) return
-        const color = MA_COLORS[idx % MA_COLORS.length]!
+        const color = themeColors.maColors[idx % themeColors.maColors.length]!
         const series = chart.addLineSeries({
           color,
-          lineWidth: 1,
+          lineWidth: 2,
           lastValueVisible: false,
           priceLineVisible: false,
           crosshairMarkerVisible: false,
@@ -617,11 +557,12 @@ export default function StockChart({
     if (macdHistRef.current) {
       macdHistRef.current.applyOptions({ visible: hasMACD })
       if (hasMACD) {
+        const histColors = getChartColors(resolvedTheme === 'dark' ? 'dark' : 'light')
         macdHistRef.current.setData(
           indicatorData!.macd!.histogram.map(p => ({
             time: toChartTime(p),
             value: p.value,
-            color: p.value >= 0 ? POSITIVE_HIST_COLOR : NEGATIVE_HIST_COLOR,
+            color: p.value >= 0 ? histColors.upFill : histColors.downFill,
           }))
         )
       } else {
@@ -707,13 +648,14 @@ export default function StockChart({
         scaleMargins: { top: 0.85, bottom: 0 },
       })
     }
-  }, [indicatorData, activeIndicators, data])
+  }, [indicatorData, activeIndicators, data, resolvedTheme])
 
-  // Update theme when it changes
+  // Update theme when it changes (chart chrome + series colors)
   useEffect(() => {
     if (!chartRef.current) return
 
     const theme = resolvedTheme === 'dark' ? darkTheme : lightTheme
+    const themeColors = getChartColors(resolvedTheme === 'dark' ? 'dark' : 'light')
 
     chartRef.current.applyOptions({
       layout: theme.layout,
@@ -725,6 +667,30 @@ export default function StockChart({
         borderColor: theme.timeScale.borderColor,
       },
     })
+
+    // Update candlestick colors
+    if (candlestickSeriesRef.current) {
+      candlestickSeriesRef.current.applyOptions({
+        upColor: themeColors.up,
+        downColor: themeColors.down,
+        borderUpColor: themeColors.up,
+        borderDownColor: themeColors.down,
+        wickUpColor: themeColors.up,
+        wickDownColor: themeColors.down,
+      })
+    }
+
+    // Update BB colors
+    if (bbUpperRef.current) bbUpperRef.current.applyOptions({ color: themeColors.bbBandColor })
+    if (bbMiddleRef.current) bbMiddleRef.current.applyOptions({ color: themeColors.bbColor })
+    if (bbLowerRef.current) bbLowerRef.current.applyOptions({ color: themeColors.bbBandColor })
+
+    // Update RSI color
+    if (rsiSeriesRef.current) rsiSeriesRef.current.applyOptions({ color: themeColors.rsiColor })
+
+    // Update MACD colors
+    if (macdLineRef.current) macdLineRef.current.applyOptions({ color: themeColors.macdLineColor })
+    if (macdSignalRef.current) macdSignalRef.current.applyOptions({ color: themeColors.macdSignalColor })
   }, [resolvedTheme])
 
   // Get the last data point for comparison (prefer latestBar for live updates)

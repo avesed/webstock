@@ -69,7 +69,7 @@ const VALID_INTERVALS: Record<ChartTimeframe, Set<ChartInterval>> = {
 }
 
 // i18n keys for each indicator (must be literal strings for type-safe i18n)
-const indicatorDefs: { value: ChartIndicator; labelKey: 'stock.indicators.ma' | 'stock.indicators.rsi' | 'stock.indicators.macd' | 'stock.indicators.bb' | 'stock.indicators.volume' | 'stock.indicators.sentiment'; descKey: 'stock.indicators.maDesc' | 'stock.indicators.rsiDesc' | 'stock.indicators.macdDesc' | 'stock.indicators.bbDesc' | 'stock.indicators.volumeDesc' | 'stock.indicators.sentimentDesc'; implemented: boolean }[] = [
+export const indicatorDefs: { value: ChartIndicator; labelKey: 'stock.indicators.ma' | 'stock.indicators.rsi' | 'stock.indicators.macd' | 'stock.indicators.bb' | 'stock.indicators.volume' | 'stock.indicators.sentiment'; descKey: 'stock.indicators.maDesc' | 'stock.indicators.rsiDesc' | 'stock.indicators.macdDesc' | 'stock.indicators.bbDesc' | 'stock.indicators.volumeDesc' | 'stock.indicators.sentimentDesc'; implemented: boolean }[] = [
   { value: 'MA', labelKey: 'stock.indicators.ma', descKey: 'stock.indicators.maDesc', implemented: true },
   { value: 'RSI', labelKey: 'stock.indicators.rsi', descKey: 'stock.indicators.rsiDesc', implemented: true },
   { value: 'MACD', labelKey: 'stock.indicators.macd', descKey: 'stock.indicators.macdDesc', implemented: true },
@@ -277,7 +277,7 @@ export interface VisibleRange {
 const TIMEFRAME_STORAGE_KEY = 'webstock-chart-timeframe'
 const VALID_TIMEFRAMES: ChartTimeframe[] = ['1H', '1D', '1W', '1M', '3M', '6M', '1Y', '5Y', 'ALL']
 
-export function useChartControls(initialTimeframe: ChartTimeframe = '1D') {
+export function useChartControls(initialTimeframe: ChartTimeframe = '1D', initialInterval?: ChartInterval) {
   const [timeframe, setTimeframeState] = useState<ChartTimeframe>(() => {
     try {
       const saved = localStorage.getItem(TIMEFRAME_STORAGE_KEY)
@@ -287,9 +287,17 @@ export function useChartControls(initialTimeframe: ChartTimeframe = '1D') {
     } catch {}
     return initialTimeframe
   })
-  const [interval, setInterval] = useState<ChartInterval>(() =>
-    TIMEFRAME_DEFAULT_INTERVAL[initialTimeframe]
-  )
+  const [interval, setInterval] = useState<ChartInterval>(() => {
+    // If restored from localStorage, use that timeframe's default interval
+    try {
+      const saved = localStorage.getItem(TIMEFRAME_STORAGE_KEY)
+      if (saved && VALID_TIMEFRAMES.includes(saved as ChartTimeframe)) {
+        return TIMEFRAME_DEFAULT_INTERVAL[saved as ChartTimeframe]
+      }
+    } catch {}
+    // Use explicit initial interval if provided, otherwise use default for timeframe
+    return initialInterval ?? TIMEFRAME_DEFAULT_INTERVAL[initialTimeframe]
+  })
   const [visibleRange, setVisibleRange] = useState<VisibleRange | null>(null)
   const [activeIndicators, setActiveIndicators] = useState<ChartIndicator[]>(['VOL'])
   const [maPeriods, setMaPeriods] = useState<number[]>([20, 50, 200])

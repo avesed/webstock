@@ -56,6 +56,8 @@ def _news_to_response(article: News) -> NewsResponse:
         market=article.market,
         sentiment_score=article.sentiment_score,
         sentiment_tag=article.sentiment_tag,
+        investment_summary=article.investment_summary,
+        detailed_summary=article.detailed_summary,
         ai_analysis=article.ai_analysis,
         related_entities=article.related_entities,
         industry_tags=article.industry_tags,
@@ -571,6 +573,37 @@ async def get_sentiment_timeline(
         days=days,
         data=data,
     )
+
+
+@router.get(
+    "/article/{news_id}",
+    response_model=NewsResponse,
+    summary="Get a single news article",
+    description="Get a news article by its UUID, including all content tiers.",
+)
+async def get_news_article(
+    news_id: str,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+    _rate_limit: None = Depends(CONTENT_RATE_LIMIT),
+):
+    """Get a single news article by ID."""
+    try:
+        news_uuid = UUID(news_id)
+    except ValueError:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid news ID format",
+        )
+
+    result = await db.execute(select(News).where(News.id == news_uuid))
+    article = result.scalar_one_or_none()
+    if not article:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="News article not found",
+        )
+    return _news_to_response(article)
 
 
 @router.get(

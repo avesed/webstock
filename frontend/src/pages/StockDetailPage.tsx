@@ -1,7 +1,7 @@
-import { useParams } from 'react-router-dom'
+import { useParams, useNavigate } from 'react-router-dom'
 import { useTranslation } from 'react-i18next'
 import { useQuery, useMutation, useQueryClient, keepPreviousData } from '@tanstack/react-query'
-import { useEffect, useCallback, useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import {
   TrendingUp,
   TrendingDown,
@@ -10,6 +10,7 @@ import {
   Loader2,
   AlertCircle,
   RefreshCw,
+  Maximize2,
 } from 'lucide-react'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
@@ -21,9 +22,7 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu'
-import { StockChart, ChartControls, useChartControls } from '@/components/chart'
-import type { ChartInterval } from '@/components/chart'
-import { TIMEFRAME_DEFAULT_INTERVAL } from '@/api'
+import { SimpleChart } from '@/components/chart'
 import {
   cn,
   formatCurrency,
@@ -55,8 +54,17 @@ export default function StockDetailPage() {
   const queryClient = useQueryClient()
   const { toast } = useToast()
   const { setSelectedSymbol, setSelectedQuote, setSelectedInfo } = useStockStore()
-  const chartControls = useChartControls('1H')
+  const navigate = useNavigate()
   const [lastBarTime, setLastBarTime] = useState<number>(0)
+
+  // Simplified timeframe for area chart (no interval selector, no indicators)
+  const SIMPLE_TIMEFRAMES = ['1D', '1W', '1M', '3M', '1Y', 'ALL'] as const
+  type SimpleTimeframe = typeof SIMPLE_TIMEFRAMES[number]
+  const SIMPLE_TIMEFRAME_INTERVAL: Record<SimpleTimeframe, string> = {
+    '1D': '5m', '1W': '15m', '1M': '1h', '3M': '1d', '1Y': '1d', 'ALL': '1mo',
+  }
+  const [simpleTimeframe, setSimpleTimeframe] = useState<SimpleTimeframe>('1D')
+  const simpleInterval = SIMPLE_TIMEFRAME_INTERVAL[simpleTimeframe]
 
   // Tab navigation with URL sync
   const {
@@ -102,28 +110,17 @@ export default function StockDetailPage() {
     enabled: !!upperSymbol && !isMetalAsset,
   })
 
-  // Intraday timeframes use sub-daily intervals (1m, 5m, 15m)
-  const isIntradayTimeframe = chartControls.timeframe === '1H' || chartControls.timeframe === '1D' || chartControls.timeframe === '1W'
+  // Intraday timeframes use sub-daily intervals (5m, 15m)
+  const isIntradayTimeframe = simpleTimeframe === '1D' || simpleTimeframe === '1W'
   const {
     data: chartData,
     isLoading: isLoadingChart,
     error: chartError,
   } = useQuery({
-    queryKey: ['stock-history', upperSymbol, chartControls.timeframe, chartControls.interval, chartControls.visibleRange],
-    queryFn: () => {
-      if (chartControls.visibleRange) {
-        // Date-range mode: fetch specific interval + date range
-        return stockApi.getHistory(upperSymbol, chartControls.timeframe, {
-          intervalOverride: chartControls.interval,
-          start: chartControls.visibleRange.start,
-          end: chartControls.visibleRange.end,
-        })
-      }
-      // Period mode: always pass current interval (supports manual override)
-      return stockApi.getHistory(upperSymbol, chartControls.timeframe, {
-        intervalOverride: chartControls.interval,
-      })
-    },
+    queryKey: ['stock-history', upperSymbol, simpleTimeframe, simpleInterval],
+    queryFn: () => stockApi.getHistory(upperSymbol, simpleTimeframe, {
+      intervalOverride: simpleInterval,
+    }),
     enabled: !!upperSymbol,
     placeholderData: keepPreviousData,
     refetchInterval: false,
@@ -148,13 +145,13 @@ export default function StockDetailPage() {
 
   // Incremental bar polling (intraday only, 60s interval)
   const { data: latestBars } = useQuery({
-    queryKey: ['stock-latest', upperSymbol, chartControls.interval],
+    queryKey: ['stock-latest', upperSymbol, simpleInterval],
     queryFn: () => stockApi.getLatestBars(
       upperSymbol,
-      chartControls.interval,
+      simpleInterval,
       lastBarTime,
     ),
-    enabled: !!upperSymbol && isIntradayTimeframe && lastBarTime > 0 && !chartControls.visibleRange,
+    enabled: !!upperSymbol && isIntradayTimeframe && lastBarTime > 0,
     refetchInterval: 60_000,
   })
 
@@ -214,60 +211,6 @@ export default function StockDetailPage() {
     queryKey: ['stock-news', upperSymbol],
     queryFn: () => newsApi.getBySymbol(upperSymbol, 1, 10),
     enabled: !!upperSymbol,
-  })
-
-  // Indicator visibility
-  const showVolume = chartControls.activeIndicators.includes('VOL')
-  const showSentiment = chartControls.activeIndicators.includes('SENT')
-  const { data: sentimentData } = useQuery({
-    queryKey: ['sentiment-timeline', upperSymbol],
-    queryFn: () => newsApi.getSentimentTimeline(upperSymbol, 90),
-    enabled: !!upperSymbol && showSentiment,
-    staleTime: 5 * 60 * 1000,
-  })
-
-  // Technical indicators
-  const showMA = chartControls.activeIndicators.includes('MA')
-  const showRSI = chartControls.activeIndicators.includes('RSI')
-  const showMACD = chartControls.activeIndicators.includes('MACD')
-  const showBB = chartControls.activeIndicators.includes('BB')
-  const hasAnyTechnicalIndicator = showMA || showRSI || showMACD || showBB
-
-  const indicatorTypes = [
-    ...(showMA ? ['sma'] : []),
-    ...(showRSI ? ['rsi'] : []),
-    ...(showMACD ? ['macd'] : []),
-    ...(showBB ? ['bb'] : []),
-  ]
-
-  const { data: indicatorData } = useQuery({
-    queryKey: ['stock-indicators', upperSymbol, chartControls.timeframe, chartControls.interval, chartControls.visibleRange, indicatorTypes.join(','), chartControls.maPeriods.join(',')],
-    queryFn: () => {
-      const opts: {
-        maPeriods: number[]
-        intervalOverride?: string
-        start?: string
-        end?: string
-      } = {
-        maPeriods: chartControls.maPeriods,
-        intervalOverride: chartControls.interval,
-      }
-
-      if (chartControls.visibleRange) {
-        opts.start = chartControls.visibleRange.start
-        opts.end = chartControls.visibleRange.end
-      }
-
-      return stockApi.getIndicators(
-        upperSymbol,
-        chartControls.timeframe,
-        indicatorTypes,
-        opts
-      )
-    },
-    enabled: !!upperSymbol && hasAnyTechnicalIndicator,
-    placeholderData: keepPreviousData,
-    staleTime: 60_000,
   })
 
   // Fetch watchlists to check if stock is in any
@@ -343,18 +286,6 @@ export default function StockDetailPage() {
       addToWatchlistMutation.mutate({ watchlistId, symbol: upperSymbol })
     }
   }
-
-  // Zoom-triggered interval/range change from StockChart
-  const handleVisibleRangeChange = useCallback((newInterval: string, range: { start: string; end: string }) => {
-    chartControls.setInterval(newInterval as ChartInterval)
-    chartControls.setVisibleRange(range)
-  }, [chartControls])
-
-  // Zoom-out reset to period mode
-  const handleVisibleRangeReset = useCallback(() => {
-    chartControls.setInterval(TIMEFRAME_DEFAULT_INTERVAL[chartControls.timeframe] as ChartInterval)
-    chartControls.setVisibleRange(null)
-  }, [chartControls])
 
   if (quoteError) {
     return (
@@ -487,26 +418,39 @@ export default function StockDetailPage() {
             <div className="grid gap-6 lg:grid-cols-3">
               {/* Left column - Chart and Financials/News */}
               <div className="lg:col-span-2 space-y-4">
-                {/* Chart Card */}
+                {/* Chart Card — simplified area chart */}
                 <Card>
                   <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-                    <div>
-                      <CardTitle>{t('stock.chart')}</CardTitle>
-                      <CardDescription>{t('stock.price')}</CardDescription>
+                    <CardTitle>{t('stock.chart')}</CardTitle>
+                    <div className="flex items-center gap-2">
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        className="h-7 w-7 text-muted-foreground hover:text-foreground"
+                        onClick={() => navigate(`/stock/${upperSymbol}/chart`)}
+                        title={t('stock.expandChart')}
+                      >
+                        <Maximize2 className="h-4 w-4" />
+                      </Button>
+                      <div className="flex items-center rounded-lg border bg-muted/50 p-0.5">
+                        {SIMPLE_TIMEFRAMES.map((tf) => (
+                          <Button
+                            key={tf}
+                            variant="ghost"
+                            size="sm"
+                            className={cn(
+                              'h-7 px-2.5 text-xs font-medium',
+                              simpleTimeframe === tf
+                                ? 'bg-background text-foreground shadow-sm'
+                                : 'text-muted-foreground hover:text-foreground'
+                            )}
+                            onClick={() => setSimpleTimeframe(tf)}
+                          >
+                            {tf}
+                          </Button>
+                        ))}
+                      </div>
                     </div>
-                    <ChartControls
-                      timeframe={chartControls.timeframe}
-                      onTimeframeChange={chartControls.setTimeframe}
-                      interval={chartControls.interval}
-                      onIntervalChange={(newInterval) => {
-                        chartControls.setInterval(newInterval)
-                        // Manual interval selection: clear visible range to use period mode
-                        chartControls.setVisibleRange(null)
-                      }}
-                      indicators={chartControls.activeIndicators}
-                      onIndicatorToggle={chartControls.toggleIndicator}
-                      maPeriods={chartControls.maPeriods}
-                    />
                   </CardHeader>
                   <CardContent>
                     {isMarketClosed && (
@@ -516,26 +460,17 @@ export default function StockDetailPage() {
                       </div>
                     )}
                     {chartErrorMessage ? (
-                      <div className="flex items-center justify-center h-[400px] text-muted-foreground">
+                      <div className="flex items-center justify-center h-[280px] text-muted-foreground">
                         <p>{chartErrorMessage}</p>
                       </div>
                     ) : (
-                      <StockChart
+                      <SimpleChart
                         data={mergedData}
                         latestBar={latestBar}
-                        timeframe={chartControls.timeframe}
+                        timeframe={simpleTimeframe}
                         symbol={upperSymbol}
                         isLoading={isLoadingChart}
-                        height={400}
-                        onTimeframeChange={chartControls.setTimeframe}
-                        showVolume={showVolume}
-                        sentimentData={showSentiment ? sentimentData?.data : undefined}
-                        indicatorData={hasAnyTechnicalIndicator && indicatorData?.symbol === upperSymbol ? indicatorData : undefined}
-                        activeIndicators={chartControls.activeIndicators}
-                        interval={chartControls.interval}
-                        onVisibleRangeChange={handleVisibleRangeChange}
-                        onVisibleRangeReset={handleVisibleRangeReset}
-                        isZoomMode={!!chartControls.visibleRange}
+                        height={280}
                       />
                     )}
                   </CardContent>

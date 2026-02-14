@@ -271,6 +271,7 @@
     "contracts": "合约",
     "sent": "情绪",
     "noData": "暂无数据",
+    "expandChart": "展开图表",
     "noChartData": "暂无图表数据",
     "tryDifferentPeriod": "请尝试选择其他时间周期",
     "financials": {

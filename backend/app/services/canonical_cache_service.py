@@ -48,7 +48,7 @@ _append_locks: Dict[str, asyncio.Lock] = defaultdict(asyncio.Lock)
 # Configuration
 # ---------------------------------------------------------------------------
 
-CACHE_BASE = Path("data/stock_cache")
+CACHE_BASE = Path("/app/data/stock_cache")
 
 # Tier definitions: canonical interval -> max lookback days, TTL seconds
 # max_days reflects the actual provider limit (yfinance) with a small safety margin.
@@ -270,6 +270,20 @@ def resample_bars(
 
     try:
         df = pd.DataFrame(bars)
+
+        # Detect original timezone from first bar so we can restore it after
+        # resampling.  pandas resample requires a uniform tz (we use UTC), but
+        # the frontend relies on the original offset for display.
+        original_tz = None
+        first_date = bars[0].get("date", "")
+        tz_match = re.search(r"[+-]\d{2}:\d{2}$", first_date)
+        if tz_match:
+            offset_str = tz_match.group()  # e.g. "-05:00"
+            sign = 1 if offset_str[0] == "+" else -1
+            hours = int(offset_str[1:3])
+            minutes = int(offset_str[4:6])
+            original_tz = timezone(timedelta(hours=sign * hours, minutes=sign * minutes))
+
         # Parse date column -- handle both datetime and date-only strings
         df["date"] = pd.to_datetime(df["date"], utc=True, format="mixed")
         df.set_index("date", inplace=True)
@@ -293,6 +307,10 @@ def resample_bars(
             )
             .dropna(subset=["open", "close"])
         )
+
+        # Restore original timezone so the frontend can display market-local time
+        if original_tz is not None:
+            resampled.index = resampled.index.tz_convert(original_tz)
 
         result: List[dict] = []
         for idx, row in resampled.iterrows():

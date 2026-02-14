@@ -14,6 +14,7 @@ import LoginPage from '@/pages/LoginPage'
 import RegisterPage from '@/pages/RegisterPage'
 import PendingApprovalPage from '@/pages/PendingApprovalPage'
 import StockDetailPage from '@/pages/StockDetailPage'
+import StockChartPage from '@/pages/StockChartPage'
 import WatchlistPage from '@/pages/WatchlistPage'
 import PortfolioPage from '@/pages/PortfolioPage'
 import AlertsPage from '@/pages/AlertsPage'
@@ -129,6 +130,7 @@ function App() {
         >
           <Route index element={<DashboardPage />} />
           <Route path="stock/:symbol" element={<StockDetailPage />} />
+          <Route path="stock/:symbol/chart" element={<StockChartPage />} />
           <Route path="watchlist" element={<WatchlistPage />} />
           <Route path="portfolio" element={<PortfolioPage />} />
           <Route path="alerts" element={<AlertsPage />} />

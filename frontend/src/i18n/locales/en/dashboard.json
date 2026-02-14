@@ -271,6 +271,7 @@
     "contracts": "Contracts",
     "sent": "Sent",
     "noData": "No data available",
+    "expandChart": "Expand chart",
     "noChartData": "No chart data available",
     "tryDifferentPeriod": "Try selecting a different time period",
     "financials": {

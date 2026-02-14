@@ -675,6 +675,11 @@ export const reportsApi = {
 
 // News API
 export const newsApi = {
+  getArticle: async (newsId: string): Promise<NewsArticle> => {
+    const response = await apiClient.get<NewsArticle>(`/news/article/${newsId}`)
+    return response.data
+  },
+
   getBySymbol: async (
     symbol: string,
     page: number = 1,
