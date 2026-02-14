@@ -50,22 +50,37 @@ class FilterStatsService:
         "filter_error",
         "embedding_success",
         "embedding_error",
-        # Multi-agent voting stats
-        "vote_unanimous_skip",
-        "vote_majority_skip",
-        "vote_majority_pass",
-        "vote_unanimous_pass",
+        # Phase 2 routing stats
+        "phase2_full_analysis",
+        "phase2_lightweight",
+        "phase2_critical_event",
+        "phase2_scoring_error",
+        # Layer 1 three-agent scoring stats
+        "layer1_discard",
+        "layer1_lightweight",
+        "layer1_full_analysis",
+        "layer1_critical_event",
     ]
 
     TOKEN_TYPES = [
         "initial_input_tokens",
         "initial_output_tokens",
-        "initial_strict_input_tokens",
-        "initial_strict_output_tokens",
-        "initial_permissive_input_tokens",
-        "initial_permissive_output_tokens",
         "deep_input_tokens",
         "deep_output_tokens",
+        # Phase 2 token tracking
+        "layer2_scoring_input_tokens",
+        "layer2_scoring_output_tokens",
+        "deep_multi_agent_input_tokens",
+        "deep_multi_agent_output_tokens",
+        "lightweight_input_tokens",
+        "lightweight_output_tokens",
+        # Layer 1 three-agent token tracking
+        "layer1_macro_input_tokens",
+        "layer1_macro_output_tokens",
+        "layer1_market_input_tokens",
+        "layer1_market_output_tokens",
+        "layer1_signal_input_tokens",
+        "layer1_signal_output_tokens",
     ]
 
     async def increment(self, stat_type: str, count: int = 1) -> None:
@@ -102,11 +117,16 @@ class FilterStatsService:
         Track token usage for a filter stage.
 
         Args:
-            stage: "initial", "initial_strict", "initial_permissive", or "deep"
+            stage: Filter stage name (initial, deep, layer2_scoring, etc.)
             input_tokens: Number of input tokens used
             output_tokens: Number of output tokens used
         """
-        if stage not in ("initial", "initial_strict", "initial_permissive", "deep"):
+        valid_stages = (
+            "initial", "deep",
+            "layer2_scoring", "deep_multi_agent", "lightweight",
+            "layer1_macro", "layer1_market", "layer1_signal",
+        )
+        if stage not in valid_stages:
             logger.warning(f"Unknown filter stage: {stage}")
             return
 
@@ -246,12 +266,6 @@ class FilterStatsService:
         deep_input = summary.get("deep_input_tokens", 0)
         deep_output = summary.get("deep_output_tokens", 0)
 
-        # Per-agent token tracking
-        strict_input = summary.get("initial_strict_input_tokens", 0)
-        strict_output = summary.get("initial_strict_output_tokens", 0)
-        permissive_input = summary.get("initial_permissive_input_tokens", 0)
-        permissive_output = summary.get("initial_permissive_output_tokens", 0)
-
         # Cost estimates for gpt-4o-mini (as of 2024)
         # Input: $0.15 / 1M tokens, Output: $0.60 / 1M tokens
         input_rate = 0.15 / 1_000_000
@@ -259,10 +273,33 @@ class FilterStatsService:
 
         initial_cost = (initial_input * input_rate) + (initial_output * output_rate)
         deep_cost = (deep_input * input_rate) + (deep_output * output_rate)
-        strict_cost = (strict_input * input_rate) + (strict_output * output_rate)
-        permissive_cost = (permissive_input * input_rate) + (permissive_output * output_rate)
 
-        has_per_agent = (strict_input + strict_output + permissive_input + permissive_output) > 0
+        # Layer 1 three-agent token tracking
+        l1_macro_in = summary.get("layer1_macro_input_tokens", 0)
+        l1_macro_out = summary.get("layer1_macro_output_tokens", 0)
+        l1_market_in = summary.get("layer1_market_input_tokens", 0)
+        l1_market_out = summary.get("layer1_market_output_tokens", 0)
+        l1_signal_in = summary.get("layer1_signal_input_tokens", 0)
+        l1_signal_out = summary.get("layer1_signal_output_tokens", 0)
+
+        l1_macro_cost = (l1_macro_in * input_rate) + (l1_macro_out * output_rate)
+        l1_market_cost = (l1_market_in * input_rate) + (l1_market_out * output_rate)
+        l1_signal_cost = (l1_signal_in * input_rate) + (l1_signal_out * output_rate)
+        l1_total_cost = l1_macro_cost + l1_market_cost + l1_signal_cost
+
+        has_layer1 = (l1_macro_in + l1_macro_out + l1_market_in + l1_market_out
+                      + l1_signal_in + l1_signal_out) > 0
+
+        # When Layer 1 tokens exist, use them in total instead of old initial tokens
+        # to avoid double-counting
+        if has_layer1:
+            total_input = l1_macro_in + l1_market_in + l1_signal_in + deep_input
+            total_output = l1_macro_out + l1_market_out + l1_signal_out + deep_output
+            total_cost = l1_total_cost + deep_cost
+        else:
+            total_input = initial_input + deep_input
+            total_output = initial_output + deep_output
+            total_cost = initial_cost + deep_cost
 
         result = {
             "initial_filter": {
@@ -278,28 +315,26 @@ class FilterStatsService:
                 "estimated_cost_usd": round(deep_cost, 4),
             },
             "total": {
-                "input_tokens": initial_input + deep_input + strict_input + permissive_input,
-                "output_tokens": initial_output + deep_output + strict_output + permissive_output,
-                "total_tokens": (initial_input + initial_output + deep_input + deep_output
-                                 + strict_input + strict_output + permissive_input + permissive_output),
-                "estimated_cost_usd": round(initial_cost + deep_cost + strict_cost + permissive_cost, 4),
+                "input_tokens": total_input,
+                "output_tokens": total_output,
+                "total_tokens": total_input + total_output,
+                "estimated_cost_usd": round(total_cost, 4),
             },
             "days": days,
         }
 
-        if has_per_agent:
-            result["initial_strict"] = {
-                "input_tokens": strict_input,
-                "output_tokens": strict_output,
-                "total_tokens": strict_input + strict_output,
-                "estimated_cost_usd": round(strict_cost, 4),
+        def _token_block(inp, out, cost):
+            return {
+                "input_tokens": inp,
+                "output_tokens": out,
+                "total_tokens": inp + out,
+                "estimated_cost_usd": round(cost, 4),
             }
-            result["initial_permissive"] = {
-                "input_tokens": permissive_input,
-                "output_tokens": permissive_output,
-                "total_tokens": permissive_input + permissive_output,
-                "estimated_cost_usd": round(permissive_cost, 4),
-            }
+
+        if has_layer1:
+            result["layer1_macro"] = _token_block(l1_macro_in, l1_macro_out, l1_macro_cost)
+            result["layer1_market"] = _token_block(l1_market_in, l1_market_out, l1_market_cost)
+            result["layer1_signal"] = _token_block(l1_signal_in, l1_signal_out, l1_signal_cost)
 
         return result
 
@@ -323,12 +358,13 @@ class FilterStatsService:
         )
         deep_total = summary["fine_keep"] + summary["fine_delete"]
 
-        # Multi-agent voting stats
-        vote_unanimous_skip = summary.get("vote_unanimous_skip", 0)
-        vote_majority_skip = summary.get("vote_majority_skip", 0)
-        vote_majority_pass = summary.get("vote_majority_pass", 0)
-        vote_unanimous_pass = summary.get("vote_unanimous_pass", 0)
-        has_voting = (vote_unanimous_skip + vote_majority_skip + vote_majority_pass + vote_unanimous_pass) > 0
+        # Layer 1 three-agent scoring stats
+        l1_disc = summary.get("layer1_discard", 0)
+        l1_lw = summary.get("layer1_lightweight", 0)
+        l1_fa = summary.get("layer1_full_analysis", 0)
+        l1_crit = summary.get("layer1_critical_event", 0)
+        l1_total = l1_disc + l1_lw + l1_fa
+        has_l1 = l1_total > 0
 
         return {
             "period_days": days,
@@ -352,12 +388,13 @@ class FilterStatsService:
                     "success": summary["embedding_success"],
                     "error": summary["embedding_error"],
                 },
-                **({"voting": {
-                    "unanimous_skip": vote_unanimous_skip,
-                    "majority_skip": vote_majority_skip,
-                    "majority_pass": vote_majority_pass,
-                    "unanimous_pass": vote_unanimous_pass,
-                }} if has_voting else {}),
+                **({"layer1_scoring": {
+                    "discard": l1_disc,
+                    "lightweight": l1_lw,
+                    "full_analysis": l1_fa,
+                    "critical_event": l1_crit,
+                    "total": l1_total,
+                }} if has_l1 else {}),
             },
             "rates": {
                 "initial_skip_rate": round(rates["initial_skip_rate"] * 100, 1),
@@ -366,9 +403,75 @@ class FilterStatsService:
                 "deep_delete_rate": round(rates["fine_delete_rate"] * 100, 1),
                 "filter_error_rate": round(rates["filter_error_rate"] * 100, 2),
                 "embedding_error_rate": round(rates["embedding_error_rate"] * 100, 2),
+                "layer1_discard_rate": round(l1_disc / l1_total * 100, 1) if l1_total > 0 else 0,
+                "layer1_pass_rate": round((l1_total - l1_disc) / l1_total * 100, 1) if l1_total > 0 else 0,
             },
             "tokens": tokens,
             "alerts": alerts,
+        }
+
+    async def get_phase2_stats(self, days: int = 7) -> Dict[str, any]:
+        """
+        Get Phase 2 multi-agent pipeline statistics from Redis counters.
+
+        Returns routing counts and per-stage token breakdown.
+        """
+        summary = await self.get_summary_stats(days)
+
+        # Routing counts
+        full_count = summary.get("phase2_full_analysis", 0)
+        lw_count = summary.get("phase2_lightweight", 0)
+        critical_count = summary.get("phase2_critical_event", 0)
+        error_count = summary.get("phase2_scoring_error", 0)
+        total_count = full_count + lw_count
+
+        # Token breakdown per stage
+        scoring_in = summary.get("layer2_scoring_input_tokens", 0)
+        scoring_out = summary.get("layer2_scoring_output_tokens", 0)
+        ma_in = summary.get("deep_multi_agent_input_tokens", 0)
+        ma_out = summary.get("deep_multi_agent_output_tokens", 0)
+        lw_in = summary.get("lightweight_input_tokens", 0)
+        lw_out = summary.get("lightweight_output_tokens", 0)
+
+        # Cost estimates (gpt-4o-mini for scoring/lightweight, gpt-4o for multi-agent)
+        mini_in_rate = 0.15 / 1_000_000
+        mini_out_rate = 0.60 / 1_000_000
+        full_in_rate = 2.50 / 1_000_000
+        full_out_rate = 10.0 / 1_000_000
+
+        scoring_cost = (scoring_in * mini_in_rate) + (scoring_out * mini_out_rate)
+        ma_cost = (ma_in * full_in_rate) + (ma_out * full_out_rate)
+        lw_cost = (lw_in * mini_in_rate) + (lw_out * mini_out_rate)
+
+        def _token_block(inp, out, cost):
+            return {
+                "input_tokens": inp,
+                "output_tokens": out,
+                "total_tokens": inp + out,
+                "estimated_cost_usd": round(cost, 4),
+            }
+
+        return {
+            "routing": {
+                "full_analysis": full_count,
+                "lightweight": lw_count,
+                "critical_events": critical_count,
+                "scoring_errors": error_count,
+                "total": total_count,
+                "full_analysis_pct": round(
+                    full_count / total_count * 100, 1
+                ) if total_count > 0 else 0,
+            },
+            "tokens": {
+                "scoring": _token_block(scoring_in, scoring_out, scoring_cost),
+                "multi_agent": _token_block(ma_in, ma_out, ma_cost),
+                "lightweight": _token_block(lw_in, lw_out, lw_cost),
+                "total": _token_block(
+                    scoring_in + ma_in + lw_in,
+                    scoring_out + ma_out + lw_out,
+                    scoring_cost + ma_cost + lw_cost,
+                ),
+            },
         }
 
     async def check_thresholds(self) -> List[Dict[str, str]]:

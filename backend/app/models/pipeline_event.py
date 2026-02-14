@@ -70,6 +70,12 @@ class PipelineEvent(Base):
         comment="Error message if status is error",
     )
 
+    cache_metadata: Mapped[Optional[dict]] = mapped_column(
+        JSONB,
+        nullable=True,
+        comment="Prompt cache hit rate and token statistics",
+    )
+
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         default=lambda: datetime.now(timezone.utc),

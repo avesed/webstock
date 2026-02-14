@@ -9,7 +9,7 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from enum import Enum
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import urlparse
 
 import httpx
@@ -46,6 +46,59 @@ BLOCKED_DOMAINS = [
 ]
 
 
+def detect_language(text: str) -> str:
+    """
+    Simple language detection based on character ranges.
+
+    Args:
+        text: Text to analyze
+
+    Returns:
+        Language code (en, zh, etc.)
+    """
+    if not text:
+        return "en"
+
+    # Count Chinese characters
+    chinese_chars = len(re.findall(r"[\u4e00-\u9fff]", text))
+    total_chars = len(text)
+
+    if total_chars > 0 and chinese_chars / total_chars > 0.1:
+        return "zh"
+
+    return "en"
+
+
+def calculate_word_count(text: str, language: str) -> int:
+    """
+    Calculate word count aware of CJK languages.
+
+    For Chinese/Japanese/Korean: counts characters (excluding punctuation)
+    For other languages: counts words (split by whitespace)
+
+    Args:
+        text: Text to analyze
+        language: Language code (zh, ja, ko, en, etc.)
+
+    Returns:
+        Word/character count
+    """
+    if not text:
+        return 0
+
+    # For CJK languages, count characters instead of words
+    if language in ("zh", "ja", "ko"):
+        # Count CJK unified ideographs (main Chinese/Japanese/Korean characters)
+        # U+4E00-U+9FFF: CJK Unified Ideographs
+        # U+3400-U+4DBF: CJK Extension A
+        # U+F900-U+FAFF: CJK Compatibility Ideographs
+        cjk_chars = re.findall(r"[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]", text)
+        return len(cjk_chars)
+    else:
+        # For non-CJK languages, use word count (split by whitespace)
+        return len(text.split())
+
+
 class ContentSource(str, Enum):
     """Content source providers."""
 
@@ -64,6 +117,7 @@ class FetchResult:
     authors: Optional[List[str]] = None
     keywords: Optional[List[str]] = None
     top_image: Optional[str] = None
+    images: Optional[List[Dict[str, str]]] = None  # [{"url": ..., "base64": ..., "mime": ...}]
     language: Optional[str] = None
     publish_date: Optional[datetime] = None
     is_partial: bool = False  # True if content < MIN_CONTENT_LENGTH
@@ -138,14 +192,15 @@ class TrafilaturaProvider(ContentProvider):
 
         try:
             import trafilatura
+            from app.utils.image_extraction import extract_image_urls
 
             loop = asyncio.get_running_loop()
 
-            def _fetch_and_extract() -> Optional[str]:
-                """Download page and extract content in a worker thread."""
+            def _fetch_and_extract() -> tuple:
+                """Download page and extract content + image URLs in a worker thread."""
                 downloaded = trafilatura.fetch_url(url)
                 if downloaded is None:
-                    return None
+                    return None, []
 
                 result_json = trafilatura.extract(
                     downloaded,
@@ -155,12 +210,17 @@ class TrafilaturaProvider(ContentProvider):
                     favor_recall=True,
                     with_metadata=True,
                 )
-                return result_json
 
-            result_json = await asyncio.wait_for(
+                # Extract image URLs from raw HTML before discarding it
+                image_urls = extract_image_urls(downloaded, url, max_images=5)
+
+                return result_json, image_urls
+
+            result = await asyncio.wait_for(
                 loop.run_in_executor(None, _fetch_and_extract),
                 timeout=FETCH_TIMEOUT + 5,
             )
+            result_json, image_urls = result
 
             if result_json is None:
                 elapsed = time.monotonic() - start_time
@@ -189,7 +249,12 @@ class TrafilaturaProvider(ContentProvider):
                 )
 
             full_text = (extracted.get("text") or "").strip()
-            word_count = len(full_text.split())
+
+            # Always detect language using our own method (trafilatura often misdetects Chinese)
+            detected_language = detect_language(full_text) if full_text else (language or "en")
+
+            # Calculate word count (CJK-aware)
+            word_count = calculate_word_count(full_text, detected_language)
 
             # Determine if content is partial
             is_partial = len(full_text) < MIN_CONTENT_LENGTH
@@ -224,14 +289,18 @@ class TrafilaturaProvider(ContentProvider):
 
             # Extract other metadata
             top_image = extracted.get("image")
-            detected_language = extracted.get("language") or language
             hostname = extracted.get("hostname")
             sitename = extracted.get("sitename")
 
+            # Download images as base64 for multimodal LLM processing
+            downloaded_images = await self._download_images_as_base64(image_urls)
+
             elapsed = time.monotonic() - start_time
             logger.info(
-                "Content fetch succeeded: url=%s, words=%d, chars=%d, partial=%s, elapsed=%.2fs",
-                url[:80], word_count, len(full_text), is_partial, elapsed,
+                "Content fetch succeeded: url=%s, words=%d, chars=%d, partial=%s, "
+                "images=%d/%d, elapsed=%.2fs",
+                url[:80], word_count, len(full_text), is_partial,
+                len(downloaded_images), len(image_urls), elapsed,
             )
 
             return FetchResult(
@@ -240,6 +309,7 @@ class TrafilaturaProvider(ContentProvider):
                 authors=authors,
                 keywords=keywords,
                 top_image=top_image if top_image else None,
+                images=downloaded_images if downloaded_images else None,
                 language=detected_language,
                 publish_date=publish_date,
                 is_partial=is_partial,
@@ -266,6 +336,127 @@ class TrafilaturaProvider(ContentProvider):
                 error=str(e)[:500],
                 source=ContentSource.TRAFILATURA,
             )
+
+
+    # Maximum total size of base64 images to store (5 MB)
+    _MAX_IMAGES_TOTAL_BYTES = 5 * 1024 * 1024
+    # Maximum size per image (2 MB)
+    _MAX_IMAGE_BYTES = 2 * 1024 * 1024
+    # Download timeout per image
+    _IMAGE_TIMEOUT = 10
+
+    @staticmethod
+    def _reencode_image(
+        raw_bytes: bytes, mime: str,
+    ) -> Tuple[Optional[bytes], str]:
+        """Re-encode image via Pillow to normalize JPEG quirks.
+
+        Go-based LLM servers (e.g. vLLM/Gin backends) use Go's standard
+        image/jpeg decoder which doesn't support all JPEG subsampling modes
+        (luma/chroma ratios like 4:1:1). Re-encoding through Pillow (libjpeg)
+        produces universally compatible output.
+
+        Returns (re-encoded bytes, mime) or (None, mime) on failure.
+        """
+        try:
+            from io import BytesIO
+            from PIL import Image
+
+            img = Image.open(BytesIO(raw_bytes))
+
+            # Convert palette/RGBA to RGB for JPEG output
+            if img.mode in ("P", "RGBA", "LA"):
+                img = img.convert("RGB")
+
+            buf = BytesIO()
+            img.save(buf, format="JPEG", quality=85, subsampling="4:2:0")
+            return buf.getvalue(), "image/jpeg"
+        except Exception as e:
+            logger.debug("Image re-encode failed, skipping: %s", e)
+            return None, mime
+
+    async def _download_images_as_base64(
+        self, image_urls: List[str],
+    ) -> List[Dict[str, str]]:
+        """Download images and encode as base64 for multimodal LLM.
+
+        Downloads concurrently with size limits. Skips images that are too
+        large, unreachable, or not a recognized image MIME type.
+
+        Returns:
+            List of {"url": ..., "base64": ..., "mime": ...} dicts.
+        """
+        if not image_urls:
+            return []
+
+        import base64
+
+        results: List[Dict[str, str]] = []
+        total_bytes = 0
+
+        async with httpx.AsyncClient(
+            timeout=self._IMAGE_TIMEOUT,
+            follow_redirects=True,
+        ) as client:
+            for img_url in image_urls:
+                if total_bytes >= self._MAX_IMAGES_TOTAL_BYTES:
+                    logger.debug("Image download budget exhausted, skipping remaining")
+                    break
+                try:
+                    resp = await client.get(img_url)
+                    resp.raise_for_status()
+
+                    content_type = resp.headers.get("content-type", "")
+                    # Determine MIME type
+                    if "jpeg" in content_type or "jpg" in content_type:
+                        mime = "image/jpeg"
+                    elif "png" in content_type:
+                        mime = "image/png"
+                    elif "webp" in content_type:
+                        mime = "image/webp"
+                    elif "gif" in content_type:
+                        mime = "image/gif"
+                    elif "svg" in content_type:
+                        continue  # SVGs rarely useful for vision LLM
+                    else:
+                        # Try to infer from URL extension
+                        lower = img_url.lower()
+                        if ".jpg" in lower or ".jpeg" in lower:
+                            mime = "image/jpeg"
+                        elif ".png" in lower:
+                            mime = "image/png"
+                        elif ".webp" in lower:
+                            mime = "image/webp"
+                        else:
+                            continue  # Unknown type, skip
+
+                    img_bytes = resp.content
+                    if len(img_bytes) > self._MAX_IMAGE_BYTES:
+                        logger.debug(
+                            "Image too large (%d bytes), skipping: %s",
+                            len(img_bytes), img_url[:80],
+                        )
+                        continue
+
+                    # Re-encode via Pillow to normalize JPEG subsampling
+                    # and other features that Go-based LLM servers can't decode
+                    img_bytes, mime = self._reencode_image(img_bytes, mime)
+                    if not img_bytes:
+                        continue
+
+                    total_bytes += len(img_bytes)
+                    b64 = base64.b64encode(img_bytes).decode("ascii")
+
+                    results.append({
+                        "url": img_url,
+                        "base64": b64,
+                        "mime": mime,
+                    })
+                except Exception as e:
+                    logger.debug("Failed to download image %s: %s", img_url[:80], e)
+                    continue
+
+        return results
 
 
 class PolygonProvider(ContentProvider):
@@ -339,16 +530,20 @@ class PolygonProvider(ContentProvider):
                     except Exception:
                         pass
 
+                # Detect language and calculate CJK-aware word count
+                detected_language = detect_language(description) if description else "en"
+                word_count = calculate_word_count(description, detected_language) if description else 0
+
                 return FetchResult(
                     success=True,
                     full_text=description if description else None,
                     authors=None,  # Polygon doesn't provide authors
                     keywords=article.get("keywords"),
                     top_image=article.get("image_url"),
-                    language="en",  # Polygon primarily English
+                    language=detected_language,
                     publish_date=publish_date,
                     is_partial=True,  # Polygon only provides summary
-                    word_count=len(description.split()) if description else 0,
+                    word_count=word_count,
                     source=ContentSource.POLYGON,
                     metadata={
                         "polygon_id": article.get("id"),
@@ -431,7 +626,9 @@ class TavilyProvider(ContentProvider):
                     source=ContentSource.TAVILY,
                 )
 
-            word_count = len(full_text.split())
+            # Detect language and calculate CJK-aware word count
+            detected_language = detect_language(full_text)
+            word_count = calculate_word_count(full_text, detected_language)
             is_partial = len(full_text) < MIN_CONTENT_LENGTH
 
             if len(full_text) > MAX_CONTENT_LENGTH:
@@ -439,8 +636,8 @@ class TavilyProvider(ContentProvider):
 
             elapsed = time.monotonic() - start_time
             logger.info(
-                "Tavily fetch succeeded: url=%s, words=%d, elapsed=%.2fs",
-                url[:80], word_count, elapsed,
+                "Tavily fetch succeeded: url=%s, words=%d, lang=%s, elapsed=%.2fs",
+                url[:80], word_count, detected_language, elapsed,
             )
 
             return FetchResult(
@@ -449,7 +646,7 @@ class TavilyProvider(ContentProvider):
                 authors=None,
                 keywords=None,
                 top_image=None,
-                language=None,  # Tavily doesn't detect language; caller will detect
+                language=detected_language,
                 publish_date=None,
                 is_partial=is_partial,
                 word_count=word_count,
@@ -545,7 +742,10 @@ class PlaywrightProvider(ContentProvider):
                 )
 
             full_text = (data.get("full_text") or "").strip()
-            word_count = data.get("word_count", len(full_text.split()) if full_text else 0)
+
+            # Always detect language and calculate CJK-aware word count (override playwright's detection)
+            detected_language = detect_language(full_text) if full_text else (data.get("language") or "en")
+            word_count = calculate_word_count(full_text, detected_language) if full_text else 0
             is_partial = len(full_text) < MIN_CONTENT_LENGTH
 
             # Apply MAX_CONTENT_LENGTH truncation for consistency with other providers
@@ -554,8 +754,8 @@ class PlaywrightProvider(ContentProvider):
 
             elapsed = time.monotonic() - start_time
             logger.info(
-                "Playwright fetch succeeded: url=%s, words=%d, elapsed=%.2fs",
-                url[:80], word_count, elapsed,
+                "Playwright fetch succeeded: url=%s, words=%d, lang=%s, elapsed=%.2fs",
+                url[:80], word_count, detected_language, elapsed,
             )
 
             return FetchResult(
@@ -564,7 +764,7 @@ class PlaywrightProvider(ContentProvider):
                 authors=data.get("authors"),
                 keywords=None,
                 top_image=None,
-                language=data.get("language"),
+                language=detected_language,
                 publish_date=None,
                 is_partial=is_partial,
                 word_count=word_count,
@@ -662,26 +862,12 @@ class FullContentService:
             return False
 
     def detect_language(self, text: str) -> str:
-        """
-        Simple language detection based on character ranges.
+        """Delegate to module-level detect_language function."""
+        return detect_language(text)
 
-        Args:
-            text: Text to analyze
-
-        Returns:
-            Language code (en, zh, etc.)
-        """
-        if not text:
-            return "en"
-
-        # Count Chinese characters
-        chinese_chars = len(re.findall(r"[\u4e00-\u9fff]", text))
-        total_chars = len(text)
-
-        if total_chars > 0 and chinese_chars / total_chars > 0.1:
-            return "zh"
-
-        return "en"
+    def calculate_word_count(self, text: str, language: str) -> int:
+        """Delegate to module-level calculate_word_count function."""
+        return calculate_word_count(text, language)
 
     async def fetch_content(
         self,

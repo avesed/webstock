@@ -169,6 +169,7 @@ class FetchFullContentSkill(BaseSkill):
             "authors": fetch_result.authors,
             "keywords": fetch_result.keywords,
             "top_image": fetch_result.top_image,
+            "images": fetch_result.images,  # List of {"url", "base64", "mime"} or None
             "language": fetch_result.language or language,
             "word_count": fetch_result.word_count,
             "is_partial": fetch_result.is_partial,

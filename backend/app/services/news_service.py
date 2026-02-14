@@ -187,7 +187,7 @@ async def extract_related_entities(
         Mapping of URL to list of RelatedEntity with scores
     """
     from app.core.llm import get_llm_gateway, ChatRequest, Message, Role
-    from app.services.two_phase_filter_service import get_news_llm_settings
+    from app.services.news_layer3_analysis_service import get_news_llm_settings
 
     # Use unified provider system for news filter LLM config
     try:

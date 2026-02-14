@@ -61,24 +61,29 @@ class AnthropicProvider(LLMProvider):
 
     def _convert_messages(
         self, messages: List[Message]
-    ) -> tuple[Optional[str], List[Dict[str, Any]]]:
+    ) -> tuple[Optional[Any], List[Dict[str, Any]]]:
         """Convert gateway messages to Anthropic format.
 
         Key differences from OpenAI:
         - System prompt is a separate `system` parameter
         - Tool results are user messages with tool_result content blocks
         - Content blocks use list format for tool interactions
+        - cache_control is passed through for prompt caching
 
         Returns:
-            Tuple of (system_prompt, anthropic_messages)
+            Tuple of (system_prompt_or_blocks, anthropic_messages)
+            system may be a plain string or a list of content blocks
+            (when cache_control is set)
         """
         system_prompt = None
+        system_cache_control = None
         anthropic_messages: List[Dict[str, Any]] = []
 
         for msg in messages:
             if msg.role == Role.SYSTEM:
                 # Anthropic uses a separate system parameter
                 system_prompt = msg.content
+                system_cache_control = getattr(msg, "cache_control", None)
                 continue
 
             if msg.role == Role.TOOL:
@@ -135,10 +140,32 @@ class AnthropicProvider(LLMProvider):
                 continue
 
             # Regular user/assistant message
-            anthropic_messages.append({
+            msg_dict: Dict[str, Any] = {
                 "role": msg.role.value,
                 "content": msg.content or "",
-            })
+            }
+            # Pass cache_control if set (for Anthropic prompt caching)
+            cache_ctl = getattr(msg, "cache_control", None)
+            if cache_ctl:
+                # Anthropic requires content blocks format for cache_control
+                msg_dict["content"] = [
+                    {
+                        "type": "text",
+                        "text": msg.content or "",
+                        "cache_control": cache_ctl,
+                    }
+                ]
+            anthropic_messages.append(msg_dict)
+
+        # Convert system to content blocks if cache_control is set
+        if system_prompt and system_cache_control:
+            system_prompt = [
+                {
+                    "type": "text",
+                    "text": system_prompt,
+                    "cache_control": system_cache_control,
+                }
+            ]
 
         return system_prompt, anthropic_messages
 

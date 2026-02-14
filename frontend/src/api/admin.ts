@@ -16,6 +16,7 @@ import type {
   LlmProviderCreate,
   LlmProviderUpdate,
   ModelAssignmentsConfig,
+  Phase2Config,
   RssFeed,
   RssFeedCreate,
   RssFeedUpdate,
@@ -45,6 +46,7 @@ interface BackendSystemConfig {
     clarificationConfidenceThreshold: number
   }
   modelAssignments?: ModelAssignmentsConfig | null
+  phase2?: Phase2Config | null
 }
 
 // Transform backend format to frontend format (merge langgraph into llm)
@@ -66,6 +68,7 @@ function transformConfigFromBackend(backend: BackendSystemConfig): SystemConfig 
     news: backend.news,
     features: backend.features,
     ...(backend.modelAssignments ? { modelAssignments: backend.modelAssignments } : {}),
+    ...(backend.phase2 ? { phase2: backend.phase2 } : {}),
   }
 }
 
@@ -92,6 +95,7 @@ function transformConfigToBackend(frontend: SystemConfig): BackendSystemConfig {
       clarificationConfidenceThreshold: frontend.llm.clarificationConfidenceThreshold,
     },
     modelAssignments: frontend.modelAssignments ?? null,
+    phase2: frontend.phase2 ?? null,
   }
 }
 
@@ -316,6 +320,22 @@ export const adminApi = {
     return response.data
   },
 
+  // Layer 1.5 content fetch & cleaning stats
+  getLayer15Stats: async (days = 7): Promise<Layer15Stats> => {
+    const response = await apiClient.get<Layer15Stats>('/admin/news/layer15-stats', {
+      params: { days },
+    })
+    return response.data
+  },
+
+  // News pipeline multi-agent analysis stats
+  getNewsPipelineStats: async (days = 7): Promise<NewsPipelineStats> => {
+    const response = await apiClient.get<NewsPipelineStats>('/admin/news/news-pipeline-stats', {
+      params: { days },
+    })
+    return response.data
+  },
+
   // Source quality stats
   getSourceStats: async (days = 7): Promise<SourceStats> => {
     const response = await apiClient.get<SourceStats>('/admin/news/source-stats', {
@@ -389,11 +409,12 @@ export interface FilterStats {
       success: number
       error: number
     }
-    voting?: {
-      unanimousSkip: number
-      majoritySkip: number
-      majorityPass: number
-      unanimousPass: number
+    layer1Scoring?: {
+      discard: number
+      lightweight: number
+      fullAnalysis: number
+      criticalEvent: number
+      total: number
     }
   }
   rates: {
@@ -403,14 +424,17 @@ export interface FilterStats {
     deepDeleteRate: number
     filterErrorRate: number
     embeddingErrorRate: number
+    layer1DiscardRate?: number
+    layer1PassRate?: number
   }
   tokens: {
     initialFilter: TokenUsage
     deepFilter: TokenUsage
     total: TokenUsage
     days: number
-    initialStrict?: TokenUsage
-    initialPermissive?: TokenUsage
+    layer1Macro?: TokenUsage
+    layer1Market?: TokenUsage
+    layer1Signal?: TokenUsage
   }
   alerts: FilterAlert[]
 }
@@ -528,4 +552,100 @@ export interface SourceStats {
   periodDays: number
   sources: SourceStatsItem[]
   totalSources: number
+}
+
+// Layer 1.5 content fetch & cleaning types
+export interface Layer15FetchStats {
+  total: number
+  success: number
+  errors: number
+  avgMs: number | null
+  p50Ms: number | null
+  p95Ms: number | null
+  avgImagesFound: number
+  avgImagesDownloaded: number
+  articlesWithImages: number
+}
+
+export interface Layer15ProviderDistribution {
+  provider: string
+  count: number
+}
+
+export interface Layer15CleaningStats {
+  total: number
+  success: number
+  errors: number
+  avgMs: number | null
+  p50Ms: number | null
+  p95Ms: number | null
+  avgRetentionRate: number | null
+  articlesWithVisualData: number
+  avgImageCount: number
+  avgInsightsLength: number
+}
+
+export interface Layer15Stats {
+  periodDays: number
+  fetch: Layer15FetchStats
+  providerDistribution: Layer15ProviderDistribution[]
+  cleaning: Layer15CleaningStats
+}
+
+// News pipeline multi-agent analysis types
+export interface NewsPipelineRoutingStats {
+  total: number
+  fullAnalysis: number
+  lightweight: number
+  criticalEvents: number
+  scoringErrors: number
+}
+
+export interface NewsPipelineTokenStage {
+  inputTokens: number
+  outputTokens: number
+  totalTokens: number
+  estimatedCostUsd: number
+}
+
+export interface NewsPipelineTokenStats {
+  scoring: NewsPipelineTokenStage
+  multiAgent: NewsPipelineTokenStage
+  lightweight: NewsPipelineTokenStage
+  total: NewsPipelineTokenStage
+}
+
+export interface ScoreDistributionBucket {
+  bucket: string
+  count: number
+  fullAnalysis: number
+  lightweight: number
+  critical: number
+}
+
+export interface NewsPipelineCacheStats {
+  total: number
+  avgCacheHitRate: number | null
+  cacheHits: number
+  totalCachedTokens: number
+  totalPromptTokens: number
+}
+
+export interface NewsPipelineNodeLatency {
+  node: string
+  count: number
+  success: number
+  errors: number
+  avgMs: number | null
+  p50Ms: number | null
+  p95Ms: number | null
+}
+
+export interface NewsPipelineStats {
+  periodDays: number
+  routing: NewsPipelineRoutingStats
+  tokens: NewsPipelineTokenStats
+  scoreDistribution: ScoreDistributionBucket[]
+  cacheStats: NewsPipelineCacheStats
+  nodeLatency: NewsPipelineNodeLatency[]
 }

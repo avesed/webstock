@@ -170,14 +170,16 @@ def all_agents_failed(state: AnalysisState) -> bool:
 
 
 class NewsProcessingState(TypedDict):
-    """State for the per-article news processing pipeline (Layer 2).
+    """State for the per-article news processing pipeline (Layer 3).
 
-    Content is pre-fetched by Layer 1.5 (batch_fetch_content) and saved
-    to file storage. This state tracks file reading, LLM filtering,
-    embedding, and final DB update for a single article.
+    Content is pre-fetched by Layer 2 (batch_fetch_content) and saved
+    to file storage. Scoring is done in Layer 1 (monitor tasks) and
+    content cleaning in Layer 2. This Layer 3 pipeline reads the file,
+    routes by processing_path, runs analysis or lightweight extraction,
+    embeds, and updates the DB.
     """
 
-    # Input parameters (set by caller / Layer 1.5)
+    # Input parameters (set by caller / Celery task args)
     news_id: str
     url: str
     market: str
@@ -185,9 +187,13 @@ class NewsProcessingState(TypedDict):
     title: str
     summary: str
     published_at: Optional[str]  # ISO 8601
-    use_two_phase: bool
     source: Optional[str]  # News source name (e.g. 'reuters', 'eastmoney')
     file_path: Optional[str]  # Path to pre-fetched content JSON file
+
+    # Scoring results (from Layer 1 scoring, passed via Celery task args)
+    content_score: Optional[int]          # 0-300 content value score (from Layer 1, 3 agents x 0-100)
+    processing_path: Optional[str]        # 'full_analysis' or 'lightweight' (from Layer 1)
+    score_details: Optional[Dict[str, Any]]  # Dimension scores, reasoning, critical flag (from Layer 1)
 
     # Content read results (populated by read_file_node)
     full_text: Optional[str]
@@ -196,6 +202,10 @@ class NewsProcessingState(TypedDict):
     authors: Optional[List[str]]
     keywords: Optional[List[str]]
 
+    # Image insights (read from JSON file, pre-extracted in Layer 2)
+    image_insights: Optional[str]         # Multimodal LLM insights from images
+    has_visual_data: bool                 # Whether article contains valuable visuals
+
     # Filter results
     filter_decision: str  # 'keep', 'delete', 'pending', 'skip'
     entities: Optional[List[Dict[str, Any]]]
@@ -203,6 +213,8 @@ class NewsProcessingState(TypedDict):
     event_tags: Optional[List[str]]
     sentiment_tag: Optional[str]
     investment_summary: Optional[str]
+    detailed_summary: Optional[str]   # Complete summary preserving all key details
+    analysis_report: Optional[str]    # Markdown-formatted professional analysis report
 
     # Embedding results
     chunks_total: int
@@ -211,6 +223,9 @@ class NewsProcessingState(TypedDict):
     # Final status
     final_status: str  # 'embedded', 'deleted', 'failed', 'pending'
     error: Optional[str]
+
+    # Cache statistics
+    cache_metadata: Optional[Dict[str, Any]]  # Prompt cache hit/miss stats
 
     # Pipeline trace events (accumulated across nodes, flushed in update_db_node)
     trace_events: Annotated[List[Dict[str, Any]], add]
@@ -224,11 +239,19 @@ def create_news_processing_state(
     title: str = "",
     summary: str = "",
     published_at: Optional[str] = None,
-    use_two_phase: bool = False,
     source: str = "",
     file_path: Optional[str] = None,
+    content_score: Optional[int] = None,
+    processing_path: Optional[str] = None,
+    score_details: Optional[dict] = None,
 ) -> NewsProcessingState:
-    """Create initial state for the news processing pipeline."""
+    """Create initial state for the news processing pipeline.
+
+    Args:
+        content_score: 0-300 content score from Layer 1 scoring (3 agents x 0-100).
+        processing_path: 'full_analysis' or 'lightweight' from Layer 1 scoring.
+        score_details: Dimension scores, reasoning, critical flag from Layer 1.
+    """
     return NewsProcessingState(
         news_id=news_id,
         url=url,
@@ -237,23 +260,30 @@ def create_news_processing_state(
         title=title,
         summary=summary,
         published_at=published_at,
-        use_two_phase=use_two_phase,
         source=source,
         file_path=file_path,
+        content_score=content_score,
+        processing_path=processing_path,
+        score_details=score_details,
         full_text=None,
         word_count=0,
         language=None,
         authors=None,
         keywords=None,
+        image_insights=None,
+        has_visual_data=False,
         filter_decision="pending",
         entities=None,
         industry_tags=None,
         event_tags=None,
         sentiment_tag=None,
         investment_summary=None,
+        detailed_summary=None,
+        analysis_report=None,
         chunks_total=0,
         chunks_stored=0,
         final_status="pending",
         error=None,
+        cache_metadata=None,
         trace_events=[],
     )

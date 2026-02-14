@@ -57,13 +57,21 @@ class ToolResult:
 
 @dataclass
 class Message:
-    """Provider-agnostic chat message."""
+    """Provider-agnostic chat message.
+
+    content can be:
+      - str: Plain text message
+      - List[Dict]: Multimodal content parts, e.g.
+        [{"type": "text", "text": "..."}, {"type": "image_url", "image_url": {"url": "..."}}]
+    """
     role: Role
-    content: Optional[str] = None
+    content: Optional[Union[str, List[Dict[str, Any]]]] = None
     tool_calls: Optional[List[ToolCall]] = None
     # For tool result messages:
     tool_call_id: Optional[str] = None
     name: Optional[str] = None
+    # Prompt caching hint (provider-specific behavior):
+    cache_control: Optional[Dict[str, str]] = None
 
 
 # ---------------------------------------------------------------------------
@@ -76,6 +84,7 @@ class TokenUsage:
     prompt_tokens: int = 0
     completion_tokens: int = 0
     total_tokens: int = 0
+    cached_tokens: int = 0  # Prompt cache hit tokens (OpenAI)
 
 
 # ---------------------------------------------------------------------------
@@ -96,7 +105,7 @@ class ChatRequest:
     tools: Optional[List[ToolDefinition]] = None
     tool_choice: Optional[str] = None   # "auto", "none", "required"
     stream: bool = False
-    response_format: Optional[Dict[str, str]] = None  # {"type": "json_object"}
+    response_format: Optional[Dict[str, Any]] = None  # {"type": "json_object"} or {"type": "json_schema", ...}
     timeout: int = 120
     extra: Dict[str, Any] = field(default_factory=dict)
 

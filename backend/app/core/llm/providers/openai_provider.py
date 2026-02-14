@@ -80,9 +80,13 @@ class OpenAIProvider(LLMProvider):
     # ------------------------------------------------------------------
 
     def _convert_messages(self, messages: List[Message]) -> List[Dict[str, Any]]:
-        """Convert gateway Messages to OpenAI message format."""
+        """Convert gateway Messages to OpenAI message format.
+
+        Handles multimodal content (list of content parts) and cache_control hints.
+        """
         result = []
         for msg in messages:
+            # Content can be str or List[Dict] (multimodal)
             d: Dict[str, Any] = {"role": msg.role.value, "content": msg.content}
 
             if msg.role == Role.ASSISTANT and msg.tool_calls:
@@ -105,6 +109,10 @@ class OpenAIProvider(LLMProvider):
                 d["tool_call_id"] = msg.tool_call_id
                 if msg.name:
                     d["name"] = msg.name
+
+            # Pass through cache_control hint for prompt caching
+            if msg.cache_control:
+                d["cache_control"] = msg.cache_control
 
             result.append(d)
         return result
@@ -240,11 +248,15 @@ class OpenAIProvider(LLMProvider):
                 if choice is None:
                     # Usage-only chunk at end of stream
                     if chunk.usage is not None:
+                        cached = 0
+                        if hasattr(chunk.usage, "prompt_tokens_details") and chunk.usage.prompt_tokens_details:
+                            cached = getattr(chunk.usage.prompt_tokens_details, "cached_tokens", 0) or 0
                         yield UsageInfo(
                             usage=TokenUsage(
                                 prompt_tokens=chunk.usage.prompt_tokens,
                                 completion_tokens=chunk.usage.completion_tokens,
                                 total_tokens=chunk.usage.total_tokens,
+                                cached_tokens=cached,
                             )
                         )
                     continue
@@ -285,11 +297,15 @@ class OpenAIProvider(LLMProvider):
 
                 # Usage from final chunk (some providers include it here)
                 if chunk.usage is not None:
+                    cached = 0
+                    if hasattr(chunk.usage, "prompt_tokens_details") and chunk.usage.prompt_tokens_details:
+                        cached = getattr(chunk.usage.prompt_tokens_details, "cached_tokens", 0) or 0
                     yield UsageInfo(
                         usage=TokenUsage(
                             prompt_tokens=chunk.usage.prompt_tokens,
                             completion_tokens=chunk.usage.completion_tokens,
                             total_tokens=chunk.usage.total_tokens,
+                            cached_tokens=cached,
                         )
                     )
         except Exception as e:

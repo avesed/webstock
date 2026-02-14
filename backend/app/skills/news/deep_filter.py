@@ -13,7 +13,7 @@ logger = logging.getLogger(__name__)
 class DeepFilterNewsSkill(BaseSkill):
     """Deep filter a single article using LLM-based full-text analysis.
 
-    Wraps ``TwoPhaseFilterService.deep_filter_article`` which performs
+    Wraps ``NewsLayer3AnalysisService.deep_filter_article`` which performs
     detailed analysis on the full article text, extracting entities, tags,
     sentiment, and an investment summary.  Makes a final KEEP / DELETE
     decision.
@@ -84,9 +84,9 @@ class DeepFilterNewsSkill(BaseSkill):
         if not url:
             return SkillResult(success=False, error="url parameter is required")
 
-        from app.services.two_phase_filter_service import get_two_phase_filter_service
+        from app.services.news_layer3_analysis_service import get_news_layer3_analysis_service
 
-        service = get_two_phase_filter_service()
+        service = get_news_layer3_analysis_service()
 
         try:
             result = await service.deep_filter_article(

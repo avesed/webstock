@@ -328,10 +328,25 @@ export interface NewsArticle {
   sentiment?: NewsSentiment
   sentimentScore?: number
   sentimentTag?: 'bullish' | 'bearish' | 'neutral'
-  aiAnalysis?: string
+  investmentSummary?: string  // 1句话概况，卡片预览
+  detailedSummary?: string    // 完整细节总结，"阅读更多"展示
+  aiAnalysis?: string         // Markdown分析报告，"分析"展示
   relatedEntities?: NewsRelatedEntity[]
   industryTags?: string[]
   eventTags?: string[]
+  contentScore?: number
+  processingPath?: string
+  scoreDetails?: {
+    dimensionScores?: {
+      macro?: number
+      market?: number
+      signal?: number
+    }
+    reasoning?: string
+    isCriticalEvent?: boolean
+  }
+  contentStatus?: string
+  filterStatus?: string
   createdAt: string
 }
 
@@ -625,10 +640,33 @@ export interface SystemConfig {
     enableNewsAnalysis: boolean
     enableStockAnalysis: boolean
     requireRegistrationApproval: boolean
-    useTwoPhaseFilter: boolean
+    enableLlmPipeline: boolean
     enableMcpExtraction: boolean
   }
   modelAssignments?: ModelAssignmentsConfig
+  phase2?: Phase2Config
+}
+
+// Phase 2 multi-agent pipeline types
+export interface Phase2ModelAssignment {
+  providerId: string | null
+  model: string
+}
+
+export interface Phase2Config {
+  enabled: boolean
+  scoreThreshold: number
+  discardThreshold: number
+  fullAnalysisThreshold: number
+  layer1Scoring: Phase2ModelAssignment
+  layer15Cleaning: Phase2ModelAssignment
+  layer2Scoring: Phase2ModelAssignment
+  layer2Analysis: Phase2ModelAssignment
+  layer2Lightweight: Phase2ModelAssignment
+  highValueSources: string[]
+  highValuePct: number
+  cacheEnabled: boolean
+  cacheTtlMinutes: number
 }
 
 // RSS Feed types

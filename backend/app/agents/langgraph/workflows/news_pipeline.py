@@ -1,19 +1,24 @@
-"""LangGraph workflow for per-article news processing pipeline.
+"""LangGraph workflow for per-article news processing pipeline (Layer 3).
 
-Content is pre-fetched by Layer 1.5 (batch_fetch_content) and saved to file storage.
-This Layer 2 pipeline reads the file, filters, and embeds the article.
+Content is pre-fetched by Layer 2 (batch_fetch_content) and saved to file storage.
+Scoring is done in Layer 1 (monitor tasks) and content cleaning in Layer 2.
+This Layer 3 pipeline reads the file, routes by processing_path, runs analysis
+or lightweight extraction, embeds, and updates the DB.
 
 Workflow graph:
-    START -> read_file -> route_filter_mode
-                           |-- two_phase: deep_filter -> route_decision
-                           +-- legacy: single_filter -> route_decision
-                                                         |-- keep: embed -> update_db -> END
-                                                         +-- delete: mark_deleted -> update_db -> END
+    START -> read_file -> route_by_processing_path
+                           |-- full_analysis: multi_agent_analysis -> route_decision
+                           |-- lightweight:   lightweight_filter   -> route_decision
+                           +-- end:           update_db (skip on read failure)
+                                               route_decision:
+                                                 |-- keep:   embed -> update_db -> END
+                                                 +-- delete: mark_deleted -> update_db -> END
 """
 
 import logging
 import time
 import uuid
+from typing import Optional
 
 from langgraph.graph import END, StateGraph
 
@@ -30,9 +35,9 @@ logger = logging.getLogger(__name__)
 async def read_file_node(state: NewsProcessingState) -> dict:
     """Read article content from file storage.
 
-    Layer 1.5 (batch_fetch_content) has already fetched the content and saved
-    it to a JSON file. This node reads that file and populates the state with
-    the full text and metadata for downstream LLM processing.
+    Layer 2 (batch_fetch_content) has already fetched the content, cleaned it,
+    and saved it to a JSON file. This node reads that file and populates the
+    state with the full text and metadata for downstream LLM processing.
     """
     from app.services.pipeline_trace_service import PipelineTraceService
 
@@ -44,9 +49,9 @@ async def read_file_node(state: NewsProcessingState) -> dict:
         elapsed = (time.monotonic() - t0) * 1000
         return {
             "final_status": "failed",
-            "error": "No file_path provided — content not fetched by Layer 1.5",
+            "error": "No file_path provided — content not fetched by Layer 2",
             "trace_events": [PipelineTraceService.make_event(
-                news_id=state["news_id"], layer="2", node="read_file",
+                news_id=state["news_id"], layer="3", node="read_file",
                 status="error", duration_ms=elapsed,
                 error="No file_path provided",
             )],
@@ -67,182 +72,212 @@ async def read_file_node(state: NewsProcessingState) -> dict:
             "final_status": "failed",
             "error": f"Cannot read content from {file_path}",
             "trace_events": [PipelineTraceService.make_event(
-                news_id=state["news_id"], layer="2", node="read_file",
+                news_id=state["news_id"], layer="3", node="read_file",
                 status="error", duration_ms=elapsed,
                 error=f"Cannot read content from {file_path}",
             )],
         }
 
+    # Prefer cleaned_text (from Layer 2 content cleaning) over raw full_text
+    full_text = content_data.get("cleaned_text") or content_data.get("full_text", "")
+
+    # Load image insights (pre-extracted in Layer 2 content cleaning)
+    image_insights = content_data.get("image_insights") or None
+    has_visual_data = content_data.get("has_visual_data", False)
+
     logger.info(
-        "read_file_node: loaded %d chars from %s for news_id=%s",
-        len(content_data["full_text"]), file_path, state["news_id"],
+        "read_file_node: loaded %d chars from %s for news_id=%s "
+        "(has_visual_data=%s, image_insights=%d chars)",
+        len(full_text), file_path, state["news_id"],
+        has_visual_data, len(image_insights) if image_insights else 0,
     )
 
     elapsed = (time.monotonic() - t0) * 1000
     return {
-        "full_text": content_data["full_text"],
+        "full_text": full_text,
         "word_count": content_data.get("word_count", 0),
         "language": content_data.get("language"),
         "authors": content_data.get("authors"),
         "keywords": content_data.get("keywords"),
+        "image_insights": image_insights,
+        "has_visual_data": has_visual_data,
         "trace_events": [PipelineTraceService.make_event(
-            news_id=state["news_id"], layer="2", node="read_file",
+            news_id=state["news_id"], layer="3", node="read_file",
             status="success", duration_ms=elapsed,
-            metadata={"word_count": content_data.get("word_count", 0), "language": content_data.get("language")},
+            metadata={
+                "word_count": content_data.get("word_count", 0),
+                "language": content_data.get("language"),
+                "has_visual_data": has_visual_data,
+                "has_image_insights": bool(image_insights),
+            },
         )],
     }
 
 
-def route_filter_mode(state: NewsProcessingState) -> str:
-    """Route to filter mode based on state.
+def route_by_processing_path(state: NewsProcessingState) -> str:
+    """Route based on processing_path set by Layer 1 scoring.
+
+    The processing_path is determined by Layer 1 scoring in the monitor tasks
+    and passed through via Celery task args. No LLM call needed.
 
     Returns:
-        "two_phase" -- use deep filter with entity extraction
-        "legacy"    -- use single-stage relevance filter
-        "end"       -- skip filtering (fetch failed)
+        "full_analysis" -- high-score articles for 5-agent deep analysis
+        "lightweight"   -- low-score articles for quick extraction
+        "end"           -- skip processing (read failed or no path set)
     """
     if state.get("final_status") == "failed":
         return "end"
-    if state.get("use_two_phase"):
-        return "two_phase"
-    return "legacy"
+    path = state.get("processing_path")
+    if path == "full_analysis":
+        return "full_analysis"
+    if path == "lightweight":
+        return "lightweight"
+    # Default: lightweight for unknown paths
+    return "lightweight"
 
 
-async def deep_filter_node(state: NewsProcessingState) -> dict:
-    """Run deep (phase 2) LLM filter on full article text."""
+async def multi_agent_analysis_node(state: NewsProcessingState) -> dict:
+    """Run 5-agent parallel deep analysis (full_analysis path)."""
     from worker.db_utils import get_task_session
-    from app.skills.registry import get_skill_registry
-    from app.services.filter_stats_service import get_filter_stats_service
+    from app.services.multi_agent_filter_service import get_multi_agent_filter_service
     from app.services.pipeline_trace_service import PipelineTraceService
 
     t0 = time.monotonic()
-
-    registry = get_skill_registry()
-    skill = registry.get("deep_filter_news")
-    if skill is None:
-        logger.warning("deep_filter_news skill not found in registry")
-        elapsed = (time.monotonic() - t0) * 1000
-        return {
-            "filter_decision": "keep",
-            "trace_events": [PipelineTraceService.make_event(
-                news_id=state["news_id"], layer="2", node="deep_filter",
-                status="error", duration_ms=elapsed,
-                error="skill not found",
-            )],
-        }
-
-    stats_service = get_filter_stats_service()
+    service = get_multi_agent_filter_service()
 
     full_text = state.get("full_text") or state.get("summary") or ""
     title = state.get("title", "")
-    source = state.get("source", "")  # Passed from Layer 1.5 via Celery params
-    url = state["url"]
+    image_insights = state.get("image_insights") or ""
+    symbol = state.get("symbol", "")
 
-    # Execute deep filter skill (needs db for LLM config resolution)
-    async with get_task_session() as db:
-        result = await skill.safe_execute(
-            timeout=30.0,
-            title=title,
-            full_text=full_text,
-            source=source,
-            url=url,
-            db=db,
-        )
+    try:
+        async with get_task_session() as db:
+            result = await service.full_analysis(
+                db=db,
+                title=title,
+                cleaned_text=full_text,
+                image_insights=image_insights,
+                symbol=symbol,
+            )
 
-    if not result.success:
-        logger.warning(
-            "deep_filter_node failed for %s: %s", state["news_id"], result.error
-        )
         elapsed = (time.monotonic() - t0) * 1000
-        # On filter failure, default to keep (don't lose articles)
+        logger.info(
+            "multi_agent_analysis_node: news_id=%s, decision=%s, "
+            "entities=%d, cache_hit=%.1f%% (%.0fms)",
+            state["news_id"], result.decision,
+            len(result.entities),
+            result.cache_stats.get("cache_hit_rate", 0) * 100,
+            elapsed,
+        )
+
         return {
-            "filter_decision": "keep",
+            "filter_decision": result.decision,
+            "entities": result.entities,
+            "industry_tags": result.industry_tags,
+            "event_tags": result.event_tags,
+            "sentiment_tag": result.sentiment,
+            "investment_summary": result.investment_summary,
+            "detailed_summary": result.detailed_summary,
+            "analysis_report": result.analysis_report,
+            "cache_metadata": result.cache_stats,
             "trace_events": [PipelineTraceService.make_event(
-                news_id=state["news_id"], layer="2", node="deep_filter",
-                status="error", duration_ms=elapsed,
-                error=str(result.error)[:200] if result.error else "unknown error",
+                news_id=state["news_id"], layer="3", node="multi_agent_analysis",
+                status="success", duration_ms=elapsed,
+                metadata={
+                    "decision": result.decision,
+                    "entity_count": len(result.entities),
+                    "sentiment": result.sentiment,
+                    "cache_hit_rate": result.cache_stats.get("cache_hit_rate", 0),
+                    "detailed_summary_length": len(result.detailed_summary),
+                    "analysis_report_length": len(result.analysis_report),
+                },
+                cache_metadata=result.cache_stats,
             )],
         }
 
-    data = result.data
-    decision = data.get("decision", "keep")
-
-    logger.info(
-        "deep_filter_node: news_id=%s, decision=%s", state["news_id"], decision,
-    )
-
-    # Track stats
-    if decision == "delete":
-        await stats_service.increment("fine_delete")
-    else:
-        await stats_service.increment("fine_keep")
-
-    elapsed = (time.monotonic() - t0) * 1000
-    return {
-        "filter_decision": decision,
-        "entities": data.get("entities"),
-        "industry_tags": data.get("industry_tags"),
-        "event_tags": data.get("event_tags"),
-        "sentiment_tag": data.get("sentiment", "neutral"),
-        "investment_summary": data.get("investment_summary", ""),
-        "trace_events": [PipelineTraceService.make_event(
-            news_id=state["news_id"], layer="2", node="deep_filter",
-            status="success", duration_ms=elapsed,
-            metadata={"decision": decision, "entity_count": len(data.get("entities") or []), "sentiment_tag": data.get("sentiment", "neutral")},
-        )],
-    }
-
-
-async def single_filter_node(state: NewsProcessingState) -> dict:
-    """Run legacy single-stage LLM relevance filter."""
-    from worker.db_utils import get_task_session
-    from app.services.news_filter_service import get_news_filter_service
-    from app.services.two_phase_filter_service import get_news_llm_settings
-    from app.services.pipeline_trace_service import PipelineTraceService
-
-    t0 = time.monotonic()
-
-    async with get_task_session() as db:
-        llm_settings = await get_news_llm_settings(db)
-
-    filter_service = get_news_filter_service(model=llm_settings.model)
-
-    try:
-        should_keep = await filter_service.evaluate_relevance(
-            title=state.get("title", ""),
-            summary=state.get("summary", ""),
-            full_text=state.get("full_text"),
-            source="",  # Not critical for legacy filter
-            symbol=state.get("symbol"),
-            model=llm_settings.model,
-            system_api_key=llm_settings.api_key,
-            system_base_url=llm_settings.base_url,
-        )
     except Exception as e:
-        logger.warning("single_filter_node failed for %s: %s", state["news_id"], e)
         elapsed = (time.monotonic() - t0) * 1000
+        logger.error(
+            "multi_agent_analysis_node failed for %s: %s (%.0fms)",
+            state["news_id"], e, elapsed,
+        )
+        # Fail-open: keep article with empty metadata
         return {
             "filter_decision": "keep",
             "trace_events": [PipelineTraceService.make_event(
-                news_id=state["news_id"], layer="2", node="single_filter",
+                news_id=state["news_id"], layer="3", node="multi_agent_analysis",
                 status="error", duration_ms=elapsed,
                 error=str(e)[:200],
             )],
-        }  # Default to keep on error
+        }
 
-    decision = "keep" if should_keep else "delete"
-    logger.info(
-        "single_filter_node: news_id=%s, decision=%s", state["news_id"], decision,
-    )
-    elapsed = (time.monotonic() - t0) * 1000
-    return {
-        "filter_decision": decision,
-        "trace_events": [PipelineTraceService.make_event(
-            news_id=state["news_id"], layer="2", node="single_filter",
-            status="success", duration_ms=elapsed,
-            metadata={"decision": decision},
-        )],
-    }
+
+async def lightweight_filter_node(state: NewsProcessingState) -> dict:
+    """Quick entity/tag extraction for low-score articles (lightweight path)."""
+    from worker.db_utils import get_task_session
+    from app.services.lightweight_filter_service import get_lightweight_filter_service
+    from app.services.pipeline_trace_service import PipelineTraceService
+
+    t0 = time.monotonic()
+    service = get_lightweight_filter_service()
+
+    full_text = state.get("full_text") or state.get("summary") or ""
+    title = state.get("title", "")
+    url = state["url"]
+
+    try:
+        async with get_task_session() as db:
+            result = await service.process_article(
+                db=db,
+                title=title,
+                text=full_text,
+                url=url,
+            )
+
+        elapsed = (time.monotonic() - t0) * 1000
+        logger.info(
+            "lightweight_filter_node: news_id=%s, decision=%s, entities=%d (%.0fms)",
+            state["news_id"], result.decision, len(result.entities), elapsed,
+        )
+
+        lw_metadata: dict = {
+            "decision": result.decision,
+            "entity_count": len(result.entities),
+            "sentiment": result.sentiment,
+        }
+        if result.raw_response:
+            lw_metadata["raw_response"] = result.raw_response
+
+        return {
+            "filter_decision": result.decision,
+            "entities": result.entities,
+            "industry_tags": result.industry_tags,
+            "event_tags": result.event_tags,
+            "sentiment_tag": result.sentiment,
+            "investment_summary": result.investment_summary,
+            "detailed_summary": result.detailed_summary,
+            "analysis_report": result.analysis_report,
+            "trace_events": [PipelineTraceService.make_event(
+                news_id=state["news_id"], layer="3", node="lightweight_filter",
+                status="success", duration_ms=elapsed,
+                metadata=lw_metadata,
+            )],
+        }
+
+    except Exception as e:
+        elapsed = (time.monotonic() - t0) * 1000
+        logger.error(
+            "lightweight_filter_node failed for %s: %s (%.0fms)",
+            state["news_id"], e, elapsed,
+        )
+        return {
+            "filter_decision": "keep",
+            "trace_events": [PipelineTraceService.make_event(
+                news_id=state["news_id"], layer="3", node="lightweight_filter",
+                status="error", duration_ms=elapsed,
+                error=str(e)[:200],
+            )],
+        }
 
 
 def route_decision(state: NewsProcessingState) -> str:
@@ -276,7 +311,7 @@ async def embed_node(state: NewsProcessingState) -> dict:
             "final_status": "failed",
             "error": "embed_document skill not found in registry",
             "trace_events": [PipelineTraceService.make_event(
-                news_id=state["news_id"], layer="2", node="embed",
+                news_id=state["news_id"], layer="3", node="embed",
                 status="error", duration_ms=elapsed,
                 error="embed_document skill not found in registry",
             )],
@@ -284,14 +319,31 @@ async def embed_node(state: NewsProcessingState) -> dict:
     stats_service = get_filter_stats_service()
 
     # Build content for embedding
-    content_parts = []
-    if state.get("title"):
-        content_parts.append(state["title"])
-    if state.get("full_text"):
-        content_parts.append(state["full_text"])
-    elif state.get("summary"):
-        content_parts.append(state["summary"])
-    content = "\n\n".join(content_parts)
+    # Prefer detailed_summary (LLM-refined, higher signal-to-noise) over raw full_text
+    if state.get("detailed_summary"):
+        embed_strategy = "detailed_summary"
+        content_parts = []
+        if state.get("title"):
+            content_parts.append(state["title"])
+        if state.get("summary"):
+            content_parts.append(state["summary"])
+        content_parts.append(state["detailed_summary"])
+        content = "\n\n".join(content_parts)
+    else:
+        embed_strategy = "full_text_fallback"
+        content_parts = []
+        if state.get("title"):
+            content_parts.append(state["title"])
+        if state.get("full_text"):
+            content_parts.append(state["full_text"])
+        elif state.get("summary"):
+            content_parts.append(state["summary"])
+        content = "\n\n".join(content_parts)
+
+    logger.info(
+        "embed_node: news_id=%s, strategy=%s, content_length=%d",
+        state["news_id"], embed_strategy, len(content),
+    )
 
     if not content.strip():
         logger.warning("embed_node: no content to embed for news_id=%s", state["news_id"])
@@ -300,7 +352,7 @@ async def embed_node(state: NewsProcessingState) -> dict:
             "final_status": "failed",
             "error": "No content to embed",
             "trace_events": [PipelineTraceService.make_event(
-                news_id=state["news_id"], layer="2", node="embed",
+                news_id=state["news_id"], layer="3", node="embed",
                 status="error", duration_ms=elapsed,
                 error="No content to embed",
             )],
@@ -324,7 +376,7 @@ async def embed_node(state: NewsProcessingState) -> dict:
             "final_status": "failed",
             "error": result.error,
             "trace_events": [PipelineTraceService.make_event(
-                news_id=state["news_id"], layer="2", node="embed",
+                news_id=state["news_id"], layer="3", node="embed",
                 status="error", duration_ms=elapsed,
                 error=str(result.error)[:200] if result.error else "unknown error",
             )],
@@ -339,9 +391,13 @@ async def embed_node(state: NewsProcessingState) -> dict:
         "chunks_stored": data.get("chunks_stored", 0),
         "final_status": "embedded",
         "trace_events": [PipelineTraceService.make_event(
-            news_id=state["news_id"], layer="2", node="embed",
+            news_id=state["news_id"], layer="3", node="embed",
             status="success", duration_ms=elapsed,
-            metadata={"chunks_total": data.get("chunks_total", 0), "chunks_stored": data.get("chunks_stored", 0)},
+            metadata={
+                "chunks_total": data.get("chunks_total", 0),
+                "chunks_stored": data.get("chunks_stored", 0),
+                "embed_strategy": embed_strategy,
+            },
         )],
     }
 
@@ -367,7 +423,7 @@ async def mark_deleted_node(state: NewsProcessingState) -> dict:
         "final_status": "deleted",
         "file_path": None,
         "trace_events": [PipelineTraceService.make_event(
-            news_id=state["news_id"], layer="2", node="mark_deleted",
+            news_id=state["news_id"], layer="3", node="mark_deleted",
             status="success", duration_ms=elapsed,
             metadata={"file_path": file_path},
         )],
@@ -396,27 +452,39 @@ async def update_db_node(state: NewsProcessingState) -> dict:
             if final_status == "embedded":
                 news.content_status = ContentStatus.EMBEDDED.value
 
-                # Update deep filter metadata if available
+                # Scoring fields (from Layer 1, passed via Celery task args)
+                if state.get("content_score") is not None:
+                    news.content_score = state["content_score"]
+                if state.get("processing_path") is not None:
+                    news.processing_path = state["processing_path"]
+                if state.get("score_details") is not None:
+                    news.score_details = state["score_details"]
+                if state.get("image_insights") is not None:
+                    news.image_insights = state["image_insights"]
+                if "has_visual_data" in state:
+                    news.has_visual_data = state["has_visual_data"]
+
+                # Update filter metadata if available
                 if state.get("entities") is not None:
                     entities = state["entities"]
                     news.related_entities = entities if entities else None
                     if entities:
                         news.has_stock_entities = any(
-                            e["type"] == "stock" for e in entities
+                            e.get("type") == "stock" for e in entities
                         )
                         news.has_macro_entities = any(
-                            e["type"] == "macro" for e in entities
+                            e.get("type") == "macro" for e in entities
                         )
                         news.max_entity_score = max(
-                            (e["score"] for e in entities), default=None
+                            (e.get("score", 0.5) for e in entities), default=None
                         )
-                        stock_entities = [e for e in entities if e["type"] == "stock"]
+                        stock_entities = [e for e in entities if e.get("type") == "stock"]
                         if stock_entities:
-                            news.primary_entity = stock_entities[0]["entity"]
+                            news.primary_entity = stock_entities[0].get("entity", "")
                             news.primary_entity_type = "stock"
                         elif entities:
-                            news.primary_entity = entities[0]["entity"]
-                            news.primary_entity_type = entities[0]["type"]
+                            news.primary_entity = entities[0].get("entity", "")
+                            news.primary_entity_type = entities[0].get("type", "stock")
 
                 if state.get("industry_tags"):
                     news.industry_tags = state["industry_tags"]
@@ -427,14 +495,82 @@ async def update_db_node(state: NewsProcessingState) -> dict:
                 if state.get("investment_summary"):
                     news.investment_summary = state["investment_summary"]
 
-                if state.get("use_two_phase"):
-                    news.filter_status = FilterStatus.FINE_KEEP.value
+                # Save detailed_summary
+                if state.get("detailed_summary"):
+                    if hasattr(news, "detailed_summary"):
+                        expected_summary = state["detailed_summary"]
+                        news.detailed_summary = expected_summary
+                        await db.flush()  # Flush to detect ORM/constraint errors
+
+                        # Verify field was actually saved
+                        if news.detailed_summary is None:
+                            logger.error(
+                                "update_db_node: detailed_summary is NULL after save for news_id=%s "
+                                "(expected %d chars — possible ORM type mismatch or constraint violation)",
+                                news_id, len(expected_summary),
+                            )
+                        elif len(news.detailed_summary) != len(expected_summary):
+                            logger.error(
+                                "update_db_node: detailed_summary length mismatch for news_id=%s: "
+                                "expected %d chars, got %d chars (possible truncation)",
+                                news_id, len(expected_summary), len(news.detailed_summary),
+                            )
+                        else:
+                            logger.info(
+                                "update_db_node: saved detailed_summary for news_id=%s: %d chars",
+                                news_id, len(expected_summary),
+                            )
+                    else:
+                        logger.debug(
+                            "update_db_node: detailed_summary column not yet available "
+                            "(pending migration), skipping for news_id=%s", news_id,
+                        )
+
+                # Save analysis_report to existing ai_analysis column
+                if state.get("analysis_report"):
+                    expected_analysis = state["analysis_report"]
+                    news.ai_analysis = expected_analysis
+                    await db.flush()  # Flush to detect ORM/constraint errors
+
+                    # Verify field was actually saved
+                    if news.ai_analysis is None:
+                        logger.error(
+                            "update_db_node: ai_analysis is NULL after save for news_id=%s "
+                            "(expected %d chars — possible ORM type mismatch or constraint violation)",
+                            news_id, len(expected_analysis),
+                        )
+                    elif len(news.ai_analysis) != len(expected_analysis):
+                        logger.error(
+                            "update_db_node: ai_analysis length mismatch for news_id=%s: "
+                            "expected %d chars, got %d chars (possible truncation)",
+                            news_id, len(expected_analysis), len(news.ai_analysis),
+                        )
+                    else:
+                        logger.info(
+                            "update_db_node: saved ai_analysis for news_id=%s: %d chars",
+                            news_id, len(expected_analysis),
+                        )
+
+                # Always set filter_status for pipeline-processed articles
+                news.filter_status = FilterStatus.FINE_KEEP.value
 
             elif final_status == "deleted":
                 news.content_status = ContentStatus.DELETED.value
                 news.content_file_path = None
-                if state.get("use_two_phase"):
-                    news.filter_status = FilterStatus.FINE_DELETE.value
+                # Always set filter_status for pipeline-processed articles
+                news.filter_status = FilterStatus.FINE_DELETE.value
+
+                # Persist scoring metadata even for deleted articles
+                if state.get("content_score") is not None:
+                    news.content_score = state["content_score"]
+                if state.get("processing_path") is not None:
+                    news.processing_path = state["processing_path"]
+                if state.get("score_details") is not None:
+                    news.score_details = state["score_details"]
+                if state.get("image_insights") is not None:
+                    news.image_insights = state["image_insights"]
+                if "has_visual_data" in state:
+                    news.has_visual_data = state["has_visual_data"]
 
             elif final_status == "failed":
                 error = state.get("error", "")
@@ -442,10 +578,10 @@ async def update_db_node(state: NewsProcessingState) -> dict:
                     ContentStatus.FAILED.value,
                     ContentStatus.BLOCKED.value,
                 ):
-                    # Only update if not already set by Layer 1.5
+                    # Only update if not already set by Layer 2
                     if "embed" in error.lower():
                         news.content_status = ContentStatus.EMBEDDING_FAILED.value
-                    # else: keep whatever Layer 1.5 set
+                    # else: keep whatever Layer 2 set
 
             await db.commit()
             logger.info(
@@ -456,12 +592,29 @@ async def update_db_node(state: NewsProcessingState) -> dict:
             elapsed = (time.monotonic() - t0) * 1000
             try:
                 from app.services.pipeline_trace_service import PipelineTraceService
+
+                # Build trace metadata with content generation stats
+                trace_metadata = {
+                    "final_status": final_status,
+                    "content_status": news.content_status if news else None,
+                    "detailed_summary_length": len(state.get("detailed_summary") or ""),
+                    "analysis_report_length": len(state.get("analysis_report") or ""),
+                    "has_detailed_content": bool(state.get("detailed_summary")),
+                    "has_analysis_report": bool(state.get("analysis_report")),
+                }
+                # Trace enrichment with scoring metadata
+                if state.get("content_score") is not None:
+                    trace_metadata["content_score"] = state["content_score"]
+                if state.get("processing_path"):
+                    trace_metadata["processing_path"] = state["processing_path"]
+                if state.get("cache_metadata"):
+                    trace_metadata["cache_metadata"] = state["cache_metadata"]
+
                 all_events = list(state.get("trace_events", []))
                 all_events.append(PipelineTraceService.make_event(
-                    news_id=news_id, layer="2", node="update_db",
+                    news_id=news_id, layer="3", node="update_db",
                     status="success", duration_ms=elapsed,
-                    metadata={"final_status": final_status,
-                               "content_status": news.content_status if news else None},
+                    metadata=trace_metadata,
                 ))
                 await PipelineTraceService.record_events_batch(db, all_events)
                 await db.commit()
@@ -479,7 +632,7 @@ async def update_db_node(state: NewsProcessingState) -> dict:
             async with get_task_session() as trace_db:
                 all_events = list(state.get("trace_events", []))
                 all_events.append(PipelineTraceService.make_event(
-                    news_id=news_id, layer="2", node="update_db",
+                    news_id=news_id, layer="3", node="update_db",
                     status="error", duration_ms=elapsed, error=str(e)[:200],
                 ))
                 await PipelineTraceService.record_events_batch(trace_db, all_events)
@@ -496,13 +649,23 @@ async def update_db_node(state: NewsProcessingState) -> dict:
 
 
 def create_news_pipeline() -> StateGraph:
-    """Create the news processing pipeline workflow graph."""
+    """Create the news processing pipeline workflow graph.
+
+    Simplified graph (scoring done in Layer 1, cleaning in Layer 2):
+        START -> read_file -> route_by_processing_path
+          |-- "full_analysis" -> multi_agent_analysis -> route_decision
+          |-- "lightweight"   -> lightweight_filter   -> route_decision
+          +-- "end"           -> update_db (skip processing on read failure)
+                                  route_decision:
+                                    |-- "keep"   -> embed -> update_db -> END
+                                    +-- "delete" -> mark_deleted -> update_db -> END
+    """
     workflow = StateGraph(NewsProcessingState)
 
     # Add nodes
     workflow.add_node("read_file", read_file_node)
-    workflow.add_node("deep_filter", deep_filter_node)
-    workflow.add_node("single_filter", single_filter_node)
+    workflow.add_node("multi_agent_analysis", multi_agent_analysis_node)
+    workflow.add_node("lightweight_filter", lightweight_filter_node)
     workflow.add_node("embed", embed_node)
     workflow.add_node("mark_deleted", mark_deleted_node)
     workflow.add_node("update_db", update_db_node)
@@ -510,34 +673,28 @@ def create_news_pipeline() -> StateGraph:
     # START -> read_file
     workflow.add_edge("__start__", "read_file")
 
-    # read_file -> route by filter mode
+    # read_file -> route by processing_path
     workflow.add_conditional_edges(
         "read_file",
-        route_filter_mode,
+        route_by_processing_path,
         {
-            "two_phase": "deep_filter",
-            "legacy": "single_filter",
-            "end": "update_db",  # Skip filter if read failed
+            "full_analysis": "multi_agent_analysis",
+            "lightweight": "lightweight_filter",
+            "end": "update_db",
         },
     )
 
-    # deep_filter / single_filter -> route by decision
+    # Analysis nodes -> route by decision
     workflow.add_conditional_edges(
-        "deep_filter",
+        "multi_agent_analysis",
         route_decision,
-        {
-            "keep": "embed",
-            "delete": "mark_deleted",
-        },
+        {"keep": "embed", "delete": "mark_deleted"},
     )
 
     workflow.add_conditional_edges(
-        "single_filter",
+        "lightweight_filter",
         route_decision,
-        {
-            "keep": "embed",
-            "delete": "mark_deleted",
-        },
+        {"keep": "embed", "delete": "mark_deleted"},
     )
 
     # embed / mark_deleted -> update_db
@@ -570,11 +727,18 @@ async def run_news_pipeline(
     title: str = "",
     summary: str = "",
     published_at: str = None,
-    use_two_phase: bool = False,
     source: str = "",
     file_path: str = None,
+    content_score: Optional[int] = None,
+    processing_path: Optional[str] = None,
+    score_details: Optional[dict] = None,
 ) -> NewsProcessingState:
     """Run the news processing pipeline for a single article.
+
+    Args:
+        content_score: 0-300 content score from Layer 1 scoring (3 agents x 0-100).
+        processing_path: 'full_analysis' or 'lightweight' from Layer 1 scoring.
+        score_details: Dimension scores, reasoning, critical flag from Layer 1.
 
     Returns the final state dict.
     """
@@ -589,9 +753,11 @@ async def run_news_pipeline(
         title=title,
         summary=summary,
         published_at=published_at,
-        use_two_phase=use_two_phase,
         source=source,
         file_path=file_path,
+        content_score=content_score,
+        processing_path=processing_path,
+        score_details=score_details,
     )
 
     logger.info("Starting news pipeline for news_id=%s, url=%s", news_id, url[:80])

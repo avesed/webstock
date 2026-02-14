@@ -60,6 +60,11 @@ def _news_to_response(article: News) -> NewsResponse:
         related_entities=article.related_entities,
         industry_tags=article.industry_tags,
         event_tags=article.event_tags,
+        content_score=article.content_score,
+        processing_path=article.processing_path,
+        score_details=article.score_details,
+        content_status=article.content_status,
+        filter_status=article.filter_status,
         created_at=article.created_at,
     )
 
@@ -91,7 +96,15 @@ async def get_market_news(
     ),
     filter_status: Optional[str] = Query(
         None,
-        description="Filter by status (keep, useful, uncertain)",
+        description="Filter by status (keep, useful, uncertain, delete)",
+    ),
+    content_status: Optional[str] = Query(
+        None,
+        description="Filter by content status (embedded, fetched, failed, deleted, blocked, pending)",
+    ),
+    show_all: bool = Query(
+        False,
+        description="Show all articles including deleted/failed (admin view)",
     ),
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
@@ -103,13 +116,26 @@ async def get_market_news(
     Returns articles that have been fetched, filtered, and stored by the
     automatic news monitoring system. Unlike /feed and /trending which
     call external APIs in real-time, this endpoint reads from the local database.
+
+    Use show_all=true to include deleted/failed/blocked articles (for admin view).
     """
     from sqlalchemy import desc
 
-    # Base query: only show articles that have been processed (fetched/embedded)
-    query = select(News).where(
-        News.content_status.in_(["fetched", "embedded", "partial"]),
-    )
+    # Base query: filter by content status
+    if show_all:
+        # Admin view: include all statuses except pending (not yet processed)
+        query = select(News).where(
+            News.content_status.notin_(["pending"]),
+        )
+    elif content_status:
+        query = select(News).where(
+            News.content_status == content_status,
+        )
+    else:
+        # Default: only show successfully processed articles
+        query = select(News).where(
+            News.content_status.in_(["fetched", "embedded", "partial"]),
+        )
 
     # Optional market filter
     if market:

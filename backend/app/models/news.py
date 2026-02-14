@@ -15,7 +15,7 @@ from sqlalchemy import (
     String,
     Text,
 )
-from sqlalchemy.dialects.postgresql import ARRAY, JSON, UUID
+from sqlalchemy.dialects.postgresql import ARRAY, JSON, JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.database import Base
@@ -44,6 +44,7 @@ class FilterStatus(str, Enum):
     FINE_KEEP = "keep"               # 精筛: 保留
     FINE_DELETE = "delete"           # 精筛: 删除
     FILTER_FAILED = "failed"         # 筛选失败
+    DISCARDED = "discarded"          # Layer 1评分低于丢弃阈值
 
 
 class News(Base):
@@ -97,6 +98,7 @@ class News(Base):
     ai_analysis: Mapped[Optional[str]] = mapped_column(
         Text,
         nullable=True,
+        comment="Markdown格式的AI分析报告，由Layer 2生成或on-demand分析生成",
     )
 
     market: Mapped[str] = mapped_column(
@@ -235,7 +237,46 @@ class News(Base):
     investment_summary: Mapped[Optional[str]] = mapped_column(
         Text,
         nullable=True,
-        comment="投资导向摘要 (2-3句，由精筛生成)",
+        comment="1句话投资概况，用于卡片预览（最多50字）",
+    )
+
+    # === 精筛结果 - 详细总结 ===
+    detailed_summary: Mapped[Optional[str]] = mapped_column(
+        Text,
+        nullable=True,
+        comment="保留所有关键细节的完整总结，用于\"阅读更多\"展示",
+    )
+
+    # === Phase 2: Multimodal & Scoring Fields ===
+    image_insights: Mapped[Optional[str]] = mapped_column(
+        Text,
+        nullable=True,
+        comment="多模态LLM从图片中提取的关键数据（财报、图表、榜单等）",
+    )
+
+    has_visual_data: Mapped[bool] = mapped_column(
+        Boolean,
+        nullable=False,
+        default=False,
+        comment="是否包含有价值的视觉数据（图表、财报截图等）",
+    )
+
+    content_score: Mapped[Optional[int]] = mapped_column(
+        Integer,
+        nullable=True,
+        comment="0-300分制新闻价值评分（宏观0-100+市场0-100+信号0-100）",
+    )
+
+    processing_path: Mapped[Optional[str]] = mapped_column(
+        String(20),
+        nullable=True,
+        comment="Layer 2处理路径: full_analysis（≥阈值）或 lightweight（<阈值）",
+    )
+
+    score_details: Mapped[Optional[dict]] = mapped_column(
+        JSONB,
+        nullable=True,
+        comment="Dimension scores, reasoning, and critical flag from scoring LLM",
     )
 
     # === RSS Feed 来源追踪 ===

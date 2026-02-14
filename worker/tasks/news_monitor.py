@@ -82,43 +82,64 @@ def run_async_task(coro_func: Callable[..., T], *args, **kwargs) -> T:
             logger.warning("Failed to reset Redis client: %s", e)
 
 
-async def _run_initial_filter_if_enabled(
+# ---------------------------------------------------------------------------
+# Layer 1 scoring
+# ---------------------------------------------------------------------------
+async def _run_layer1_scoring_if_enabled(
     db,
     system_settings,
     articles: List[Dict[str, str]],
-) -> tuple[Dict[str, Dict], bool]:
+) -> tuple[List, bool]:
     """
-    Run initial filter if two-phase filtering is enabled.
+    Run Layer 1 scoring if LLM pipeline is enabled.
 
     Args:
         db: Database session
         system_settings: System settings with feature flag
-        articles: List of dicts with url, headline, summary
+        articles: List of dicts with url, title, text (summary)
 
     Returns:
-        Tuple of (filter_results dict, is_enabled bool)
+        Tuple of (list of Layer1ScoringResult, is_enabled bool)
     """
-    if not system_settings.use_two_phase_filter:
-        return {}, False
+    if not system_settings.enable_llm_pipeline:
+        return [], False
 
-    from app.services.two_phase_filter_service import get_two_phase_filter_service
-    from app.services.filter_stats_service import get_filter_stats_service
+    from app.services.layer1_scoring_service import get_layer1_scoring_service
 
-    filter_service = get_two_phase_filter_service()
-    stats_service = get_filter_stats_service()
+    scoring_service = get_layer1_scoring_service()
 
-    results = await filter_service.batch_initial_filter(db, articles)
+    # Format articles for scoring service
+    scoring_articles = [
+        {
+            "url": a.get("url", ""),
+            "title": a.get("headline", a.get("title", "")),
+            "text": a.get("summary", ""),
+        }
+        for a in articles
+    ]
 
-    # Track stats
-    useful_count = sum(1 for r in results.values() if r["decision"] == "useful")
-    uncertain_count = sum(1 for r in results.values() if r["decision"] == "uncertain")
-    skip_count = sum(1 for r in results.values() if r["decision"] == "skip")
-
-    await stats_service.increment("initial_useful", useful_count)
-    await stats_service.increment("initial_uncertain", uncertain_count)
-    await stats_service.increment("initial_skip", skip_count)
-
+    results = await scoring_service.batch_score_articles(db, scoring_articles)
     return results, True
+
+
+def _build_score_details(scoring_result) -> dict:
+    """Build score_details dict from Layer1ScoringResult for DB storage."""
+    return {
+        "dimensionScores": {
+            name: s.score
+            for name, s in scoring_result.agent_scores.items()
+        },
+        "agentDetails": {
+            name: {
+                "tier": s.tier,
+                "score": s.score,
+                "reason": s.reason,
+            }
+            for name, s in scoring_result.agent_scores.items()
+        },
+        "reasoning": scoring_result.reasoning,
+        "isCriticalEvent": scoring_result.is_critical,
+    }
 
 
 @celery_app.task(bind=True, max_retries=3)
@@ -146,9 +167,15 @@ async def _monitor_news_async() -> Dict[str, Any]:
     """
     Async implementation of news monitoring.
 
+    Two operating modes controlled by enable_llm_pipeline:
+    - OFF: Articles saved to DB with title+summary only. No scoring, no
+      fetching, no analysis, no embedding.
+    - ON:  Full 3-layer pipeline -- Layer 1 scoring -> Layer 2 fetch+clean
+      -> Layer 3 analyze/embed.
+
     Two-layer news acquisition strategy:
-    - Layer 1: Global market news (Finnhub general + AKShare trending → initial filter)
-    - Layer 2: Watchlist symbol-specific news (per-symbol queries, direct store)
+    - Layer 1: Global market news (Finnhub general + AKShare trending)
+    - Layer 2: Watchlist symbol-specific news (per-symbol queries)
     """
     from sqlalchemy import select
 
@@ -161,9 +188,8 @@ async def _monitor_news_async() -> Dict[str, Any]:
         get_news_service,
     )
     from app.services.settings_service import SettingsService
-    from app.services.two_phase_filter_service import get_two_phase_filter_service
 
-    logger.info("Starting news monitor task (two-layer strategy)")
+    logger.info("Starting news monitor task")
     await _update_progress("init", "Initializing news monitor...", 0)
 
     stats = {
@@ -173,16 +199,12 @@ async def _monitor_news_async() -> Dict[str, Any]:
         "watchlist_fetched": 0,
         "articles_stored": 0,
         "alerts_triggered": 0,
-        "entities_extracted": 0,
-        "high_relevance_count": 0,  # score >= 0.7
-        "stock_count": 0,
-        "index_count": 0,
-        "macro_count": 0,
-        # Two-phase filter stats
-        "initial_useful": 0,
-        "initial_uncertain": 0,
-        "initial_skipped": 0,
-        "two_phase_enabled": False,
+        "llm_pipeline_enabled": False,
+        # Layer 1 scoring stats (only when pipeline enabled)
+        "layer1_discard": 0,
+        "layer1_lightweight": 0,
+        "layer1_full_analysis": 0,
+        "layer1_critical": 0,
     }
 
     trace_batch = []  # Pipeline trace events to write after commit
@@ -199,31 +221,24 @@ async def _monitor_news_async() -> Dict[str, Any]:
 
             # Collect important articles for post-commit AI analysis dispatch
             important_articles: List[tuple] = []  # (News obj, importance score, title preview)
-            all_new_articles: List = []  # Track all new articles for embedding
+            all_new_articles: List = []  # Track all new articles for dispatch
 
-            # ===== Layer 1: Global Market News (Finnhub + AKShare → Initial Filter) =====
+            # ===== Layer 1: Global Market News (Finnhub + AKShare) =====
             await _update_progress("layer1", "Layer 1: Fetching global market news...", 5)
-            use_two_phase = system_settings.use_two_phase_filter
-            stats["two_phase_enabled"] = use_two_phase
+            enable_pipeline = system_settings.enable_llm_pipeline
+            stats["llm_pipeline_enabled"] = enable_pipeline
 
             try:
                 # --- Fetch from both sources ---
-                # Source 1: Finnhub news (all categories)
+                # Source 1: Finnhub news (all categories) -- always use get_general_news
                 finnhub_articles = []
                 finnhub_categories = ["general", "forex", "crypto", "merger"]
                 for cat in finnhub_categories:
                     try:
-                        if use_two_phase:
-                            cat_articles = await FinnhubProvider.get_general_news(
-                                category=cat,
-                                api_key=finnhub_api_key,
-                            )
-                        else:
-                            cat_articles = await FinnhubProvider.get_market_news_with_entities(
-                                db=db,
-                                category=cat,
-                                api_key=finnhub_api_key,
-                            )
+                        cat_articles = await FinnhubProvider.get_general_news(
+                            category=cat,
+                            api_key=finnhub_api_key,
+                        )
                         finnhub_articles.extend(cat_articles)
                         logger.info(f"Layer 1: Finnhub [{cat}] fetched {len(cat_articles)} articles")
                     except Exception as e:
@@ -232,7 +247,7 @@ async def _monitor_news_async() -> Dict[str, Any]:
 
                 await _update_progress("layer1_akshare", "Layer 1: Fetching AKShare news...", 10)
 
-                # Source 2: AKShare trending (东财全球快讯)
+                # Source 2: AKShare trending
                 akshare_articles = []
                 try:
                     akshare_articles = await AKShareProvider.get_trending_news_cn()
@@ -266,9 +281,9 @@ async def _monitor_news_async() -> Dict[str, Any]:
                     f"{len(existing_urls)} already in DB, {len(new_articles)} new"
                 )
 
-                if use_two_phase:
-                    # Two-phase mode: run initial filter on all new global articles
-                    articles_for_filter = [
+                if enable_pipeline:
+                    # Pipeline ON: run Layer 1 scoring on all new global articles
+                    articles_for_scoring = [
                         {
                             "url": a.url,
                             "headline": a.title,
@@ -277,29 +292,85 @@ async def _monitor_news_async() -> Dict[str, Any]:
                         for a in new_articles
                     ]
 
-                    await _update_progress("layer1_filter", f"Layer 1: Filtering {len(new_articles)} new articles...", 20)
+                    await _update_progress("layer1_scoring", f"Layer 1: Scoring {len(new_articles)} new articles...", 20)
+
+                    scoring_results = []
                     try:
-                        filter_results, _ = await _run_initial_filter_if_enabled(
-                            db, system_settings, articles_for_filter
+                        scoring_results, _ = await _run_layer1_scoring_if_enabled(
+                            db, system_settings, articles_for_scoring
                         )
                     except Exception as e:
-                        logger.warning("Layer 1: Initial filter failed, proceeding without filter: %s", e)
-                        filter_results = {}
+                        logger.warning("Layer 1: Scoring failed, all articles default to lightweight: %s", e)
 
-                    # Store articles that passed initial filter
-                    filter_service = get_two_phase_filter_service()
+                    # Build URL -> scoring result map
+                    scoring_map = {}
+                    for r in scoring_results:
+                        scoring_map[r.url] = r
+
+                    # Store articles with scoring data
                     for article in new_articles:
-                        filter_result = filter_results.get(article.url, {})
-                        decision = filter_result.get("decision", "uncertain")
+                        scoring = scoring_map.get(article.url)
 
-                        if decision == "skip":
-                            stats["initial_skipped"] += 1
+                        if scoring and scoring.routing_decision == "discard":
+                            # Discarded: store with discarded status, do NOT dispatch
+                            news = News(
+                                symbol=article.symbol,
+                                title=article.title[:500] if article.title else "",
+                                summary=article.summary,
+                                source=article.source,
+                                url=article.url,
+                                published_at=article.published_at,
+                                market=article.market,
+                                related_entities=None,
+                                has_stock_entities=False,
+                                has_macro_entities=False,
+                                max_entity_score=None,
+                                primary_entity=None,
+                                primary_entity_type=None,
+                                filter_status=FilterStatus.DISCARDED.value,
+                                content_score=scoring.total_score,
+                                processing_path="discarded",
+                                score_details=_build_score_details(scoring),
+                            )
+                            db.add(news)
+                            stats["articles_stored"] += 1
+                            stats["layer1_discard"] += 1
+                            if scoring.is_critical:
+                                stats["layer1_critical"] += 1
+
+                            trace_batch.append({
+                                "news_obj": news,
+                                "decision": "discarded",
+                                "reason": scoring.reasoning,
+                                "score": scoring.total_score,
+                            })
                             continue
 
-                        if decision == "useful":
-                            stats["initial_useful"] += 1
+                        # Not discarded: store with scoring data and dispatch later
+                        if scoring:
+                            filter_status = FilterStatus.INITIAL_USEFUL.value
+                            content_score = scoring.total_score
+                            processing_path = scoring.routing_decision  # "lightweight" or "full_analysis"
+                            score_details = _build_score_details(scoring)
+                            is_critical = scoring.is_critical
+                            decision_label = scoring.routing_decision
+                            reasoning = scoring.reasoning
+
+                            if scoring.routing_decision == "full_analysis":
+                                stats["layer1_full_analysis"] += 1
+                            else:
+                                stats["layer1_lightweight"] += 1
+                            if scoring.is_critical:
+                                stats["layer1_critical"] += 1
                         else:
-                            stats["initial_uncertain"] += 1
+                            # No scoring result (scoring failed) -- default to lightweight
+                            filter_status = FilterStatus.INITIAL_USEFUL.value
+                            content_score = 0
+                            processing_path = "lightweight"
+                            score_details = None
+                            is_critical = False
+                            decision_label = "lightweight"
+                            reasoning = "scoring_unavailable"
 
                         news = News(
                             symbol=article.symbol,
@@ -315,7 +386,10 @@ async def _monitor_news_async() -> Dict[str, Any]:
                             max_entity_score=None,
                             primary_entity=None,
                             primary_entity_type=None,
-                            filter_status=filter_service.map_initial_decision_to_status(decision).value,
+                            filter_status=filter_status,
+                            content_score=content_score,
+                            processing_path=processing_path,
+                            score_details=score_details,
                         )
                         db.add(news)
                         all_new_articles.append(news)
@@ -323,8 +397,9 @@ async def _monitor_news_async() -> Dict[str, Any]:
 
                         trace_batch.append({
                             "news_obj": news,
-                            "decision": filter_result.get("decision", "uncertain"),
-                            "reason": filter_result.get("reason", ""),
+                            "decision": decision_label,
+                            "reason": reasoning,
+                            "score": content_score,
                         })
 
                         article_dict = article.to_dict()
@@ -335,48 +410,17 @@ async def _monitor_news_async() -> Dict[str, Any]:
                             )
 
                     logger.info(
-                        f"Layer 1 (two-phase): useful={stats['initial_useful']}, "
-                        f"uncertain={stats['initial_uncertain']}, skipped={stats['initial_skipped']}"
+                        "Layer 1 (pipeline ON): discard=%d, lightweight=%d, "
+                        "full_analysis=%d, critical=%d",
+                        stats["layer1_discard"],
+                        stats["layer1_lightweight"],
+                        stats["layer1_full_analysis"],
+                        stats["layer1_critical"],
                     )
 
                 else:
-                    # Legacy mode: Finnhub articles have entities, AKShare don't
-                    # Count entity stats from Finnhub articles
-                    stats["entities_extracted"] = sum(
-                        1 for a in finnhub_articles if a.related_entities
-                    )
-                    for article in finnhub_articles:
-                        if article.related_entities:
-                            for entity in article.related_entities:
-                                if entity.get("score", 0) >= 0.7:
-                                    stats["high_relevance_count"] += 1
-                                entity_type = entity.get("type")
-                                if entity_type == "stock":
-                                    stats["stock_count"] += 1
-                                elif entity_type == "index":
-                                    stats["index_count"] += 1
-                                elif entity_type == "macro":
-                                    stats["macro_count"] += 1
-
-                    # Store all new articles
+                    # Pipeline OFF: store all new articles with basic metadata only
                     for article in new_articles:
-                        # Finnhub articles have entities, AKShare articles don't
-                        entities = getattr(article, "related_entities", None) or []
-                        has_stock = any(e["type"] == "stock" for e in entities) if entities else False
-                        has_macro = any(e["type"] == "macro" for e in entities) if entities else False
-                        max_score = max((e["score"] for e in entities), default=None) if entities else None
-
-                        primary_entity = None
-                        primary_entity_type = None
-                        if entities:
-                            stock_entities = [e for e in entities if e["type"] == "stock"]
-                            if stock_entities:
-                                primary_entity = stock_entities[0]["entity"]
-                                primary_entity_type = "stock"
-                            else:
-                                primary_entity = entities[0]["entity"]
-                                primary_entity_type = entities[0]["type"]
-
                         news = News(
                             symbol=article.symbol,
                             title=article.title[:500] if article.title else "",
@@ -385,34 +429,19 @@ async def _monitor_news_async() -> Dict[str, Any]:
                             url=article.url,
                             published_at=article.published_at,
                             market=article.market,
-                            related_entities=entities if entities else None,
-                            has_stock_entities=has_stock,
-                            has_macro_entities=has_macro,
-                            max_entity_score=max_score,
-                            primary_entity=primary_entity,
-                            primary_entity_type=primary_entity_type,
+                            related_entities=None,
+                            has_stock_entities=False,
+                            has_macro_entities=False,
+                            max_entity_score=None,
+                            primary_entity=None,
+                            primary_entity_type=None,
                         )
                         db.add(news)
-                        all_new_articles.append(news)
                         stats["articles_stored"] += 1
 
-                        trace_batch.append({
-                            "news_obj": news,
-                            "decision": "stored",
-                            "reason": "legacy_mode",
-                        })
-
-                        article_dict = article.to_dict()
-                        importance = _score_article_importance(article_dict)
-                        if importance >= 2.0:
-                            important_articles.append(
-                                (news, importance, article.title[:60] if article.title else "")
-                            )
-
                     logger.info(
-                        f"Layer 1 (legacy): stored={stats['articles_stored']}, "
-                        f"with_entities={stats['entities_extracted']}, "
-                        f"stocks={stats['stock_count']}, indices={stats['index_count']}, macro={stats['macro_count']}"
+                        "Layer 1 (pipeline OFF): stored=%d articles with basic metadata",
+                        stats["articles_stored"],
                     )
 
             except Exception as e:
@@ -463,13 +492,6 @@ async def _monitor_news_async() -> Dict[str, Any]:
                     if url in existing_wl_urls:
                         continue
 
-                    # Company news: related_entities = the stock itself with score 1.0
-                    entities = [{
-                        "entity": symbol,
-                        "type": "stock",
-                        "score": 1.0,
-                    }]
-
                     news = News(
                         symbol=article_data.get("symbol", symbol),
                         title=article_data.get("title", "")[:500],
@@ -478,13 +500,20 @@ async def _monitor_news_async() -> Dict[str, Any]:
                         url=url,
                         published_at=_parse_datetime(article_data.get("publishedAt")),
                         market=article_data.get("market", "US"),
-                        related_entities=entities,
-                        has_stock_entities=True,
+                        related_entities=None,
+                        has_stock_entities=False,
                         has_macro_entities=False,
-                        max_entity_score=1.0,
-                        primary_entity=symbol,
-                        primary_entity_type="stock",
+                        max_entity_score=None,
+                        primary_entity=None,
+                        primary_entity_type=None,
                     )
+
+                    if enable_pipeline:
+                        # Watchlist articles get default full_analysis routing
+                        news.filter_status = FilterStatus.INITIAL_USEFUL.value
+                        news.processing_path = "full_analysis"
+                        news.content_score = 0
+
                     db.add(news)
                     all_new_articles.append(news)
                     stats["articles_stored"] += 1
@@ -528,51 +557,57 @@ async def _monitor_news_async() -> Dict[str, Any]:
                         if news_obj.id:
                             await PipelineTraceService.record_event(
                                 db, news_id=str(news_obj.id), layer="1",
-                                node="initial_filter", status="success",
+                                node="layer1_scoring", status="success",
                                 metadata={
                                     "decision": item["decision"],
                                     "reason": item.get("reason", ""),
+                                    "score": item.get("score", 0),
                                 },
                             )
                     await db.commit()
                 except Exception as e:
                     logger.warning("Failed to write pipeline trace events: %s", e)
 
-            await _update_progress("dispatch", f"Dispatching batch fetch for {len(all_new_articles)} articles...", 92)
-            # Dispatch Layer 1.5: batch fetch content with controlled concurrency
-            batch = []
-            for news_obj in all_new_articles:
-                try:
-                    await db.refresh(news_obj)
-                    if news_obj.id and news_obj.url:
-                        batch.append({
-                            "news_id": str(news_obj.id),
-                            "url": news_obj.url,
-                            "market": news_obj.market or "US",
-                            "symbol": news_obj.symbol or "",
-                            "title": news_obj.title or "",
-                            "summary": news_obj.summary or "",
-                            "source": news_obj.source or "",
-                            "published_at": news_obj.published_at.isoformat() if news_obj.published_at else None,
-                            "use_two_phase": use_two_phase,
-                            "content_source": "trafilatura",
-                        })
-                except Exception as e:
-                    logger.warning("Failed to prepare article for batch fetch: %s", e)
+            # Dispatch Layer 1.5: batch fetch content (only when pipeline is ON)
+            if enable_pipeline and all_new_articles:
+                await _update_progress("dispatch", f"Dispatching batch fetch for {len(all_new_articles)} articles...", 92)
+                batch = []
+                for news_obj in all_new_articles:
+                    try:
+                        await db.refresh(news_obj)
+                        if news_obj.id and news_obj.url:
+                            batch.append({
+                                "news_id": str(news_obj.id),
+                                "url": news_obj.url,
+                                "market": news_obj.market or "US",
+                                "symbol": news_obj.symbol or "",
+                                "title": news_obj.title or "",
+                                "summary": news_obj.summary or "",
+                                "source": news_obj.source or "",
+                                "published_at": news_obj.published_at.isoformat() if news_obj.published_at else None,
+                                "content_source": "trafilatura",
+                                # Scoring data flows through to Layer 3
+                                "content_score": news_obj.content_score or 0,
+                                "processing_path": news_obj.processing_path or "lightweight",
+                                "score_details": news_obj.score_details,
+                            })
+                    except Exception as e:
+                        logger.warning("Failed to prepare article for batch fetch: %s", e)
 
-            if batch:
-                from worker.tasks.full_content_tasks import batch_fetch_content, BATCH_CHUNK_SIZE
-                # Split large batches into chunks to keep task duration reasonable
-                for i in range(0, len(batch), BATCH_CHUNK_SIZE):
-                    chunk = batch[i:i + BATCH_CHUNK_SIZE]
-                    batch_fetch_content.delay(chunk)
-                    logger.info(
-                        "Dispatched batch_fetch_content: chunk %d/%d (%d articles, two_phase=%s)",
-                        i // BATCH_CHUNK_SIZE + 1,
-                        (len(batch) + BATCH_CHUNK_SIZE - 1) // BATCH_CHUNK_SIZE,
-                        len(chunk),
-                        use_two_phase,
-                    )
+                if batch:
+                    from worker.tasks.full_content_tasks import batch_fetch_content, BATCH_CHUNK_SIZE
+                    # Split large batches into chunks to keep task duration reasonable
+                    for i in range(0, len(batch), BATCH_CHUNK_SIZE):
+                        chunk = batch[i:i + BATCH_CHUNK_SIZE]
+                        batch_fetch_content.delay(chunk)
+                        logger.info(
+                            "Dispatched batch_fetch_content: chunk %d/%d (%d articles)",
+                            i // BATCH_CHUNK_SIZE + 1,
+                            (len(batch) + BATCH_CHUNK_SIZE - 1) // BATCH_CHUNK_SIZE,
+                            len(chunk),
+                        )
+            elif not enable_pipeline:
+                logger.info("Pipeline OFF: skipping batch fetch dispatch for %d articles", len(all_new_articles))
 
             # Check news alerts
             alerts_triggered = await _check_news_alerts(db, stats["articles_stored"])
@@ -586,10 +621,21 @@ async def _monitor_news_async() -> Dict[str, Any]:
         await _finish_progress(stats)
 
     logger.info(
-        f"News monitor completed: "
-        f"global={stats['global_fetched']} (finnhub={stats['global_finnhub']}, akshare={stats['global_akshare']}), "
-        f"watchlist={stats['watchlist_fetched']}, stored={stats['articles_stored']}, "
-        f"entities={stats['entities_extracted']}, alerts={stats['alerts_triggered']}"
+        "News monitor completed: "
+        "global=%d (finnhub=%d, akshare=%d), "
+        "watchlist=%d, stored=%d, alerts=%d, "
+        "pipeline=%s, discard=%d, lightweight=%d, full=%d, critical=%d",
+        stats["global_fetched"],
+        stats["global_finnhub"],
+        stats["global_akshare"],
+        stats["watchlist_fetched"],
+        stats["articles_stored"],
+        stats["alerts_triggered"],
+        stats["llm_pipeline_enabled"],
+        stats["layer1_discard"],
+        stats["layer1_lightweight"],
+        stats["layer1_full_analysis"],
+        stats["layer1_critical"],
     )
 
     return stats

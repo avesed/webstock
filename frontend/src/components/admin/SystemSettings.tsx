@@ -20,7 +20,7 @@ import { ModelAssignments } from './ModelAssignments'
 import { useToast } from '@/hooks'
 import { adminApi } from '@/api/admin'
 import { cn } from '@/lib/utils'
-import type { SystemConfig, ModelAssignmentsConfig } from '@/types'
+import type { SystemConfig, ModelAssignmentsConfig, LlmProvider, Phase2Config } from '@/types'
 
 const DEFAULT_MODEL_ASSIGNMENTS: ModelAssignmentsConfig = {
   chat: { providerId: null, model: 'gpt-4o-mini' },
@@ -29,6 +29,22 @@ const DEFAULT_MODEL_ASSIGNMENTS: ModelAssignmentsConfig = {
   embedding: { providerId: null, model: 'text-embedding-3-small' },
   newsFilter: { providerId: null, model: 'gpt-4o-mini' },
   contentExtraction: { providerId: null, model: 'gpt-4o-mini' },
+}
+
+const DEFAULT_PHASE2_CONFIG: Phase2Config = {
+  enabled: false,
+  scoreThreshold: 50,
+  discardThreshold: 105,
+  fullAnalysisThreshold: 195,
+  layer1Scoring: { providerId: null, model: 'gpt-4o-mini' },
+  layer15Cleaning: { providerId: null, model: 'gpt-4o' },
+  layer2Scoring: { providerId: null, model: 'gpt-4o-mini' },
+  layer2Analysis: { providerId: null, model: 'gpt-4o' },
+  layer2Lightweight: { providerId: null, model: 'gpt-4o-mini' },
+  highValueSources: ['reuters', 'bloomberg', 'sec', 'company_announcement'],
+  highValuePct: 0.20,
+  cacheEnabled: true,
+  cacheTtlMinutes: 60,
 }
 
 const DEFAULT_CONFIG: SystemConfig = {
@@ -60,10 +76,11 @@ const DEFAULT_CONFIG: SystemConfig = {
     enableNewsAnalysis: true,
     enableStockAnalysis: true,
     requireRegistrationApproval: false,
-    useTwoPhaseFilter: false,
+    enableLlmPipeline: false,
     enableMcpExtraction: false,
   },
   modelAssignments: DEFAULT_MODEL_ASSIGNMENTS,
+  phase2: DEFAULT_PHASE2_CONFIG,
 }
 
 interface ToggleSwitchProps {
@@ -97,6 +114,68 @@ function ToggleSwitch({ checked, onCheckedChange, disabled }: ToggleSwitchProps)
   )
 }
 
+/** Inline provider+model selector row */
+function ModelSelectorRow({
+  label,
+  providerId,
+  model,
+  providers,
+  onProviderChange,
+  onModelChange,
+  disabled,
+  t,
+}: {
+  label: string
+  providerId: string | null
+  model: string
+  providers: LlmProvider[]
+  onProviderChange: (id: string | null) => void
+  onModelChange: (model: string) => void
+  disabled?: boolean
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  t: (key: any) => string
+}) {
+  const selectedProvider = providerId ? providers.find((p) => p.id === providerId) : undefined
+  const availableModels = selectedProvider?.models ?? []
+
+  return (
+    <div className={cn('grid gap-4 sm:grid-cols-[140px_1fr_1fr] items-center', disabled && 'opacity-50 pointer-events-none')}>
+      <Label className="text-sm">{label}</Label>
+      <select
+        value={providerId ?? ''}
+        onChange={(e) => {
+          const newId = e.target.value || null
+          onProviderChange(newId)
+          // Auto-select first model of new provider
+          if (newId) {
+            const newProvider = providers.find((p) => p.id === newId)
+            onModelChange(newProvider?.models[0] ?? '')
+          } else {
+            onModelChange('')
+          }
+        }}
+        className="w-full h-10 px-3 rounded-md border border-input bg-background text-sm"
+      >
+        <option value="">{t('settings.models.selectProvider')}</option>
+        {providers.map((provider) => (
+          <option key={provider.id} value={provider.id}>{provider.name}</option>
+        ))}
+      </select>
+      <select
+        value={model}
+        onChange={(e) => onModelChange(e.target.value)}
+        disabled={!providerId || availableModels.length === 0}
+        className="w-full h-10 px-3 rounded-md border border-input bg-background text-sm disabled:cursor-not-allowed disabled:opacity-50"
+      >
+        <option value="">{t('settings.models.selectModel')}</option>
+        {availableModels.map((m) => (
+          <option key={m} value={m}>{m}</option>
+        ))}
+      </select>
+    </div>
+  )
+}
+
 export function SystemSettings() {
   const { t } = useTranslation('admin')
   const { t: tCommon } = useTranslation('common')
@@ -120,12 +199,15 @@ export function SystemSettings() {
     queryFn: adminApi.listLlmProviders,
   })
 
+  const enabledProviders = providers.filter((p) => p.isEnabled)
+
   // Sync form data with fetched config
   useEffect(() => {
     if (config) {
       setFormData({
         ...config,
         modelAssignments: config.modelAssignments ?? DEFAULT_MODEL_ASSIGNMENTS,
+        phase2: config.phase2 ?? DEFAULT_PHASE2_CONFIG,
       })
       setHasNewsChanges(false)
       setHasFeaturesChanges(false)
@@ -163,6 +245,7 @@ export function SystemSettings() {
     if (section === 'llm') setHasModelChanges(true)
   }
 
+  // Model assignment changes for Models tab (analysis, synthesis, chat, embedding)
   const handleModelAssignmentsChange = useCallback((assignments: ModelAssignmentsConfig) => {
     setFormData((prev) => ({
       ...prev,
@@ -171,11 +254,73 @@ export function SystemSettings() {
     setHasModelChanges(true)
   }, [])
 
-  // Per-tab save handlers
+  // Model assignment changes from News tab (newsFilter, contentExtraction)
+  const handleNewsModelChange = useCallback((key: 'newsFilter' | 'contentExtraction', field: 'providerId' | 'model', value: string | null) => {
+    setFormData((prev) => ({
+      ...prev,
+      modelAssignments: {
+        ...(prev.modelAssignments ?? DEFAULT_MODEL_ASSIGNMENTS),
+        [key]: {
+          ...(prev.modelAssignments ?? DEFAULT_MODEL_ASSIGNMENTS)[key],
+          [field]: field === 'providerId' ? value : (value ?? ''),
+        },
+      },
+    }))
+    setHasNewsChanges(true)
+  }, [])
+
+  // Phase 2 config changes (from News tab)
+  const handlePhase2Change = useCallback(<K extends keyof Phase2Config>(key: K, value: Phase2Config[K]) => {
+    setFormData((prev) => ({
+      ...prev,
+      phase2: {
+        ...(prev.phase2 ?? DEFAULT_PHASE2_CONFIG),
+        [key]: value,
+      },
+    }))
+    setHasNewsChanges(true)
+  }, [])
+
+  // Phase 2 layer model changes (from News tab)
+  const handlePhase2LayerChange = useCallback((
+    layer: 'layer1Scoring' | 'layer15Cleaning' | 'layer2Scoring' | 'layer2Analysis' | 'layer2Lightweight',
+    field: 'providerId' | 'model',
+    value: string | null
+  ) => {
+    setFormData((prev) => {
+      const phase2 = prev.phase2 ?? DEFAULT_PHASE2_CONFIG
+      return {
+        ...prev,
+        phase2: {
+          ...phase2,
+          [layer]: {
+            ...phase2[layer],
+            [field]: field === 'providerId' ? value : (value ?? ''),
+          },
+        },
+      }
+    })
+    setHasNewsChanges(true)
+  }, [])
+
+  // Cache changes (from Models tab)
+  const handleCacheChange = useCallback(<K extends 'cacheEnabled' | 'cacheTtlMinutes'>(key: K, value: Phase2Config[K]) => {
+    setFormData((prev) => ({
+      ...prev,
+      phase2: {
+        ...(prev.phase2 ?? DEFAULT_PHASE2_CONFIG),
+        [key]: value,
+      },
+    }))
+    setHasModelChanges(true)
+  }, [])
+
+  // Per-tab save handlers — each sends the full modelAssignments + phase2 snapshot
   const handleSaveModels = () => {
     updateMutation.mutate({
       llm: formData.llm,
       modelAssignments: formData.modelAssignments,
+      phase2: formData.phase2,
     } as SystemConfig, {
       onSuccess: () => {
         queryClient.invalidateQueries({ queryKey: ['admin-system-config'] })
@@ -186,7 +331,11 @@ export function SystemSettings() {
   }
 
   const handleSaveNews = () => {
-    updateMutation.mutate({ news: formData.news } as Partial<SystemConfig>, {
+    updateMutation.mutate({
+      news: formData.news,
+      modelAssignments: formData.modelAssignments,
+      phase2: formData.phase2,
+    } as Partial<SystemConfig>, {
       onSuccess: () => {
         queryClient.invalidateQueries({ queryKey: ['admin-system-config'] })
         toast({ title: t('settings.saved') })
@@ -212,6 +361,11 @@ export function SystemSettings() {
         ...prev,
         llm: config.llm,
         modelAssignments: config.modelAssignments ?? DEFAULT_MODEL_ASSIGNMENTS,
+        phase2: {
+          ...(prev.phase2 ?? DEFAULT_PHASE2_CONFIG),
+          cacheEnabled: (config.phase2 ?? DEFAULT_PHASE2_CONFIG).cacheEnabled,
+          cacheTtlMinutes: (config.phase2 ?? DEFAULT_PHASE2_CONFIG).cacheTtlMinutes,
+        },
       }))
       setHasModelChanges(false)
     }
@@ -222,6 +376,25 @@ export function SystemSettings() {
       setFormData((prev) => ({
         ...prev,
         news: config.news,
+        modelAssignments: {
+          ...(prev.modelAssignments ?? DEFAULT_MODEL_ASSIGNMENTS),
+          newsFilter: (config.modelAssignments ?? DEFAULT_MODEL_ASSIGNMENTS).newsFilter,
+          contentExtraction: (config.modelAssignments ?? DEFAULT_MODEL_ASSIGNMENTS).contentExtraction,
+        },
+        phase2: {
+          ...(prev.phase2 ?? DEFAULT_PHASE2_CONFIG),
+          enabled: (config.phase2 ?? DEFAULT_PHASE2_CONFIG).enabled,
+          scoreThreshold: (config.phase2 ?? DEFAULT_PHASE2_CONFIG).scoreThreshold,
+          discardThreshold: (config.phase2 ?? DEFAULT_PHASE2_CONFIG).discardThreshold,
+          fullAnalysisThreshold: (config.phase2 ?? DEFAULT_PHASE2_CONFIG).fullAnalysisThreshold,
+          layer1Scoring: (config.phase2 ?? DEFAULT_PHASE2_CONFIG).layer1Scoring,
+          layer15Cleaning: (config.phase2 ?? DEFAULT_PHASE2_CONFIG).layer15Cleaning,
+          layer2Scoring: (config.phase2 ?? DEFAULT_PHASE2_CONFIG).layer2Scoring,
+          layer2Analysis: (config.phase2 ?? DEFAULT_PHASE2_CONFIG).layer2Analysis,
+          layer2Lightweight: (config.phase2 ?? DEFAULT_PHASE2_CONFIG).layer2Lightweight,
+          highValueSources: (config.phase2 ?? DEFAULT_PHASE2_CONFIG).highValueSources,
+          highValuePct: (config.phase2 ?? DEFAULT_PHASE2_CONFIG).highValuePct,
+        },
       }))
       setHasNewsChanges(false)
     }
@@ -259,6 +432,9 @@ export function SystemSettings() {
     )
   }
 
+  const phase2 = formData.phase2 ?? DEFAULT_PHASE2_CONFIG
+  const ma = formData.modelAssignments ?? DEFAULT_MODEL_ASSIGNMENTS
+
   return (
     <TooltipProvider>
       <Tabs defaultValue="providers" className="space-y-4">
@@ -282,7 +458,7 @@ export function SystemSettings() {
           <div className="space-y-6">
             <ModelAssignments
               providers={providers}
-              assignments={formData.modelAssignments ?? DEFAULT_MODEL_ASSIGNMENTS}
+              assignments={ma}
               onAssignmentsChange={handleModelAssignmentsChange}
               advancedSettings={{
                 maxClarificationRounds: formData.llm.maxClarificationRounds,
@@ -290,6 +466,37 @@ export function SystemSettings() {
               }}
               onAdvancedChange={(key, value) => handleChange('llm', key as keyof SystemConfig['llm'], value as never)}
             />
+
+            <Separator />
+
+            {/* Prompt Cache Config */}
+            <div className="space-y-4">
+              <div className="space-y-1">
+                <h4 className="text-sm font-medium">{t('settings.phase2.cacheTitle')}</h4>
+                <p className="text-sm text-muted-foreground">{t('settings.phase2.cacheDescription')}</p>
+              </div>
+
+              <div className="flex items-center justify-between">
+                <Label>{t('settings.phase2.cacheEnabled')}</Label>
+                <ToggleSwitch
+                  checked={phase2.cacheEnabled}
+                  onCheckedChange={(checked) => handleCacheChange('cacheEnabled', checked)}
+                />
+              </div>
+
+              <div className="space-y-2">
+                <Label htmlFor="cache-ttl">{t('settings.phase2.cacheTtlMinutes')}</Label>
+                <Input
+                  id="cache-ttl"
+                  type="number"
+                  min={1}
+                  max={1440}
+                  value={phase2.cacheTtlMinutes}
+                  onChange={(e) => handleCacheChange('cacheTtlMinutes', parseInt(e.target.value) || 60)}
+                />
+                <p className="text-xs text-muted-foreground">{t('settings.phase2.cacheTtlMinutesHint')}</p>
+              </div>
+            </div>
 
             {/* Save/Reset for Model Configuration */}
             <div className="flex justify-end gap-2">
@@ -347,28 +554,6 @@ export function SystemSettings() {
                   </div>
                 </div>
 
-                <div className="grid gap-4 sm:grid-cols-2">
-                  <div className="space-y-2">
-                    <Label htmlFor="news-embedding-model">{t('settings.embeddingModel')}</Label>
-                    <Input
-                      id="news-embedding-model"
-                      value={formData.news.embeddingModel}
-                      onChange={(e) => handleChange('news', 'embeddingModel', e.target.value)}
-                      placeholder="text-embedding-3-small"
-                    />
-                  </div>
-
-                  <div className="space-y-2">
-                    <Label htmlFor="news-filter-model">{t('settings.filterModel')}</Label>
-                    <Input
-                      id="news-filter-model"
-                      value={formData.news.filterModel}
-                      onChange={(e) => handleChange('news', 'filterModel', e.target.value)}
-                      placeholder="gpt-4o-mini"
-                    />
-                  </div>
-                </div>
-
                 <div className="flex items-center justify-between">
                   <div className="space-y-0.5">
                     <Label>{t('settings.autoFetch')}</Label>
@@ -421,6 +606,170 @@ export function SystemSettings() {
                     checked={formData.news.enableMcpExtraction}
                     onCheckedChange={(checked) => handleChange('news', 'enableMcpExtraction', checked)}
                   />
+                </div>
+
+                <Separator />
+
+                {/* News Processing Models */}
+                <div className="space-y-4">
+                  <div className="space-y-1">
+                    <h4 className="text-sm font-medium">{t('settings.newsModelsTitle')}</h4>
+                    <p className="text-sm text-muted-foreground">{t('settings.newsModelsDescription')}</p>
+                  </div>
+
+                  {enabledProviders.length === 0 ? (
+                    <p className="text-sm text-muted-foreground italic">
+                      {t('settings.models.noProviders')}
+                    </p>
+                  ) : (
+                    <div className="space-y-4">
+                      <ModelSelectorRow
+                        label={t('settings.models.newsFilterModel')}
+                        providerId={ma.newsFilter.providerId}
+                        model={ma.newsFilter.model}
+                        providers={enabledProviders}
+                        onProviderChange={(id) => handleNewsModelChange('newsFilter', 'providerId', id)}
+                        onModelChange={(m) => handleNewsModelChange('newsFilter', 'model', m)}
+                        t={t}
+                      />
+                      <ModelSelectorRow
+                        label={t('settings.models.contentExtractionModel')}
+                        providerId={ma.contentExtraction.providerId}
+                        model={ma.contentExtraction.model}
+                        providers={enabledProviders}
+                        onProviderChange={(id) => handleNewsModelChange('contentExtraction', 'providerId', id)}
+                        onModelChange={(m) => handleNewsModelChange('contentExtraction', 'model', m)}
+                        t={t}
+                      />
+                    </div>
+                  )}
+                </div>
+
+                <Separator />
+
+                {/* Multi-Agent News Analysis (Phase 2) */}
+                <div className="space-y-4">
+                  <div className="space-y-1">
+                    <h4 className="text-sm font-medium">{t('settings.phase2.title')}</h4>
+                    <p className="text-sm text-muted-foreground">{t('settings.phase2.description')}</p>
+                  </div>
+
+                  <div className="flex items-center justify-between">
+                    <div className="space-y-0.5">
+                      <Label>{t('settings.phase2.enabled')}</Label>
+                      <p className="text-sm text-muted-foreground">{t('settings.phase2.enabledDescription')}</p>
+                    </div>
+                    <ToggleSwitch
+                      checked={phase2.enabled}
+                      onCheckedChange={(checked) => handlePhase2Change('enabled', checked)}
+                    />
+                  </div>
+
+                  <div className="grid gap-4 sm:grid-cols-2">
+                    <div className="space-y-2">
+                      <Label htmlFor="phase2-discard-threshold">{t('settings.phase2.discardThreshold')}</Label>
+                      <Input
+                        id="phase2-discard-threshold"
+                        type="number"
+                        min={0}
+                        max={300}
+                        value={phase2.discardThreshold}
+                        onChange={(e) => handlePhase2Change('discardThreshold', parseInt(e.target.value) || 0)}
+                      />
+                      <p className="text-xs text-muted-foreground">{t('settings.phase2.discardThresholdHint')}</p>
+                    </div>
+
+                    <div className="space-y-2">
+                      <Label htmlFor="phase2-full-analysis-threshold">{t('settings.phase2.fullAnalysisThreshold')}</Label>
+                      <Input
+                        id="phase2-full-analysis-threshold"
+                        type="number"
+                        min={0}
+                        max={300}
+                        value={phase2.fullAnalysisThreshold}
+                        onChange={(e) => handlePhase2Change('fullAnalysisThreshold', parseInt(e.target.value) || 0)}
+                      />
+                      <p className="text-xs text-muted-foreground">{t('settings.phase2.fullAnalysisThresholdHint')}</p>
+                    </div>
+                  </div>
+
+                  <div className="space-y-2">
+                    <Label htmlFor="phase2-score-threshold">{t('settings.phase2.scoreThreshold')}</Label>
+                    <Input
+                      id="phase2-score-threshold"
+                      type="number"
+                      min={0}
+                      max={100}
+                      value={phase2.scoreThreshold}
+                      onChange={(e) => handlePhase2Change('scoreThreshold', parseInt(e.target.value) || 0)}
+                    />
+                    <p className="text-xs text-muted-foreground">{t('settings.phase2.scoreThresholdHint')}</p>
+                  </div>
+
+                  {/* Phase 2 Layer Models (dimmed when disabled) */}
+                  <div className={cn('space-y-4 transition-opacity', !phase2.enabled && 'opacity-50 pointer-events-none')}>
+                    <div className="space-y-1">
+                      <h4 className="text-sm font-medium">{t('settings.phase2.modelsTitle')}</h4>
+                      <p className="text-sm text-muted-foreground">{t('settings.phase2.modelsDescription')}</p>
+                    </div>
+
+                    {enabledProviders.length === 0 ? (
+                      <p className="text-sm text-muted-foreground italic">
+                        {t('settings.models.noProviders')}
+                      </p>
+                    ) : (
+                      <div className="space-y-4">
+                        {(['layer1Scoring', 'layer15Cleaning', 'layer2Scoring', 'layer2Analysis', 'layer2Lightweight'] as const).map((layer) => (
+                          <ModelSelectorRow
+                            key={layer}
+                            label={t(`settings.phase2.${layer}` as never)}
+                            providerId={phase2[layer].providerId}
+                            model={phase2[layer].model}
+                            providers={enabledProviders}
+                            onProviderChange={(id) => handlePhase2LayerChange(layer, 'providerId', id)}
+                            onModelChange={(m) => handlePhase2LayerChange(layer, 'model', m)}
+                            t={t}
+                          />
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                </div>
+
+                <Separator />
+
+                {/* Source Tiering (dimmed when Phase 2 disabled) */}
+                <div className={cn('space-y-4 transition-opacity', !phase2.enabled && 'opacity-50 pointer-events-none')}>
+                  <div className="space-y-1">
+                    <h4 className="text-sm font-medium">{t('settings.phase2.sourceTieringTitle')}</h4>
+                    <p className="text-sm text-muted-foreground">{t('settings.phase2.sourceTieringDescription')}</p>
+                  </div>
+
+                  <div className="space-y-2">
+                    <Label htmlFor="phase2-high-value-sources">{t('settings.phase2.highValueSources')}</Label>
+                    <Input
+                      id="phase2-high-value-sources"
+                      value={phase2.highValueSources?.join(', ') ?? ''}
+                      onChange={(e) =>
+                        handlePhase2Change('highValueSources', e.target.value.split(',').map((s) => s.trim()).filter(Boolean))
+                      }
+                    />
+                    <p className="text-xs text-muted-foreground">{t('settings.phase2.highValueSourcesHint')}</p>
+                  </div>
+
+                  <div className="space-y-2">
+                    <Label htmlFor="phase2-high-value-pct">{t('settings.phase2.highValuePct')}</Label>
+                    <Input
+                      id="phase2-high-value-pct"
+                      type="number"
+                      min={0}
+                      max={1}
+                      step={0.05}
+                      value={phase2.highValuePct}
+                      onChange={(e) => handlePhase2Change('highValuePct', parseFloat(e.target.value) || 0)}
+                    />
+                    <p className="text-xs text-muted-foreground">{t('settings.phase2.highValuePctHint')}</p>
+                  </div>
                 </div>
 
               </CardContent>
@@ -528,12 +877,12 @@ export function SystemSettings() {
 
                 <div className="flex items-center justify-between">
                   <div className="space-y-0.5">
-                    <Label>{t('settings.useTwoPhaseFilter')}</Label>
-                    <p className="text-sm text-muted-foreground">{t('settings.useTwoPhaseFilterDescription')}</p>
+                    <Label>{t('settings.enableLlmPipeline')}</Label>
+                    <p className="text-sm text-muted-foreground">{t('settings.enableLlmPipelineDescription')}</p>
                   </div>
                   <ToggleSwitch
-                    checked={formData.features.useTwoPhaseFilter}
-                    onCheckedChange={(checked) => handleChange('features', 'useTwoPhaseFilter', checked)}
+                    checked={formData.features.enableLlmPipeline}
+                    onCheckedChange={(checked) => handleChange('features', 'enableLlmPipeline', checked)}
                   />
                 </div>
               </CardContent>

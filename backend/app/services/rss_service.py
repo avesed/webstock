@@ -295,6 +295,19 @@ class RssService:
                         continue
 
                     try:
+                        # Detect language (CJK-aware)
+                        chinese_chars = len(re.findall(r"[\u4e00-\u9fff]", fulltext_content))
+                        total_chars = len(fulltext_content)
+                        detected_language = "zh" if (total_chars > 0 and chinese_chars / total_chars > 0.1) else "en"
+
+                        # Calculate word count (CJK-aware)
+                        if detected_language in ("zh", "ja", "ko"):
+                            # For CJK: count characters
+                            word_count = len(re.findall(r"[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]", fulltext_content))
+                        else:
+                            # For other languages: count words
+                            word_count = len(fulltext_content.split())
+
                         content_data = {
                             "url": link,
                             "title": title,
@@ -302,9 +315,9 @@ class RssService:
                             "authors": [],
                             "keywords": [],
                             "top_image": None,
-                            "language": None,
+                            "language": detected_language,
                             "fetched_at": datetime.now(timezone.utc).isoformat(),
-                            "word_count": len(fulltext_content.split()),
+                            "word_count": word_count,
                             "metadata": {
                                 "source_domain": "rsshub",
                                 "source_feed": feed.name,

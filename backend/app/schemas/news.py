@@ -42,10 +42,17 @@ class NewsResponse(CamelModel):
     market: str
     sentiment_score: Optional[float] = None
     sentiment_tag: Optional[str] = None
-    ai_analysis: Optional[str] = None
+    investment_summary: Optional[str] = None  # 1句话概况，卡片预览
+    detailed_summary: Optional[str] = None    # 完整细节总结，"阅读更多"展示
+    ai_analysis: Optional[str] = None         # Markdown分析报告，"分析"展示
     related_entities: Optional[List[dict]] = None
     industry_tags: Optional[List[str]] = None
     event_tags: Optional[List[str]] = None
+    content_score: Optional[int] = None
+    processing_path: Optional[str] = None
+    score_details: Optional[dict] = None
+    content_status: Optional[str] = None
+    filter_status: Optional[str] = None
     # created_at is optional since external news may not have it
     created_at: Optional[datetime] = None
 
@@ -151,6 +158,9 @@ class NewsFullContentResponse(CamelModel):
     is_fetching: bool = False
     fetched_at: Optional[datetime] = None
     error: Optional[str] = None
+    investment_summary: Optional[str] = None  # 1句话概况
+    detailed_summary: Optional[str] = None    # 完整细节总结
+    ai_analysis: Optional[str] = None         # Markdown分析报告
 
 
 class BatchFetchRequest(CamelModel):

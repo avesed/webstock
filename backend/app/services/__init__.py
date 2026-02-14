@@ -18,14 +18,9 @@ from app.services.full_content_service import (
     get_full_content_service,
     BLOCKED_DOMAINS,
 )
-from app.services.news_filter_service import (
-    NewsFilterService,
-    get_news_filter_service,
-)
-from app.services.two_phase_filter_service import (
-    TwoPhaseFilterService,
-    get_two_phase_filter_service,
-    InitialFilterResult,
+from app.services.news_layer3_analysis_service import (
+    NewsLayer3AnalysisService,
+    get_news_layer3_analysis_service,
     DeepFilterResult,
     get_news_llm_settings,
 )
@@ -81,13 +76,9 @@ __all__ = [
     "FullContentService",
     "get_full_content_service",
     "BLOCKED_DOMAINS",
-    # News filter
-    "NewsFilterService",
-    "get_news_filter_service",
-    # Two-phase filter
-    "TwoPhaseFilterService",
-    "get_two_phase_filter_service",
-    "InitialFilterResult",
+    # News Layer 3 analysis
+    "NewsLayer3AnalysisService",
+    "get_news_layer3_analysis_service",
     "DeepFilterResult",
     "get_news_llm_settings",
     # Filter stats

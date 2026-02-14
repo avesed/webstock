@@ -100,7 +100,6 @@ def _register_all_skills(registry: SkillRegistry) -> None:
     from app.skills.news.get_news import GetNewsSkill
     from app.skills.news.fetch_global_news import FetchGlobalNewsSkill
     from app.skills.news.fetch_full_content import FetchFullContentSkill
-    from app.skills.news.initial_filter import InitialFilterNewsSkill
     from app.skills.news.deep_filter import DeepFilterNewsSkill
 
     # User data skills
@@ -138,7 +137,6 @@ def _register_all_skills(registry: SkillRegistry) -> None:
         GetNewsSkill,
         FetchGlobalNewsSkill,
         FetchFullContentSkill,
-        InitialFilterNewsSkill,
         DeepFilterNewsSkill,
         # User data
         GetPortfolioSkill,

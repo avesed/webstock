@@ -280,7 +280,10 @@ class SettingsService:
 
         Args:
             db: Async database session
-            purpose: One of 'chat', 'analysis', 'synthesis', 'embedding', 'news_filter'
+            purpose: One of 'chat', 'analysis', 'synthesis', 'embedding',
+                'news_filter', 'content_extraction', 'phase2_layer15_cleaning',
+                'phase2_layer2_scoring', 'phase2_layer2_analysis',
+                'phase2_layer2_lightweight', 'layer1_scoring'
 
         Returns:
             ResolvedModelConfig with model, provider_type, api_key, base_url
@@ -297,6 +300,14 @@ class SettingsService:
             "synthesis": ("synthesis_provider_id", "synthesis_model"),
             "embedding": ("embedding_provider_id", "embedding_model"),
             "news_filter": ("news_filter_provider_id", "news_filter_model"),
+            "content_extraction": ("content_extraction_provider_id", "content_extraction_model"),
+            # Phase 2: 4-layer multi-agent architecture
+            "phase2_layer15_cleaning": ("phase2_layer15_cleaning_provider_id", "phase2_layer15_cleaning_model"),
+            "phase2_layer2_scoring": ("phase2_layer2_scoring_provider_id", "phase2_layer2_scoring_model"),
+            "phase2_layer2_analysis": ("phase2_layer2_analysis_provider_id", "phase2_layer2_analysis_model"),
+            "phase2_layer2_lightweight": ("phase2_layer2_lightweight_provider_id", "phase2_layer2_lightweight_model"),
+            # Layer 1: 3-agent scoring
+            "layer1_scoring": ("layer1_scoring_provider_id", "layer1_scoring_model"),
         }
 
         if purpose not in purpose_map:

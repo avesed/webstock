@@ -4,8 +4,9 @@ import uuid
 from datetime import datetime, timezone
 from typing import Optional
 
+import sqlalchemy as sa
 from sqlalchemy import Boolean, DateTime, Float, Integer, String, Text, ForeignKey
-from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.database import Base
@@ -146,11 +147,11 @@ class SystemSettings(Base):
         comment="是否启用股票分析功能",
     )
 
-    use_two_phase_filter: Mapped[bool] = mapped_column(
+    enable_llm_pipeline: Mapped[bool] = mapped_column(
         Boolean,
         nullable=False,
         default=False,
-        comment="启用两阶段新闻筛选（渐进式发布）",
+        comment="启用LLM新闻处理流水线（3层架构：评分->抓取清洗->分析）",
     )
 
     # === OpenAI Compatible / Local Model Configuration ===
@@ -233,6 +234,152 @@ class SystemSettings(Base):
         comment="Provider for news filter model (news_filter_model stores model name)",
     )
 
+    # === Phase 2 Multi-Agent Architecture ===
+    phase2_enabled: Mapped[bool] = mapped_column(
+        Boolean,
+        nullable=False,
+        default=False,
+        comment="Phase 2多Agent架构开关（默认关闭）",
+    )
+
+    phase2_score_threshold: Mapped[int] = mapped_column(
+        Integer,
+        nullable=False,
+        default=50,
+        comment="评分阈值，≥此分数进入完整5-Agent分析（默认50）",
+    )
+
+    # Phase 2 Provider FKs (5 layers)
+    phase2_layer1_filter_provider_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("llm_providers.id", ondelete="SET NULL"),
+        nullable=True,
+        comment="Phase 2 Layer 1过滤使用的Provider（FK→llm_providers）",
+    )
+
+    phase2_layer15_cleaning_provider_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("llm_providers.id", ondelete="SET NULL"),
+        nullable=True,
+        comment="Phase 2 Layer 1.5清洗使用的Provider（需支持vision）",
+    )
+
+    phase2_layer2_scoring_provider_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("llm_providers.id", ondelete="SET NULL"),
+        nullable=True,
+        comment="Phase 2 Layer 2评分路由使用的Provider（需支持vision）",
+    )
+
+    phase2_layer2_analysis_provider_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("llm_providers.id", ondelete="SET NULL"),
+        nullable=True,
+        comment="Phase 2 Layer 2深度分析使用的Provider",
+    )
+
+    phase2_layer2_lightweight_provider_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("llm_providers.id", ondelete="SET NULL"),
+        nullable=True,
+        comment="Phase 2 Layer 2轻量处理使用的Provider",
+    )
+
+    # Phase 2 Model Names (5 layers)
+    phase2_layer1_filter_model: Mapped[Optional[str]] = mapped_column(
+        String(100),
+        nullable=True,
+        default="gpt-4o-mini",
+        comment="Phase 2 Layer 1初步筛选模型名称",
+    )
+
+    phase2_layer15_cleaning_model: Mapped[Optional[str]] = mapped_column(
+        String(100),
+        nullable=True,
+        default="gpt-4o",
+        comment="Phase 2 Layer 1.5内容清洗模型名称（必须支持vision）",
+    )
+
+    phase2_layer2_scoring_model: Mapped[Optional[str]] = mapped_column(
+        String(100),
+        nullable=True,
+        default="gpt-4o-mini",
+        comment="Phase 2 Layer 2评分路由模型名称（需支持vision）",
+    )
+
+    phase2_layer2_analysis_model: Mapped[Optional[str]] = mapped_column(
+        String(100),
+        nullable=True,
+        default="gpt-4o",
+        comment="Phase 2 Layer 2深度分析模型名称",
+    )
+
+    phase2_layer2_lightweight_model: Mapped[Optional[str]] = mapped_column(
+        String(100),
+        nullable=True,
+        default="gpt-4o-mini",
+        comment="Phase 2 Layer 2轻量处理模型名称",
+    )
+
+    # Phase 2 Source Tiering
+    phase2_high_value_sources: Mapped[Optional[list]] = mapped_column(
+        JSONB,
+        nullable=True,
+        default=lambda: ["reuters", "bloomberg", "sec", "company_announcement"],
+        comment="高价值新闻源JSON数组，这些源使用Phase 2完整多Agent分析",
+    )
+
+    phase2_high_value_pct: Mapped[float] = mapped_column(
+        Float,
+        nullable=False,
+        default=0.20,
+        comment="高价值源占比（0.0-1.0），占比越高Phase 2处理的文章越多",
+    )
+
+    # Phase 2 Cache Config
+    phase2_cache_enabled: Mapped[bool] = mapped_column(
+        Boolean,
+        nullable=False,
+        default=True,
+        comment="Prompt Caching开关（90%成本节省）",
+    )
+
+    phase2_cache_ttl_minutes: Mapped[int] = mapped_column(
+        Integer,
+        nullable=False,
+        default=60,
+        comment="Prompt Cache TTL（分钟）",
+    )
+
+    # === Layer 1 Scoring Configuration ===
+    layer1_discard_threshold: Mapped[int] = mapped_column(
+        Integer,
+        nullable=False,
+        default=105,
+        comment="Layer 1评分丢弃阈值（0-300），低于此分数不抓取不分析",
+    )
+
+    layer1_full_analysis_threshold: Mapped[int] = mapped_column(
+        Integer,
+        nullable=False,
+        default=195,
+        comment="Layer 1评分完整分析阈值（0-300），>=此分数进入5-Agent深度分析",
+    )
+
+    layer1_scoring_provider_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("llm_providers.id", ondelete="SET NULL"),
+        nullable=True,
+        comment="Layer 1评分使用的Provider（FK->llm_providers）",
+    )
+
+    layer1_scoring_model: Mapped[Optional[str]] = mapped_column(
+        String(100),
+        nullable=True,
+        default="gpt-4o-mini",
+        comment="Layer 1评分模型名称",
+    )
+
     # === MCP Content Extraction ===
     enable_mcp_extraction: Mapped[bool] = mapped_column(
         Boolean,
@@ -278,6 +425,12 @@ class SystemSettings(Base):
     embedding_provider = relationship("LlmProvider", foreign_keys=[embedding_provider_id])
     news_filter_provider = relationship("LlmProvider", foreign_keys=[news_filter_provider_id])
     content_extraction_provider = relationship("LlmProvider", foreign_keys=[content_extraction_provider_id])
+    phase2_layer1_filter_provider = relationship("LlmProvider", foreign_keys=[phase2_layer1_filter_provider_id])
+    phase2_layer15_cleaning_provider = relationship("LlmProvider", foreign_keys=[phase2_layer15_cleaning_provider_id])
+    phase2_layer2_scoring_provider = relationship("LlmProvider", foreign_keys=[phase2_layer2_scoring_provider_id])
+    phase2_layer2_analysis_provider = relationship("LlmProvider", foreign_keys=[phase2_layer2_analysis_provider_id])
+    phase2_layer2_lightweight_provider = relationship("LlmProvider", foreign_keys=[phase2_layer2_lightweight_provider_id])
+    layer1_scoring_provider = relationship("LlmProvider", foreign_keys=[layer1_scoring_provider_id])
 
     def __repr__(self) -> str:
         return f"<SystemSettings(id={self.id}, updated_at={self.updated_at})>"

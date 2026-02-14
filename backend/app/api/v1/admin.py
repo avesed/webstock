@@ -29,16 +29,29 @@ from app.schemas.admin import (
     FeaturesConfig,
     FilterStatsResponse,
     LangGraphConfig,
+    Layer15CleaningStats,
+    Layer15FetchStats,
+    Layer15ProviderDistribution,
+    Layer15StatsResponse,
     LlmConfig,
     ModelAssignment,
     ModelAssignmentsConfig,
     NewsConfig,
     NodeStatsResponse,
+    NewsPipelineCacheStats,
+    NewsPipelineNodeLatency,
+    NewsPipelineRoutingStats,
+    NewsPipelineStatsResponse,
+    NewsPipelineTokenStats,
+    NewsPipelineTokenStage,
+    Phase2Config,
+    Phase2ModelAssignment,
     PipelineEventResponse,
     PipelineEventSearchResponse,
     PipelineStatsResponse,
     RejectUserRequest,
     ResetPasswordRequest,
+    ScoreDistributionBucket,
     SourceStatsItemResponse,
     SourceStatsResponse,
     SystemConfigResponse,
@@ -912,7 +925,7 @@ async def get_system_config(
             enable_news_analysis=settings.enable_news_analysis,
             enable_stock_analysis=settings.enable_stock_analysis,
             require_registration_approval=settings.require_registration_approval,
-            use_two_phase_filter=settings.use_two_phase_filter,
+            enable_llm_pipeline=settings.enable_llm_pipeline,
             enable_mcp_extraction=settings.enable_mcp_extraction,
         ),
         langgraph=LangGraphConfig(
@@ -924,6 +937,36 @@ async def get_system_config(
             clarification_confidence_threshold=settings.clarification_confidence_threshold,
         ),
         model_assignments=model_assignments,
+        phase2=Phase2Config(
+            enabled=getattr(settings, 'phase2_enabled', False),
+            score_threshold=getattr(settings, 'phase2_score_threshold', 50),
+            discard_threshold=getattr(settings, 'layer1_discard_threshold', 105),
+            full_analysis_threshold=getattr(settings, 'layer1_full_analysis_threshold', 195),
+            layer1_scoring=Phase2ModelAssignment(
+                provider_id=str(settings.layer1_scoring_provider_id) if getattr(settings, 'layer1_scoring_provider_id', None) else None,
+                model=getattr(settings, 'layer1_scoring_model', '') or 'gpt-4o-mini',
+            ),
+            layer15_cleaning=Phase2ModelAssignment(
+                provider_id=str(settings.phase2_layer15_cleaning_provider_id) if getattr(settings, 'phase2_layer15_cleaning_provider_id', None) else None,
+                model=getattr(settings, 'phase2_layer15_cleaning_model', '') or 'gpt-4o',
+            ),
+            layer2_scoring=Phase2ModelAssignment(
+                provider_id=str(settings.phase2_layer2_scoring_provider_id) if getattr(settings, 'phase2_layer2_scoring_provider_id', None) else None,
+                model=getattr(settings, 'phase2_layer2_scoring_model', '') or 'gpt-4o-mini',
+            ),
+            layer2_analysis=Phase2ModelAssignment(
+                provider_id=str(settings.phase2_layer2_analysis_provider_id) if getattr(settings, 'phase2_layer2_analysis_provider_id', None) else None,
+                model=getattr(settings, 'phase2_layer2_analysis_model', '') or 'gpt-4o',
+            ),
+            layer2_lightweight=Phase2ModelAssignment(
+                provider_id=str(settings.phase2_layer2_lightweight_provider_id) if getattr(settings, 'phase2_layer2_lightweight_provider_id', None) else None,
+                model=getattr(settings, 'phase2_layer2_lightweight_model', '') or 'gpt-4o-mini',
+            ),
+            high_value_sources=getattr(settings, 'phase2_high_value_sources', None) or ["reuters", "bloomberg", "sec", "company_announcement"],
+            high_value_pct=getattr(settings, 'phase2_high_value_pct', 0.20),
+            cache_enabled=getattr(settings, 'phase2_cache_enabled', True),
+            cache_ttl_minutes=getattr(settings, 'phase2_cache_ttl_minutes', 60),
+        ),
     )
 
 
@@ -988,8 +1031,8 @@ async def update_system_config(
             settings.enable_stock_analysis = data.features.enable_stock_analysis
         if data.features.require_registration_approval is not None:
             settings.require_registration_approval = data.features.require_registration_approval
-        if data.features.use_two_phase_filter is not None:
-            settings.use_two_phase_filter = data.features.use_two_phase_filter
+        if data.features.enable_llm_pipeline is not None:
+            settings.enable_llm_pipeline = data.features.enable_llm_pipeline
         if data.features.enable_mcp_extraction is not None:
             settings.enable_mcp_extraction = data.features.enable_mcp_extraction
 
@@ -1029,6 +1072,37 @@ async def update_system_config(
         if ma.content_extraction:
             settings.content_extraction_model = ma.content_extraction.model or None
             settings.content_extraction_provider_id = UUID(ma.content_extraction.provider_id) if ma.content_extraction.provider_id else None
+
+    # Update Phase 2 settings
+    if data.phase2:
+        p2 = data.phase2
+        settings.phase2_enabled = p2.enabled
+        settings.phase2_score_threshold = p2.score_threshold
+        settings.layer1_discard_threshold = p2.discard_threshold
+        settings.layer1_full_analysis_threshold = p2.full_analysis_threshold
+        if p2.layer1_scoring:
+            settings.layer1_scoring_model = p2.layer1_scoring.model or None
+            settings.layer1_scoring_provider_id = UUID(p2.layer1_scoring.provider_id) if p2.layer1_scoring.provider_id else None
+        if p2.layer15_cleaning:
+            settings.phase2_layer15_cleaning_model = p2.layer15_cleaning.model or None
+            settings.phase2_layer15_cleaning_provider_id = UUID(p2.layer15_cleaning.provider_id) if p2.layer15_cleaning.provider_id else None
+        if p2.layer2_scoring:
+            settings.phase2_layer2_scoring_model = p2.layer2_scoring.model or None
+            settings.phase2_layer2_scoring_provider_id = UUID(p2.layer2_scoring.provider_id) if p2.layer2_scoring.provider_id else None
+        if p2.layer2_analysis:
+            settings.phase2_layer2_analysis_model = p2.layer2_analysis.model or None
+            settings.phase2_layer2_analysis_provider_id = UUID(p2.layer2_analysis.provider_id) if p2.layer2_analysis.provider_id else None
+        if p2.layer2_lightweight:
+            settings.phase2_layer2_lightweight_model = p2.layer2_lightweight.model or None
+            settings.phase2_layer2_lightweight_provider_id = UUID(p2.layer2_lightweight.provider_id) if p2.layer2_lightweight.provider_id else None
+        if p2.high_value_sources is not None:
+            settings.phase2_high_value_sources = p2.high_value_sources
+        if p2.high_value_pct is not None:
+            settings.phase2_high_value_pct = p2.high_value_pct
+        if p2.cache_enabled is not None:
+            settings.phase2_cache_enabled = p2.cache_enabled
+        if p2.cache_ttl_minutes is not None:
+            settings.phase2_cache_ttl_minutes = p2.cache_ttl_minutes
 
     settings.updated_at = datetime.now(timezone.utc)
     settings.updated_by = admin.id
@@ -1472,6 +1546,105 @@ async def get_monitor_status(
         "last_run": last_run,
         "next_run_at": next_run_at,
     }
+
+
+@router.get(
+    "/news/layer15-stats",
+    response_model=Layer15StatsResponse,
+    summary="Get Layer 1.5 content fetch and cleaning statistics",
+    description="Get content fetching, image extraction, and LLM cleaning stats from pipeline events.",
+    dependencies=[Depends(rate_limit(max_requests=30, window_seconds=60))],
+)
+async def get_layer15_stats(
+    admin: User = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+    days: int = Query(7, ge=1, le=30, description="Number of days to aggregate"),
+) -> Layer15StatsResponse:
+    """
+    Get Layer 1.5 content fetch and cleaning statistics.
+
+    Queries pipeline_events for fetch node and content_cleaning node metrics.
+    """
+    logger.info("Admin %d viewing Layer 1.5 stats for %d days", admin.id, days)
+
+    stats = await PipelineTraceService.get_layer15_stats(db, days)
+
+    return Layer15StatsResponse(
+        period_days=stats["period_days"],
+        fetch=Layer15FetchStats(**stats["fetch"]),
+        provider_distribution=[
+            Layer15ProviderDistribution(**p) for p in stats["provider_distribution"]
+        ],
+        cleaning=Layer15CleaningStats(**stats["cleaning"]),
+    )
+
+
+@router.get(
+    "/news/news-pipeline-stats",
+    response_model=NewsPipelineStatsResponse,
+    summary="Get news pipeline multi-agent analysis statistics",
+    description="Get combined routing, token, scoring, cache, and latency stats for the news pipeline.",
+    dependencies=[Depends(rate_limit(max_requests=30, window_seconds=60))],
+)
+async def get_news_pipeline_stats(
+    admin: User = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+    days: int = Query(7, ge=1, le=30, description="Number of days to aggregate"),
+) -> NewsPipelineStatsResponse:
+    """
+    Get news pipeline multi-agent analysis statistics.
+
+    Combines:
+    - Redis counters: routing decisions + token usage per stage
+    - DB pipeline_events: score distribution, cache stats, node latency
+    """
+    logger.info("Admin %d viewing news pipeline stats for %d days", admin.id, days)
+
+    # 1. Get Redis-based routing/token stats
+    from app.services.filter_stats_service import get_filter_stats_service
+
+    stats_service = get_filter_stats_service()
+    redis_stats = await stats_service.get_phase2_stats(days)
+
+    routing = NewsPipelineRoutingStats(
+        total=redis_stats["routing"]["total"],
+        full_analysis=redis_stats["routing"]["full_analysis"],
+        lightweight=redis_stats["routing"]["lightweight"],
+        critical_events=redis_stats["routing"]["critical_events"],
+        scoring_errors=redis_stats["routing"]["scoring_errors"],
+    )
+
+    tokens_data = redis_stats["tokens"]
+    tokens = NewsPipelineTokenStats(
+        scoring=NewsPipelineTokenStage(**tokens_data["scoring"]),
+        multi_agent=NewsPipelineTokenStage(**tokens_data["multi_agent"]),
+        lightweight=NewsPipelineTokenStage(**tokens_data["lightweight"]),
+        total=NewsPipelineTokenStage(**tokens_data["total"]),
+    )
+
+    # 2. Get DB-based pipeline event stats
+    pipeline_stats = await PipelineTraceService.get_news_pipeline_stats(db, days)
+
+    score_distribution = [
+        ScoreDistributionBucket(**b)
+        for b in pipeline_stats["score_distribution"]
+    ]
+
+    cache_stats = NewsPipelineCacheStats(**pipeline_stats["cache_stats"])
+
+    node_latency = [
+        NewsPipelineNodeLatency(**n)
+        for n in pipeline_stats["node_latency"]
+    ]
+
+    return NewsPipelineStatsResponse(
+        period_days=days,
+        routing=routing,
+        tokens=tokens,
+        score_distribution=score_distribution,
+        cache_stats=cache_stats,
+        node_latency=node_latency,
+    )
 
 
 # ============== Pipeline Tracing Endpoints ==============

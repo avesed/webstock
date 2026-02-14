@@ -1,18 +1,19 @@
-"""Celery tasks for news full content fetching, filtering, and embedding.
+"""Celery tasks for news full content fetching, cleaning, filtering, and embedding.
 
 3-layer news pipeline architecture:
-  Layer 1   - news_monitor (discovery + initial filter, every 15min)
-  Layer 1.5 - batch_fetch_content (HTTP fetch with Semaphore(3) + 1.0s delay)
-  Layer 2   - process_news_article (LangGraph: read_file -> filter -> embed -> update_db)
+  Layer 1   - news_monitor / rss_monitor (discovery + scoring, every 5-15min)
+  Layer 2   - batch_fetch_content (HTTP fetch + LLM content cleaning)
+  Layer 3   - process_news_article (LangGraph: read_file -> route -> analyze/embed -> update_db)
   Cleanup   - cleanup_expired_news (periodic, daily at 4:00 AM)
 """
 
 import asyncio
+import json
 import logging
 import time
 import uuid
 from datetime import datetime, timedelta, timezone
-from typing import Any, Callable, Dict, List, TypeVar
+from typing import Any, Callable, Dict, List, Optional, TypeVar
 
 from worker.celery_app import celery_app
 
@@ -54,6 +55,11 @@ def run_async_task(coro_func: Callable[..., T], *args, **kwargs) -> T:
             reset_full_content_service()
         except Exception as e:
             logger.warning("Failed to reset full content service: %s", e)
+        try:
+            from app.services.content_cleaning_service import reset_content_cleaning_service
+            reset_content_cleaning_service()
+        except Exception as e:
+            logger.warning("Failed to reset content cleaning service: %s", e)
 
 
 @celery_app.task(bind=True, max_retries=3)
@@ -66,17 +72,21 @@ def process_news_article(
     title: str = "",
     summary: str = "",
     published_at: str = None,
-    use_two_phase: bool = False,
     source: str = "",
     file_path: str = None,
+    # Scoring data from Layer 1 (replaces use_two_phase)
+    content_score: int = 0,
+    processing_path: str = "lightweight",
+    score_details: dict = None,
 ):
     """
-    Process a single news article through the LangGraph pipeline (Layer 2).
+    Process a single news article through the LangGraph pipeline (Layer 3).
 
-    Content is pre-fetched by Layer 1.5 (batch_fetch_content). This task
-    reads the content from file, runs LLM filtering, and embeds for RAG.
+    Content is pre-fetched and cleaned by Layer 2 (batch_fetch_content).
+    This task reads the content from file, routes by processing_path,
+    runs analysis or lightweight filtering, and embeds for RAG.
 
-    Pipeline: read_file -> deep_filter/single_filter -> embed -> update_db
+    Pipeline: read_file -> route -> analyze/lightweight -> embed -> update_db
 
     Args:
         news_id: UUID of the news article
@@ -86,15 +96,18 @@ def process_news_article(
         title: Article title
         summary: Article summary
         published_at: ISO 8601 publish date
-        use_two_phase: Whether to use two-phase filtering
         source: News source name (e.g. 'reuters', 'eastmoney')
-        file_path: Path to pre-fetched content JSON file (set by Layer 1.5)
+        file_path: Path to pre-fetched content JSON file (set by Layer 2)
+        content_score: 100-point content quality score from Layer 1
+        processing_path: Routing decision from Layer 1 ('full_analysis' or 'lightweight')
+        score_details: Dimension scores, reasoning, and critical flag from scoring
     """
     try:
         return run_async_task(
             _process_news_article_async,
             news_id, url, market, symbol, title, summary,
-            published_at, use_two_phase, source, file_path,
+            published_at, source, file_path,
+            content_score, processing_path, score_details,
         )
     except Exception as e:
         logger.exception("process_news_article failed for news_id=%s: %s", news_id, e)
@@ -109,16 +122,19 @@ async def _process_news_article_async(
     title: str,
     summary: str,
     published_at: str,
-    use_two_phase: bool,
     source: str,
     file_path: str,
+    content_score: int,
+    processing_path: str,
+    score_details: Optional[dict],
 ) -> Dict[str, Any]:
-    """Async implementation: run the LangGraph news pipeline (Layer 2)."""
+    """Async implementation: run the LangGraph news pipeline (Layer 3)."""
     from app.agents.langgraph.workflows.news_pipeline import run_news_pipeline
 
+    # No more Phase 2 DB lookup -- processing_path comes from Layer 1 scoring
     logger.info(
-        "Layer 2 starting: news_id=%s, file_path=%s, two_phase=%s",
-        news_id, file_path, use_two_phase,
+        "Layer 3 starting: news_id=%s, file_path=%s, path=%s, score=%d",
+        news_id, file_path, processing_path, content_score,
     )
 
     final_state = await run_news_pipeline(
@@ -129,9 +145,12 @@ async def _process_news_article_async(
         title=title,
         summary=summary,
         published_at=published_at,
-        use_two_phase=use_two_phase,
         source=source,
         file_path=file_path,
+        # Pass scoring data through to pipeline
+        content_score=content_score,
+        processing_path=processing_path,
+        score_details=score_details,
     )
 
     result = {
@@ -143,7 +162,7 @@ async def _process_news_article_async(
     }
 
     logger.info(
-        "Layer 2 completed: news_id=%s, status=%s, filter=%s, chunks=%d",
+        "Layer 3 completed: news_id=%s, status=%s, filter=%s, chunks=%d",
         news_id, result["status"], result["filter_decision"], result["chunks_stored"],
     )
 
@@ -155,16 +174,17 @@ BATCH_CHUNK_SIZE = 30  # Max articles per batch task
 
 @celery_app.task(bind=True, max_retries=2)
 def batch_fetch_content(self, articles: List[Dict[str, Any]]):
-    """Batch fetch content for news articles with controlled concurrency.
+    """Batch fetch and clean content for news articles with controlled concurrency.
 
-    Layer 1.5: Bridges news discovery (Layer 1) and LLM processing (Layer 2).
+    Layer 2: Bridges news discovery/scoring (Layer 1) and LangGraph processing (Layer 3).
     Uses asyncio.Semaphore to limit concurrent HTTP fetches to 3, with 1.0s
-    delay between fetches for rate limit protection.
+    delay between fetches for rate limit protection. After successful fetch,
+    runs LLM content cleaning to produce cleaned_text and extract image insights.
 
     Args:
         articles: List of dicts with keys: news_id, url, market, symbol,
-                  title, summary, source, published_at, use_two_phase,
-                  content_source
+                  title, summary, source, published_at, content_source,
+                  content_score, processing_path, score_details
     """
     try:
         return run_async_task(_batch_fetch_content_async, articles)
@@ -198,7 +218,7 @@ async def _batch_fetch_content_async(articles: List[Dict[str, Any]]) -> Dict[str
         return_exceptions=True,
     )
 
-    # Dispatch Layer 2 for successful fetches
+    # Dispatch Layer 3 for successful fetches
     success_count = 0
     failed_count = 0
     dispatched_count = 0
@@ -229,12 +249,15 @@ async def _batch_fetch_content_async(articles: List[Dict[str, Any]]) -> Dict[str
                     title=article.get("title", ""),
                     summary=article.get("summary", ""),
                     published_at=article.get("published_at"),
-                    use_two_phase=article.get("use_two_phase", False),
+                    # Pass scoring data from Layer 1
+                    content_score=article.get("content_score", 0),
+                    processing_path=article.get("processing_path", "lightweight"),
+                    score_details=article.get("score_details"),
                 )
                 dispatched_count += 1
             except Exception as e:
                 logger.error(
-                    "batch_fetch: failed to dispatch Layer 2 for news_id=%s: %s",
+                    "batch_fetch: failed to dispatch Layer 3 for news_id=%s: %s",
                     article.get("news_id"), e,
                 )
         else:
@@ -255,10 +278,12 @@ async def _batch_fetch_content_async(articles: List[Dict[str, Any]]) -> Dict[str
 
 
 async def _fetch_single_article(article: Dict[str, Any]) -> Dict[str, Any]:
-    """Fetch content for a single article and update DB.
+    """Fetch content for a single article, run LLM cleaning, and update DB.
 
-    Uses FetchFullContentSkill for fetching, then updates the News record
-    with content status and file path.
+    Uses FetchFullContentSkill for HTTP fetching, then runs
+    ContentCleaningService to produce cleaned_text and extract image
+    insights. Updates the News record with content status, file path,
+    and cleaning results.
 
     Returns:
         Dict with 'success', 'file_path', and optional 'error' keys.
@@ -318,7 +343,7 @@ async def _fetch_single_article(article: Dict[str, Any]) -> Dict[str, Any]:
                 try:
                     from app.services.pipeline_trace_service import PipelineTraceService
                     await PipelineTraceService.record_event(
-                        db, news_id=news_id, layer="1.5", node="fetch",
+                        db, news_id=news_id, layer="2", node="fetch",
                         status="error", duration_ms=elapsed,
                         metadata={"content_status": str(news.content_status)},
                         error=error_msg[:200] if error_msg else None,
@@ -359,18 +384,102 @@ async def _fetch_single_article(article: Dict[str, Any]) -> Dict[str, Any]:
             news.authors = data.get("authors")
             news.keywords = data.get("keywords")
 
+            # === Content cleaning (Layer 2) ===
+            # After successful fetch, run LLM cleaning to produce cleaned_text
+            # and extract image insights. On failure, use raw full_text (fail-open).
+            cleaning_result = None
+            file_path_value = data.get("file_path")
+            if file_path_value:
+                try:
+                    from app.services.content_cleaning_service import get_content_cleaning_service
+                    from app.services.news_storage_service import get_news_storage_service
+
+                    cleaning_service = get_content_cleaning_service()
+                    storage = get_news_storage_service()
+
+                    # Read the stored JSON to get full_text and images
+                    stored_content = storage.read_content(file_path_value)
+
+                    if stored_content and stored_content.get("full_text"):
+                        full_text = stored_content["full_text"]
+                        images = stored_content.get("images")
+
+                        # Use a separate DB session for cleaning (LLM model resolution)
+                        async with get_task_session() as cleaning_db:
+                            cleaning_result = await cleaning_service.clean_and_extract(
+                                cleaning_db, full_text, images, url
+                            )
+
+                        if cleaning_result:
+                            # Add cleaned data to the stored JSON
+                            stored_content["cleaned_text"] = cleaning_result.cleaned_text
+                            stored_content["image_insights"] = cleaning_result.image_insights
+                            stored_content["has_visual_data"] = cleaning_result.has_visual_data
+
+                            # Write updated content back to JSON file
+                            full_file_path = storage.base_path / file_path_value
+                            with open(full_file_path, "w", encoding="utf-8") as f:
+                                json.dump(stored_content, f, ensure_ascii=False, indent=2, default=str)
+
+                            logger.info(
+                                "batch_fetch: cleaned news_id=%s, cleaned_len=%d, "
+                                "insights_len=%d, has_visual=%s",
+                                news_id,
+                                len(cleaning_result.cleaned_text),
+                                len(cleaning_result.image_insights),
+                                cleaning_result.has_visual_data,
+                            )
+
+                except Exception as cleaning_err:
+                    logger.warning(
+                        "batch_fetch: content cleaning failed for news_id=%s (non-fatal): %s",
+                        news_id, cleaning_err,
+                    )
+
+            # Update News record with cleaning results (if available)
+            if cleaning_result:
+                news.image_insights = cleaning_result.image_insights or None
+                news.has_visual_data = cleaning_result.has_visual_data
+
             # Record pipeline trace event for fetch success
             elapsed = (time.monotonic() - t0) * 1000
             try:
                 from app.services.pipeline_trace_service import PipelineTraceService
+
+                # Extract image stats from skill result metadata
+                images_found = 0
+                images_downloaded = 0
+                provider = result.metadata.get("source", "unknown") if result.metadata else "unknown"
+                if file_path_value:
+                    # Read image info from stored content
+                    try:
+                        from app.services.news_storage_service import get_news_storage_service
+                        stored = get_news_storage_service().read_content(file_path_value)
+                        if stored:
+                            stored_images = stored.get("images") or []
+                            images_downloaded = len(stored_images)
+                            # images_found >= images_downloaded (some may fail download)
+                            images_found = images_downloaded
+                    except Exception:
+                        pass
+
+                trace_metadata = {
+                    "word_count": data.get("word_count", 0),
+                    "language": data.get("language"),
+                    "content_status": str(news.content_status),
+                    "provider": provider,
+                    "images_found": images_found,
+                    "images_downloaded": images_downloaded,
+                }
+                if cleaning_result:
+                    trace_metadata["cleaned"] = True
+                    trace_metadata["cleaned_text_len"] = len(cleaning_result.cleaned_text)
+                    trace_metadata["has_visual_data"] = cleaning_result.has_visual_data
+
                 await PipelineTraceService.record_event(
-                    db, news_id=news_id, layer="1.5", node="fetch",
+                    db, news_id=news_id, layer="2", node="fetch",
                     status="success", duration_ms=elapsed,
-                    metadata={
-                        "word_count": data.get("word_count", 0),
-                        "language": data.get("language"),
-                        "content_status": str(news.content_status),
-                    },
+                    metadata=trace_metadata,
                 )
             except Exception as trace_err:
                 logger.debug("Trace recording failed for fetch success: %s", trace_err)
@@ -378,13 +487,14 @@ async def _fetch_single_article(article: Dict[str, Any]) -> Dict[str, Any]:
             await db.commit()
 
             logger.info(
-                "batch_fetch: fetched news_id=%s, %d words, status=%s",
+                "batch_fetch: fetched news_id=%s, %d words, status=%s, cleaned=%s",
                 news_id, data.get("word_count", 0), news.content_status,
+                cleaning_result is not None,
             )
 
             return {
                 "success": True,
-                "file_path": data.get("file_path"),
+                "file_path": file_path_value,
                 "word_count": data.get("word_count", 0),
             }
 

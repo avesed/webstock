@@ -210,7 +210,7 @@ class FeaturesConfig(CamelModel):
     enable_news_analysis: bool = True
     enable_stock_analysis: bool = True
     require_registration_approval: bool = False
-    use_two_phase_filter: bool = False
+    enable_llm_pipeline: bool = False
     enable_mcp_extraction: bool = False
 
 
@@ -232,6 +232,31 @@ class ModelAssignmentsConfig(CamelModel):
     content_extraction: ModelAssignment = ModelAssignment(model="gpt-4o-mini")
 
 
+class Phase2ModelAssignment(CamelModel):
+    """Phase 2 model assignment (provider + model)."""
+
+    provider_id: Optional[str] = None
+    model: str = ""
+
+
+class Phase2Config(CamelModel):
+    """Phase 2 multi-agent pipeline configuration."""
+
+    enabled: bool = False
+    score_threshold: int = 50
+    discard_threshold: int = 105
+    full_analysis_threshold: int = 195
+    layer1_scoring: Phase2ModelAssignment = Phase2ModelAssignment(model="gpt-4o-mini")
+    layer15_cleaning: Phase2ModelAssignment = Phase2ModelAssignment(model="gpt-4o")
+    layer2_scoring: Phase2ModelAssignment = Phase2ModelAssignment(model="gpt-4o-mini")
+    layer2_analysis: Phase2ModelAssignment = Phase2ModelAssignment(model="gpt-4o")
+    layer2_lightweight: Phase2ModelAssignment = Phase2ModelAssignment(model="gpt-4o-mini")
+    high_value_sources: list[str] = ["reuters", "bloomberg", "sec", "company_announcement"]
+    high_value_pct: float = 0.20
+    cache_enabled: bool = True
+    cache_ttl_minutes: int = 60
+
+
 class SystemConfigResponse(CamelModel):
     """System configuration response matching frontend SystemConfig type."""
 
@@ -240,6 +265,7 @@ class SystemConfigResponse(CamelModel):
     features: FeaturesConfig
     langgraph: LangGraphConfig
     model_assignments: Optional[ModelAssignmentsConfig] = None
+    phase2: Optional[Phase2Config] = None
 
 
 class UpdateSystemConfigRequest(CamelModel):
@@ -250,6 +276,7 @@ class UpdateSystemConfigRequest(CamelModel):
     features: Optional[FeaturesConfig] = None
     langgraph: Optional[LangGraphConfig] = None
     model_assignments: Optional[ModelAssignmentsConfig] = None
+    phase2: Optional[Phase2Config] = None
 
 
 # ============== System Monitor Stats Schemas ==============
@@ -367,13 +394,14 @@ class EmbeddingCountsResponse(CamelModel):
     error: int
 
 
-class VotingCountsResponse(CamelModel):
-    """Counts for multi-agent voting results."""
+class Layer1ScoringCountsResponse(CamelModel):
+    """Counts for Layer 1 three-agent scoring results."""
 
-    unanimous_skip: int = 0
-    majority_skip: int = 0
-    majority_pass: int = 0
-    unanimous_pass: int = 0
+    discard: int = 0
+    lightweight: int = 0
+    full_analysis: int = 0
+    critical_event: int = 0
+    total: int = 0
 
 
 class FilterCountsResponse(CamelModel):
@@ -383,7 +411,7 @@ class FilterCountsResponse(CamelModel):
     deep_filter: DeepFilterCountsResponse
     errors: ErrorCountsResponse
     embedding: EmbeddingCountsResponse
-    voting: Optional[VotingCountsResponse] = None
+    layer1_scoring: Optional[Layer1ScoringCountsResponse] = None
 
 
 class FilterRatesResponse(CamelModel):
@@ -395,6 +423,8 @@ class FilterRatesResponse(CamelModel):
     deep_delete_rate: float
     filter_error_rate: float
     embedding_error_rate: float
+    layer1_discard_rate: float = 0
+    layer1_pass_rate: float = 0
 
 
 class FilterTokensResponse(CamelModel):
@@ -404,8 +434,9 @@ class FilterTokensResponse(CamelModel):
     deep_filter: TokenUsageResponse
     total: TokenUsageResponse
     days: int
-    initial_strict: Optional[TokenUsageResponse] = None
-    initial_permissive: Optional[TokenUsageResponse] = None
+    layer1_macro: Optional[TokenUsageResponse] = None
+    layer1_market: Optional[TokenUsageResponse] = None
+    layer1_signal: Optional[TokenUsageResponse] = None
 
 
 class FilterAlertResponse(CamelModel):
@@ -443,16 +474,6 @@ class DailyFilterStatsItemResponse(CamelModel):
     initial_output_tokens: int
     deep_input_tokens: int
     deep_output_tokens: int
-    # Multi-agent voting stats
-    vote_unanimous_skip: int = 0
-    vote_majority_skip: int = 0
-    vote_majority_pass: int = 0
-    vote_unanimous_pass: int = 0
-    # Per-agent token tracking
-    initial_strict_input_tokens: int = 0
-    initial_strict_output_tokens: int = 0
-    initial_permissive_input_tokens: int = 0
-    initial_permissive_output_tokens: int = 0
 
 
 class DailyFilterStatsResponse(CamelModel):
@@ -543,3 +564,125 @@ class SourceStatsResponse(CamelModel):
     period_days: int
     sources: List[SourceStatsItemResponse]
     total_sources: int
+
+
+# ============== Layer 1.5 Stats Schemas ==============
+
+
+class Layer15FetchStats(CamelModel):
+    """Layer 1.5 content fetch statistics."""
+
+    total: int = 0
+    success: int = 0
+    errors: int = 0
+    avg_ms: Optional[float] = None
+    p50_ms: Optional[float] = None
+    p95_ms: Optional[float] = None
+    avg_images_found: float = 0
+    avg_images_downloaded: float = 0
+    articles_with_images: int = 0
+
+
+class Layer15ProviderDistribution(CamelModel):
+    """Provider usage distribution for content fetching."""
+
+    provider: str
+    count: int = 0
+
+
+class Layer15CleaningStats(CamelModel):
+    """Layer 1.5 content cleaning statistics."""
+
+    total: int = 0
+    success: int = 0
+    errors: int = 0
+    avg_ms: Optional[float] = None
+    p50_ms: Optional[float] = None
+    p95_ms: Optional[float] = None
+    avg_retention_rate: Optional[float] = None
+    articles_with_visual_data: int = 0
+    avg_image_count: float = 0
+    avg_insights_length: float = 0
+
+
+class Layer15StatsResponse(CamelModel):
+    """Combined Layer 1.5 statistics response."""
+
+    period_days: int
+    fetch: Layer15FetchStats = Layer15FetchStats()
+    provider_distribution: List[Layer15ProviderDistribution] = []
+    cleaning: Layer15CleaningStats = Layer15CleaningStats()
+
+
+# ============== News Pipeline Stats Schemas ==============
+
+
+class NewsPipelineRoutingStats(CamelModel):
+    """News pipeline routing decision counts from Redis."""
+
+    total: int = 0
+    full_analysis: int = 0
+    lightweight: int = 0
+    critical_events: int = 0
+    scoring_errors: int = 0
+
+
+class NewsPipelineTokenStage(CamelModel):
+    """Token usage for a single news pipeline stage."""
+
+    input_tokens: int = 0
+    output_tokens: int = 0
+    total_tokens: int = 0
+    estimated_cost_usd: float = 0.0
+
+
+class NewsPipelineTokenStats(CamelModel):
+    """Token breakdown by news pipeline processing stage."""
+
+    scoring: NewsPipelineTokenStage = NewsPipelineTokenStage()
+    multi_agent: NewsPipelineTokenStage = NewsPipelineTokenStage()
+    lightweight: NewsPipelineTokenStage = NewsPipelineTokenStage()
+    total: NewsPipelineTokenStage = NewsPipelineTokenStage()
+
+
+class ScoreDistributionBucket(CamelModel):
+    """Score distribution bucket for pipeline scoring."""
+
+    bucket: str
+    count: int
+    full_analysis: int = 0
+    lightweight: int = 0
+    critical: int = 0
+
+
+class NewsPipelineCacheStats(CamelModel):
+    """Prompt caching statistics from news pipeline multi-agent analysis."""
+
+    total: int = 0
+    avg_cache_hit_rate: Optional[float] = None
+    cache_hits: int = 0
+    total_cached_tokens: int = 0
+    total_prompt_tokens: int = 0
+
+
+class NewsPipelineNodeLatency(CamelModel):
+    """Per-node latency stats for news pipeline nodes."""
+
+    node: str
+    count: int = 0
+    success: int = 0
+    errors: int = 0
+    avg_ms: Optional[float] = None
+    p50_ms: Optional[float] = None
+    p95_ms: Optional[float] = None
+
+
+class NewsPipelineStatsResponse(CamelModel):
+    """Combined news pipeline statistics response."""
+
+    period_days: int
+    routing: NewsPipelineRoutingStats
+    tokens: NewsPipelineTokenStats
+    score_distribution: List[ScoreDistributionBucket] = []
+    cache_stats: NewsPipelineCacheStats = NewsPipelineCacheStats()
+    node_latency: List[NewsPipelineNodeLatency] = []
