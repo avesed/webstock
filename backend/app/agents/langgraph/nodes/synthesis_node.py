@@ -111,13 +111,24 @@ def _build_synthesis_prompt(
         # Also include structured data summary if available
         structured_summary = ""
         if result.fundamental:
-            structured_summary = f"\nValuation: {result.fundamental.valuation.value}, Action: {result.fundamental.action.value}"
+            valuation = getattr(result.fundamental.valuation, 'value', None) if result.fundamental.valuation else None
+            action = getattr(result.fundamental.action, 'value', None) if result.fundamental.action else None
+            if valuation and action:
+                structured_summary = f"\nValuation: {valuation}, Action: {action}"
         elif result.technical:
-            structured_summary = f"\nTrend: {result.technical.trend.value}, Action: {result.technical.action.value}"
+            trend = getattr(result.technical.trend, 'value', None) if result.technical.trend else None
+            action = getattr(result.technical.action, 'value', None) if result.technical.action else None
+            if trend and action:
+                structured_summary = f"\nTrend: {trend}, Action: {action}"
         elif result.sentiment:
-            structured_summary = f"\nSentiment: {result.sentiment.overall_sentiment.value}"
+            sentiment = getattr(result.sentiment.overall_sentiment, 'value', None) if result.sentiment.overall_sentiment else None
+            if sentiment:
+                structured_summary = f"\nSentiment: {sentiment}"
         elif result.news:
-            structured_summary = f"\nNews Sentiment: {result.news.overall_sentiment.value}"
+            news_sentiment = getattr(result.news.overall_sentiment, 'value', None) if result.news.overall_sentiment else None
+            action_str = f", Action: {result.news.action.value}" if result.news.action else ""
+            if news_sentiment:
+                structured_summary = f"\nNews Sentiment: {news_sentiment}{action_str}"
 
         if language == "zh":
             section_title = {
@@ -488,6 +499,12 @@ async def generate_synthesis_result(state: AnalysisState) -> SynthesisResult:
                 buy_signals += 1
             elif result.technical.action in (ActionRecommendation.SELL, ActionRecommendation.STRONG_SELL):
                 sell_signals += 1
+        elif result.news:
+            if result.news.action is not None:
+                if result.news.action in (ActionRecommendation.BUY, ActionRecommendation.STRONG_BUY):
+                    buy_signals += 1
+                elif result.news.action in (ActionRecommendation.SELL, ActionRecommendation.STRONG_SELL):
+                    sell_signals += 1
 
     if buy_signals >= 2:
         action = ActionRecommendation.BUY

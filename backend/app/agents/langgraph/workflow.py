@@ -17,6 +17,7 @@ from langgraph.graph import END, StateGraph
 from app.agents.langgraph.nodes import (
     clarify_node,
     collect_node,
+    fetch_shared_data_node,
     fundamental_node,
     news_node,
     sentiment_node,
@@ -39,26 +40,29 @@ def create_analysis_workflow() -> StateGraph:
 
     The workflow has the following structure:
 
-    __start__
-        |
-        +---> fundamental_analysis
-        |           |
-        +---> technical_analysis
-        |           |              ---> collect_results ---> synthesize
-        +---> sentiment_analysis   |                            |
-        |           |              |                 +----------+----------+
-        +---> news_analysis -------+                 |                     |
-                                                should_clarify?       should_clarify?
-                                                     |                     |
-                                                 (clarify)             (end)
-                                                     |
-                                                synthesize (loop back)
+    __start__ --> fetch_shared_data
+                       |
+                       +---> fundamental_analysis
+                       |           |
+                       +---> technical_analysis
+                       |           |              ---> collect_results ---> synthesize
+                       +---> sentiment_analysis   |                            |
+                       |           |              |                 +----------+----------+
+                       +---> news_analysis -------+                 |                     |
+                                                               should_clarify?       should_clarify?
+                                                                    |                     |
+                                                                (clarify)             (end)
+                                                                    |
+                                                               synthesize (loop back)
 
     Returns:
         Compiled StateGraph ready for execution
     """
     # Create the workflow graph
     workflow = StateGraph(AnalysisState)
+
+    # Add shared data pre-fetch node
+    workflow.add_node("fetch_shared_data", fetch_shared_data_node)
 
     # Add analysis nodes
     workflow.add_node("fundamental_analysis", fundamental_node)
@@ -73,12 +77,14 @@ def create_analysis_workflow() -> StateGraph:
     workflow.add_node("synthesize", synthesize_node)
     workflow.add_node("clarify", clarify_node)
 
-    # Define edges from start - parallel execution
-    # All four analysis nodes run in parallel
-    workflow.add_edge("__start__", "fundamental_analysis")
-    workflow.add_edge("__start__", "technical_analysis")
-    workflow.add_edge("__start__", "sentiment_analysis")
-    workflow.add_edge("__start__", "news_analysis")
+    # Start -> fetch shared data
+    workflow.add_edge("__start__", "fetch_shared_data")
+
+    # Shared data -> parallel analysis agents
+    workflow.add_edge("fetch_shared_data", "fundamental_analysis")
+    workflow.add_edge("fetch_shared_data", "technical_analysis")
+    workflow.add_edge("fetch_shared_data", "sentiment_analysis")
+    workflow.add_edge("fetch_shared_data", "news_analysis")
 
     # All analysis nodes feed into collect_results
     workflow.add_edge("fundamental_analysis", "collect_results")
@@ -206,7 +212,12 @@ async def stream_analysis(
 
             # Node start events
             if event_type == "on_chain_start":
-                if event_name in ["fundamental_analysis", "technical_analysis",
+                if event_name == "fetch_shared_data":
+                    yield {
+                        "type": "data_fetch_start",
+                        "data": {}
+                    }
+                elif event_name in ["fundamental_analysis", "technical_analysis",
                                   "sentiment_analysis", "news_analysis"]:
                     yield {
                         "type": "agent_start",
@@ -237,21 +248,50 @@ async def stream_analysis(
             elif event_type == "on_chain_end":
                 output = event.get("data", {}).get("output", {})
 
-                if event_name in ["fundamental_analysis", "technical_analysis",
+                if event_name == "fetch_shared_data":
+                    yield {
+                        "type": "data_fetch_complete",
+                        "data": {}
+                    }
+
+                elif event_name in ["fundamental_analysis", "technical_analysis",
                                   "sentiment_analysis", "news_analysis"]:
                     agent_type = event_name.replace("_analysis", "")
                     result = output.get(agent_type)
 
-                    if result:
+                    if result and hasattr(result, 'success'):
+                        event_data = {
+                            "agent": agent_type,
+                            "success": result.success,
+                            "latency_ms": getattr(result, 'latency_ms', 0),
+                            "tokens_used": getattr(result, 'tokens_used', 0),
+                            "error": getattr(result, 'error', None) if not result.success else None,
+                        }
+
+                        # Include intermediate results for progressive display
+                        if result.success:
+                            typed_result = (
+                                result.fundamental or result.technical
+                                or result.sentiment or result.news
+                            )
+                            if typed_result:
+                                agent_summary = getattr(typed_result, 'summary', None)
+                                if agent_summary:
+                                    event_data["summary"] = agent_summary
+                                raw_insights = getattr(typed_result, 'key_insights', None)
+                                if raw_insights:
+                                    event_data["key_insights"] = [
+                                        {
+                                            "title": i.title,
+                                            "description": i.description,
+                                            "importance": i.importance.value,
+                                        }
+                                        for i in raw_insights[:5]
+                                    ]
+
                         yield {
                             "type": "agent_complete",
-                            "data": {
-                                "agent": agent_type,
-                                "success": result.success,
-                                "latency_ms": result.latency_ms,
-                                "tokens_used": result.tokens_used,
-                                "error": result.error if not result.success else None,
-                            }
+                            "data": event_data,
                         }
 
                 elif event_name == "synthesize":
@@ -395,6 +435,7 @@ def get_workflow_info() -> Dict[str, Any]:
     """
     return {
         "nodes": [
+            "fetch_shared_data",
             "fundamental_analysis",
             "technical_analysis",
             "sentiment_analysis",

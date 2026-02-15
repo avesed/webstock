@@ -8,6 +8,7 @@ from app.agents.langgraph.nodes.analysis_nodes import (
     technical_node,
     sentiment_node,
     news_node,
+    fetch_shared_data_node,
 )
 from app.agents.langgraph.nodes.synthesis_node import (
     synthesize_node,
@@ -18,6 +19,8 @@ from app.agents.langgraph.nodes.clarify_node import (
 )
 
 __all__ = [
+    # Shared data pre-fetch node
+    "fetch_shared_data_node",
     # Analysis nodes
     "fundamental_node",
     "technical_node",

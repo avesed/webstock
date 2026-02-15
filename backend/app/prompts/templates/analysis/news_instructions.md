@@ -50,6 +50,7 @@ Provide your analysis as a JSON object with the following structure:
   "news_volume": "low" | "normal" | "high" | "very_high",
   "news_trend": "bullish" | "bearish" | "neutral",
   "confidence": "low" | "medium" | "high",
+  "action": "strong_buy" | "buy" | "hold" | "sell" | "strong_sell" | "avoid",
   "top_news": [
     {
       "title": "News headline",
@@ -74,6 +75,13 @@ Provide your analysis as a JSON object with the following structure:
   "summary": "2-3 sentence summary of the news analysis"
 }
 ```
+
+### Investment Action
+Based on your overall assessment of the news landscape:
+1. Determine an investment action recommendation
+2. Consider the balance of positive vs negative news
+3. Weight more heavily the news items with higher relevance
+4. Factor in upcoming events that could change the outlook
 
 ## Guidelines
 - Focus on material news that could move the stock price

@@ -49,6 +49,11 @@ from app.schemas.agent_analysis import (
 )
 from app.services.token_service import count_tokens
 from app.skills.base import SkillResult
+from sqlalchemy import select
+from app.db.task_session import get_task_session
+from app.models.news import News
+from app.services.rag import get_index_service, SearchResult
+from app.services.rag.embedding import get_embedding_model_from_db
 
 logger = logging.getLogger(__name__)
 
@@ -126,6 +131,127 @@ _CN_ONLY_SKILLS = {"get_fund_holdings_cn", "get_northbound_holding"}
 _NON_CN_ONLY_SKILLS = {"get_institutional_holders"}
 
 
+def _make_cache_key(skill_name: str, kwargs: Dict[str, Any]) -> str:
+    """Create a deterministic cache key from skill name and its arguments."""
+    # Sort kwargs for deterministic ordering
+    sorted_items = sorted(kwargs.items())
+    parts = [skill_name] + [f"{k}={v}" for k, v in sorted_items]
+    return "|".join(parts)
+
+
+def _slice_history_to_period(history_data: Dict[str, Any], days: int) -> Dict[str, Any]:
+    """Slice cached 1-year history data to a shorter period.
+
+    Used to derive 3-month data from the cached 1-year result,
+    avoiding a separate API call for sentiment agent.
+    """
+    bars = history_data.get("bars", [])
+    if not bars:
+        return history_data
+
+    # Get cutoff date
+    from datetime import timedelta
+    cutoff = (datetime.utcnow() - timedelta(days=days)).strftime("%Y-%m-%d")
+
+    sliced_bars = [b for b in bars if str(b.get("date", "")) >= cutoff]
+
+    return {**history_data, "bars": sliced_bars}
+
+
+def _compute_shared_skill_plan(
+    symbol: str,
+    market: str,
+) -> List[Dict[str, Any]]:
+    """Compute deduplicated skill execution plan across all agents.
+
+    Merges skills from all AGENT_SKILLS entries, deduplicating by
+    skill name + normalized arguments. For get_stock_history,
+    always uses period='1y' (superset of '3mo' used by sentiment).
+
+    Returns list of {name, kwargs, cache_key} dicts.
+    """
+    seen_keys: set = set()
+    plan: List[Dict[str, Any]] = []
+
+    for agent_type, skill_names in AGENT_SKILLS.items():
+        # Market-aware filtering
+        if market in ("CN", "A"):
+            filtered = [s for s in skill_names if s not in _NON_CN_ONLY_SKILLS]
+        else:
+            filtered = [s for s in skill_names if s not in _CN_ONLY_SKILLS]
+
+        for name in filtered:
+            # Build kwargs, but normalize get_stock_history to always use 1y
+            kwargs = _build_skill_kwargs(name, symbol, market, agent_type)
+            if name == "get_stock_history":
+                kwargs["period"] = "1y"
+                kwargs["interval"] = "1d"
+
+            cache_key = _make_cache_key(name, kwargs)
+            if cache_key not in seen_keys:
+                seen_keys.add(cache_key)
+                plan.append({
+                    "name": name,
+                    "kwargs": kwargs,
+                    "cache_key": cache_key,
+                })
+
+    return plan
+
+
+async def fetch_shared_data_node(state: AnalysisState) -> Dict[str, Any]:
+    """Pre-fetch all shared data for analysis agents.
+
+    Computes a deduplicated skill execution plan across all agents,
+    runs all skills in parallel, and stores results in shared_data
+    for consumption by individual agent nodes.
+    """
+    symbol = state["symbol"]
+    market = state["market"]
+
+    logger.info(f"Fetching shared data for {symbol} ({market})")
+    start_time = time.time()
+
+    from app.skills.registry import get_skill_registry
+    registry = get_skill_registry()
+
+    plan = _compute_shared_skill_plan(symbol, market)
+
+    # Execute all skills in parallel
+    async def _run_skill(item: Dict[str, Any]):
+        skill = registry.get(item["name"])
+        if skill is None:
+            return item["cache_key"], SkillResult(success=False, error=f"Skill {item['name']} not found")
+        try:
+            result = await skill.safe_execute(timeout=15.0, **item["kwargs"])
+            return item["cache_key"], result
+        except Exception as e:
+            logger.warning(f"Shared data fetch failed for skill {item['name']}: {e}")
+            return item["cache_key"], SkillResult(success=False, error=str(e))
+
+    tasks = [_run_skill(item) for item in plan]
+    results = await asyncio.gather(*tasks, return_exceptions=True)
+
+    shared_data: Dict[str, Any] = {}
+    succeeded = 0
+    for result in results:
+        if isinstance(result, Exception):
+            logger.warning(f"Shared data fetch exception: {result}")
+            continue
+        cache_key, skill_result = result
+        shared_data[cache_key] = skill_result
+        if skill_result.success:
+            succeeded += 1
+
+    elapsed_ms = int((time.time() - start_time) * 1000)
+    logger.info(
+        f"Shared data fetch complete for {symbol}: "
+        f"{succeeded}/{len(plan)} skills succeeded in {elapsed_ms}ms"
+    )
+
+    return {"shared_data": shared_data}
+
+
 def _build_skill_kwargs(
     name: str,
     symbol: str,
@@ -155,8 +281,13 @@ async def _execute_agent_skills(
     agent_type: str,
     symbol: str,
     market: str,
+    shared_data: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, SkillResult]:
-    """Execute all pre-configured skills for an agent in parallel."""
+    """Execute all pre-configured skills for an agent in parallel.
+
+    If shared_data is provided, looks up cached results first.
+    Only fetches independently if the cache misses.
+    """
     from app.skills.registry import get_skill_registry
 
     registry = get_skill_registry()
@@ -169,19 +300,56 @@ async def _execute_agent_skills(
         skill_names = [s for s in skill_names if s not in _CN_ONLY_SKILLS]
 
     # Build kwargs for each skill
-    tasks = {}
+    results: Dict[str, SkillResult] = {}
+    uncached_tasks: Dict[str, Any] = {}
+
     for name in skill_names:
         skill = registry.get(name)
         if skill is None:
             continue
-        kwargs = _build_skill_kwargs(name, symbol, market, agent_type)
-        tasks[name] = skill.safe_execute(timeout=15.0, **kwargs)
 
-    # Execute in parallel
-    results: Dict[str, SkillResult] = {}
-    if tasks:
-        task_names = list(tasks.keys())
-        task_coros = list(tasks.values())
+        kwargs = _build_skill_kwargs(name, symbol, market, agent_type)
+
+        # Try shared_data cache first
+        if shared_data:
+            # For get_stock_history, the cache has 1y data; we may need to slice
+            if name == "get_stock_history":
+                cache_kwargs = dict(kwargs)
+                cache_kwargs["period"] = "1y"
+                cache_kwargs["interval"] = "1d"
+                cache_key = _make_cache_key(name, cache_kwargs)
+            else:
+                cache_key = _make_cache_key(name, kwargs)
+
+            cached = shared_data.get(cache_key)
+            if cached is not None:
+                logger.debug(f"Cache HIT for {name} (key={cache_key})")
+                if name == "get_stock_history" and kwargs.get("period") != "1y":
+                    # Slice to the requested period
+                    if cached.success and cached.data:
+                        period = kwargs.get("period", "3mo")
+                        days = {"1mo": 30, "3mo": 90, "6mo": 180}.get(period, 90)
+                        sliced_data = _slice_history_to_period(cached.data, days)
+                        results[name] = SkillResult(
+                            success=True,
+                            data=sliced_data,
+                            metadata={"sliced_from": "1y", "days": days},
+                        )
+                    else:
+                        results[name] = cached
+                else:
+                    results[name] = cached
+                continue
+            else:
+                logger.debug(f"Cache MISS for {name} (key={cache_key})")
+
+        # Cache miss — schedule for independent fetch
+        uncached_tasks[name] = skill.safe_execute(timeout=15.0, **kwargs)
+
+    # Execute uncached skills in parallel
+    if uncached_tasks:
+        task_names = list(uncached_tasks.keys())
+        task_coros = list(uncached_tasks.values())
         done = await asyncio.gather(*task_coros, return_exceptions=True)
         for name, result in zip(task_names, done):
             if isinstance(result, Exception):
@@ -380,7 +548,7 @@ Analyze the given stock data, evaluate its valuation, profitability, and financi
 Output results in JSON format."""
 
         # 2. Prepare data via Skills
-        skill_results = await _execute_agent_skills("fundamental", symbol, market)
+        skill_results = await _execute_agent_skills("fundamental", symbol, market, shared_data=state.get("shared_data"))
 
         # 3. Build prompt
         data_section = _build_fundamental_data_prompt(symbol, market, skill_results, language)
@@ -603,7 +771,7 @@ Analyze the given price data and technical indicators, evaluate trends, support/
 Output results in JSON format."""
 
         # 2. Prepare data via Skills
-        skill_results = await _execute_agent_skills("technical", symbol, market)
+        skill_results = await _execute_agent_skills("technical", symbol, market, shared_data=state.get("shared_data"))
 
         # 3. Build prompt
         data_section = _build_technical_data_prompt(symbol, market, skill_results, language)
@@ -817,7 +985,7 @@ Analyze the given market data, news, and analyst ratings to evaluate overall mar
 Output results in JSON format."""
 
         # 2. Prepare data via Skills
-        skill_results = await _execute_agent_skills("sentiment", symbol, market)
+        skill_results = await _execute_agent_skills("sentiment", symbol, market, shared_data=state.get("shared_data"))
 
         # 3. Build prompt
         data_section = _build_sentiment_data_prompt(symbol, market, skill_results, language)
@@ -930,34 +1098,138 @@ Please analyze the market sentiment for this stock and output results in JSON fo
 # =============================================================================
 
 
+async def _search_news_knowledge(
+    symbol: str,
+    market: str,
+    limit: int = 8,
+) -> List[Dict[str, Any]]:
+    """Search RAG knowledge base for news related to the symbol.
+
+    Uses pgvector + trigram hybrid search with freshness decay to find
+    semantically relevant news from the pipeline DB, then enriches
+    results with structured metadata from the news table.
+
+    Returns list of enriched article dicts, or empty list on failure.
+    """
+    start_time = time.time()
+    try:
+        async with get_task_session() as db:
+            # Get embedding model config
+            try:
+                embedding_model = await get_embedding_model_from_db(db)
+            except ValueError as e:
+                logger.warning(f"RAG news search skipped - no embedding model configured: {e}")
+                return []
+
+            index_service = get_index_service()
+
+            # Build search query combining symbol with investment context
+            query_text = f"{symbol} recent news investment market impact"
+
+            # Generate query embedding
+            query_embedding = await index_service.generate_embedding(
+                query_text, model=embedding_model
+            )
+            if not query_embedding:
+                logger.warning(f"RAG news search: failed to generate embedding for {symbol}")
+                return []
+
+            # Hybrid search with source_type="news" filter
+            rag_results: List[SearchResult] = await index_service.search(
+                db=db,
+                query_embedding=query_embedding,
+                query_text=query_text,
+                symbol=symbol,
+                source_type="news",
+                top_k=limit,
+                embedding_model=embedding_model,
+            )
+
+            if not rag_results:
+                logger.info(f"RAG news search: no results for {symbol}")
+                return []
+
+            # Collect unique source_ids for metadata lookup
+            source_ids = list({r.source_id for r in rag_results})
+
+            # Batch query News table for structured metadata
+            import uuid as uuid_mod
+            valid_uuids = []
+            for sid in source_ids:
+                try:
+                    valid_uuids.append(uuid_mod.UUID(sid))
+                except (ValueError, AttributeError):
+                    logger.debug(f"RAG news search: skipping non-UUID source_id: {sid}")
+                    continue
+
+            news_metadata = {}
+            if valid_uuids:
+                news_query = select(News).where(News.id.in_(valid_uuids))
+                result = await db.execute(news_query)
+                news_rows = result.scalars().all()
+                for row in news_rows:
+                    news_metadata[str(row.id)] = row
+
+            # Merge RAG results with news metadata
+            enriched = []
+            for r in rag_results:
+                article = {
+                    "chunk_text": r.chunk_text,
+                    "relevance_score": round(r.score, 3),
+                    "source_id": r.source_id,
+                }
+                news_row = news_metadata.get(r.source_id)
+                if news_row:
+                    article["title"] = news_row.title
+                    article["source"] = news_row.source
+                    article["published_at"] = (
+                        news_row.published_at.isoformat() if news_row.published_at else None
+                    )
+                    article["sentiment_tag"] = news_row.sentiment_tag
+                    article["content_score"] = news_row.content_score
+                    article["investment_summary"] = news_row.investment_summary
+                    article["detailed_summary"] = news_row.detailed_summary
+                    article["industry_tags"] = news_row.industry_tags or []
+                    article["event_tags"] = news_row.event_tags or []
+                    article["symbol"] = news_row.symbol
+                else:
+                    # RAG result without news metadata - use chunk text as fallback
+                    article["title"] = r.chunk_text[:80] if r.chunk_text else "Unknown"
+                    article["source"] = "knowledge_base"
+
+                enriched.append(article)
+
+            elapsed_ms = int((time.time() - start_time) * 1000)
+            logger.info(
+                f"RAG news search for {symbol}: {len(rag_results)} chunks, "
+                f"{len(news_metadata)} metadata matches, {len(enriched)} enriched "
+                f"in {elapsed_ms}ms"
+            )
+            return enriched
+
+    except Exception as e:
+        elapsed_ms = int((time.time() - start_time) * 1000)
+        logger.warning(f"RAG news search failed for {symbol} in {elapsed_ms}ms: {e}", exc_info=True)
+        return []
+
+
 def _build_news_data_prompt(
     symbol: str,
     market: str,
     skill_results: Dict[str, SkillResult],
     language: str,
+    rag_articles: Optional[List[Dict[str, Any]]] = None,
 ) -> str:
-    """Build data section for news analysis prompt."""
-    # Get scored articles (preferred) or raw news
-    scored_result = skill_results.get("score_news_articles")
-    if scored_result and scored_result.success and scored_result.data:
-        articles = scored_result.data
-    else:
-        # Fall back to raw news if scoring failed
-        news_result = skill_results.get("get_news")
-        if news_result and news_result.success and news_result.data:
-            articles = news_result.data
-        else:
-            articles = []
+    """Build data section for news analysis prompt.
 
-    if not articles:
-        if language == "zh":
-            return f"未找到 {symbol} 的近期新闻。请提供一般性市场展望。"
-        return f"No recent news found for {symbol}. Please provide a general market outlook."
-
+    If rag_articles is provided (from pipeline DB via RAG search),
+    uses the enriched data with pre-analyzed metadata.
+    Otherwise falls back to raw news from external API skills.
+    """
     sections = []
 
-    # Stock context
-    ctx_result = skill_results.get("get_stock_quote")
+    # Stock context (always include if available)
+    ctx_result = skill_results.get("get_stock_quote") if skill_results else None
     if ctx_result and ctx_result.success and ctx_result.data:
         ctx = ctx_result.data
         if language == "zh":
@@ -971,7 +1243,87 @@ def _build_news_data_prompt(
 - Change: {ctx.get('change_percent', 'N/A')}%
 """)
 
-    # News articles
+    # Use RAG articles if available (enriched pipeline data)
+    if rag_articles:
+        if language == "zh":
+            sections.append("## 新闻文章（来自分析管线知识库）")
+        else:
+            sections.append("## News Articles (from analysis pipeline knowledge base)")
+
+        for i, article in enumerate(rag_articles):
+            title = article.get("title", "No title")
+            source = article.get("source", "Unknown")
+            published = article.get("published_at", "")
+            sentiment = article.get("sentiment_tag", "")
+            score = article.get("content_score", "")
+            investment_summary = article.get("investment_summary", "")
+            detailed_summary = article.get("detailed_summary", "")
+            chunk_text = article.get("chunk_text", "")
+            industry_tags = ", ".join(article.get("industry_tags", []))
+            event_tags = ", ".join(article.get("event_tags", []))
+            relevance = article.get("relevance_score", 0)
+
+            if language == "zh":
+                entry = f"### {i+1}. {title} (相关度: {relevance:.2f})\n"
+                entry += f"- 来源: {source}"
+                if published:
+                    entry += f" | 时间: {published}"
+                if sentiment:
+                    entry += f" | 情绪: {sentiment}"
+                if score:
+                    entry += f" | 评分: {score}/300"
+                entry += "\n"
+                if investment_summary:
+                    entry += f"- 投资概况: {investment_summary}\n"
+                if detailed_summary:
+                    entry += f"- 详细摘要: {detailed_summary[:500]}\n"
+                elif chunk_text:
+                    entry += f"- 检索内容: {chunk_text[:300]}\n"
+                if industry_tags:
+                    entry += f"- 行业标签: {industry_tags}\n"
+                if event_tags:
+                    entry += f"- 事件标签: {event_tags}\n"
+            else:
+                entry = f"### {i+1}. {title} (relevance: {relevance:.2f})\n"
+                entry += f"- Source: {source}"
+                if published:
+                    entry += f" | Published: {published}"
+                if sentiment:
+                    entry += f" | Sentiment: {sentiment}"
+                if score:
+                    entry += f" | Score: {score}/300"
+                entry += "\n"
+                if investment_summary:
+                    entry += f"- Investment Summary: {investment_summary}\n"
+                if detailed_summary:
+                    entry += f"- Detailed Summary: {detailed_summary[:500]}\n"
+                elif chunk_text:
+                    entry += f"- Retrieved Content: {chunk_text[:300]}\n"
+                if industry_tags:
+                    entry += f"- Industry Tags: {industry_tags}\n"
+                if event_tags:
+                    entry += f"- Event Tags: {event_tags}\n"
+
+            sections.append(entry)
+
+        return "\n".join(sections)
+
+    # Fallback: use raw news from external API skills
+    scored_result = skill_results.get("score_news_articles") if skill_results else None
+    if scored_result and scored_result.success and scored_result.data:
+        articles = scored_result.data
+    else:
+        news_result = skill_results.get("get_news") if skill_results else None
+        if news_result and news_result.success and news_result.data:
+            articles = news_result.data
+        else:
+            articles = []
+
+    if not articles:
+        if language == "zh":
+            return "\n".join(sections) + f"\n未找到 {symbol} 的近期新闻。请提供一般性市场展望。" if sections else f"未找到 {symbol} 的近期新闻。请提供一般性市场展望。"
+        return "\n".join(sections) + f"\nNo recent news found for {symbol}. Please provide a general market outlook." if sections else f"No recent news found for {symbol}. Please provide a general market outlook."
+
     if language == "zh":
         sections.append("## 新闻文章")
     else:
@@ -1004,6 +1356,11 @@ async def news_node(state: AnalysisState) -> Dict[str, Any]:
     News analysis node.
 
     Analyzes recent news articles and their potential impact on the stock.
+
+    Data sourcing strategy:
+    1. First, search RAG knowledge base for pipeline-analyzed news
+    2. If RAG returns >= 3 results, use enriched pipeline data
+    3. Otherwise, fallback to external API via skills
     """
     start_time = time.time()
     symbol = state["symbol"]
@@ -1027,12 +1384,53 @@ async def news_node(state: AnalysisState) -> Dict[str, Any]:
 Analyze the given news articles and evaluate their potential impact on the stock price.
 Output results in JSON format."""
 
-        # 2. Prepare data via Skills
-        skill_results = await _execute_agent_skills("news", symbol, market)
+        # 2. Try RAG knowledge base first
+        rag_articles = await _search_news_knowledge(symbol, market)
+        data_source = "rag" if len(rag_articles) >= 3 else "api"
 
-        # 3. Build prompt
-        data_section = _build_news_data_prompt(symbol, market, skill_results, language)
+        if data_source == "rag":
+            logger.info(
+                f"News agent using RAG data for {symbol}: {len(rag_articles)} articles"
+            )
+            # Build prompt with RAG data; pass empty skill_results for quote context
+            # We still want get_stock_quote for price context
+            skill_results = {}
+            sd = state.get("shared_data")
+            quote_from_cache = False
+            if sd:
+                quote_cache_key = _make_cache_key("get_stock_quote", {"symbol": symbol})
+                cached_quote = sd.get(quote_cache_key)
+                if cached_quote is not None:
+                    skill_results["get_stock_quote"] = cached_quote
+                    quote_from_cache = True
 
+            if not quote_from_cache:
+                try:
+                    from app.skills.registry import get_skill_registry
+                    registry = get_skill_registry()
+                    quote_skill = registry.get("get_stock_quote")
+                    if quote_skill:
+                        quote_result = await quote_skill.safe_execute(timeout=10.0, symbol=symbol)
+                        skill_results["get_stock_quote"] = quote_result
+                except Exception as e:
+                    logger.debug(f"Quote fetch for news context failed: {e}")
+
+            data_section = _build_news_data_prompt(
+                symbol, market, skill_results, language, rag_articles=rag_articles
+            )
+        else:
+            if rag_articles:
+                logger.info(
+                    f"RAG returned only {len(rag_articles)} articles for {symbol}, "
+                    f"falling back to external API"
+                )
+            # 3. Fallback to external API via skills
+            skill_results = await _execute_agent_skills("news", symbol, market, shared_data=state.get("shared_data"))
+            data_section = _build_news_data_prompt(
+                symbol, market, skill_results, language
+            )
+
+        # 4. Build prompt
         if language == "zh":
             user_prompt = f"""# 新闻分析请求
 
@@ -1054,7 +1452,7 @@ Output results in JSON format."""
 Please analyze the impact of these news articles on the stock and output results in JSON format.
 """
 
-        # 4. Call LLM
+        # 5. Call LLM
         try:
             llm = await get_analysis_langchain_model()
             messages = [
@@ -1062,7 +1460,12 @@ Please analyze the impact of these news articles on the stock and output results
                 {"role": "user", "content": user_prompt},
             ]
             usage_cb = LlmUsageCallbackHandler(
-                purpose="analysis", metadata={"symbol": symbol, "agent_type": "news"},
+                purpose="analysis",
+                metadata={
+                    "symbol": symbol,
+                    "agent_type": "news",
+                    "data_source": data_source,
+                },
             )
             response = await asyncio.wait_for(
                 llm.ainvoke(messages, config={"callbacks": [usage_cb]}),
@@ -1096,7 +1499,7 @@ Please analyze the impact of these news articles on the stock and output results
                 "errors": [f"News LLM error: {e}"],
             }
 
-        # 5. Parse result
+        # 6. Parse result
         json_data = safe_json_extract(content, {})
         news_result = extract_structured_data(
             content, NewsAnalysisResult, strict=False
@@ -1105,7 +1508,10 @@ Please analyze the impact of these news articles on the stock and output results
         latency_ms = int((time.time() - start_time) * 1000)
         tokens_used = count_tokens(instructions + user_prompt + content)
 
-        logger.info(f"News analysis completed for {symbol} in {latency_ms}ms")
+        logger.info(
+            f"News analysis completed for {symbol} in {latency_ms}ms "
+            f"(data_source={data_source})"
+        )
 
         return {
             "news": AgentAnalysisResult(

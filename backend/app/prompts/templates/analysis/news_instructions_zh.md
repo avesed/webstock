@@ -50,6 +50,7 @@
   "news_volume": "low" | "normal" | "high" | "very_high",
   "news_trend": "bullish" | "bearish" | "neutral",
   "confidence": "low" | "medium" | "high",
+  "action": "strong_buy" | "buy" | "hold" | "sell" | "strong_sell" | "avoid",
   "top_news": [
     {
       "title": "新闻标题",
@@ -74,6 +75,13 @@
   "summary": "2-3句话总结新闻分析"
 }
 ```
+
+### 投资操作建议
+基于对新闻全局的综合评估：
+1. 给出投资操作建议
+2. 综合考虑正面与负面新闻的平衡
+3. 对高相关性的新闻给予更大权重
+4. 考虑即将到来的可能改变预期的事件
 
 ## 指导原则
 - 聚焦可能影响股价的重大新闻

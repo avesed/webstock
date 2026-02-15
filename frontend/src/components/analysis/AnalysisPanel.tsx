@@ -30,6 +30,12 @@ interface AgentStatus {
   latencyMs?: number
 }
 
+interface AgentResult {
+  agent: string
+  summary: string
+  keyInsights: Array<{ title: string; description: string; importance: string }>
+}
+
 interface SSEEvent {
   type:
     | 'heartbeat'
@@ -44,6 +50,8 @@ interface SSEEvent {
     | 'clarification_needed'
     | 'clarification_start'
     | 'clarification_complete'
+    | 'data_fetch_start'
+    | 'data_fetch_complete'
     | 'complete'
     | 'timeout'
     | 'error'
@@ -53,12 +61,16 @@ interface SSEEvent {
   error?: string
   success?: boolean
   latency_ms?: number
+  summary?: string
+  key_insights?: Array<{ title: string; description: string; importance: string }>
   synthesis_output?: string
   agents_completed?: number
   timestamp?: number
 }
 
 type StreamStatus = 'idle' | 'connecting' | 'analyzing' | 'synthesizing' | 'complete' | 'error'
+
+const VALID_AGENTS = new Set(['fundamental', 'technical', 'sentiment', 'news'])
 
 const createInitialAgentStatus = (): Record<string, AgentStatus> => ({
   fundamental: { name: 'Fundamental', icon: BarChart3, status: 'idle' },
@@ -75,6 +87,7 @@ export default function AnalysisPanel({ symbol, className }: AnalysisPanelProps)
   const [agents, setAgents] = useState<Record<string, AgentStatus>>(createInitialAgentStatus)
   const [synthesisContent, setSynthesisContent] = useState<string>('')
   const [clarificationRound, setClarificationRound] = useState<number>(0)
+  const [agentResults, setAgentResults] = useState<AgentResult[]>([])
   const abortControllerRef = useRef<AbortController | null>(null)
 
   // Clean up on unmount
@@ -98,6 +111,7 @@ export default function AnalysisPanel({ symbol, className }: AnalysisPanelProps)
     setAgents(createInitialAgentStatus())
     setSynthesisContent('')
     setClarificationRound(0)
+    setAgentResults([])
   }, [symbol])
 
   const handleSSEEvent = useCallback((event: SSEEvent) => {
@@ -112,8 +126,17 @@ export default function AnalysisPanel({ symbol, className }: AnalysisPanelProps)
         setProgress('Analyzing with AI agents...')
         break
 
+      case 'data_fetch_start':
+        setStatus('analyzing')
+        setProgress('Fetching market data...')
+        break
+
+      case 'data_fetch_complete':
+        setProgress('Running AI analysis...')
+        break
+
       case 'agent_start':
-        if (event.agent && event.agent in agents) {
+        if (event.agent && VALID_AGENTS.has(event.agent)) {
           const agentKey = event.agent as keyof typeof agents
           setAgents((prev) => {
             const current = prev[agentKey]
@@ -129,7 +152,7 @@ export default function AnalysisPanel({ symbol, className }: AnalysisPanelProps)
         break
 
       case 'agent_complete':
-        if (event.agent && event.agent in agents) {
+        if (event.agent && VALID_AGENTS.has(event.agent)) {
           const agentKey = event.agent as keyof typeof agents
           setAgents((prev) => {
             const current = prev[agentKey]
@@ -144,6 +167,18 @@ export default function AnalysisPanel({ symbol, className }: AnalysisPanelProps)
             }
             return { ...prev, [agentKey]: updated }
           })
+
+          // Save intermediate results for progressive display
+          if (event.success && event.summary) {
+            setAgentResults((prev) => [
+              ...prev.filter((r) => r.agent !== event.agent),
+              {
+                agent: event.agent!,
+                summary: event.summary!,
+                keyInsights: event.key_insights ?? [],
+              },
+            ])
+          }
         }
         break
 
@@ -217,6 +252,7 @@ export default function AnalysisPanel({ symbol, className }: AnalysisPanelProps)
     setAgents(createInitialAgentStatus())
     setSynthesisContent('')
     setClarificationRound(0)
+    setAgentResults([])
 
     const abortController = new AbortController()
     abortControllerRef.current = abortController
@@ -275,10 +311,8 @@ export default function AnalysisPanel({ symbol, className }: AnalysisPanelProps)
         }
       }
 
-      // Ensure completion status is set
-      if (status !== 'error') {
-        setStatus('complete')
-      }
+      // Ensure completion status is set (use functional update to avoid stale closure)
+      setStatus((prev) => (prev === 'error' ? 'error' : 'complete'))
     } catch (err) {
       if (err instanceof Error && err.name === 'AbortError') {
         return
@@ -286,7 +320,7 @@ export default function AnalysisPanel({ symbol, className }: AnalysisPanelProps)
       setStatus('error')
       setError(err instanceof Error ? err.message : 'Analysis failed')
     }
-  }, [symbol, locale, handleSSEEvent, status])
+  }, [symbol, locale, handleSSEEvent])
 
   const cancelAnalysis = useCallback(() => {
     if (abortControllerRef.current) {
@@ -337,6 +371,59 @@ export default function AnalysisPanel({ symbol, className }: AnalysisPanelProps)
       ''
     )
     return filtered.trim()
+  }
+
+  const renderAgentResults = () => {
+    if (agentResults.length === 0) return null
+
+    const agentLabels: Record<string, string> = {
+      fundamental: 'Fundamental',
+      technical: 'Technical',
+      sentiment: 'Sentiment',
+      news: 'News',
+    }
+
+    return (
+      <div className="space-y-2 mb-4">
+        {agentResults.map((result) => (
+          <details
+            key={result.agent}
+            className="rounded-lg border bg-card"
+            open={status !== 'complete'}
+          >
+            <summary className="flex items-center gap-2 px-3 py-2 cursor-pointer text-sm font-medium hover:bg-muted/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 rounded-lg">
+              <CheckCircle2 className="h-3.5 w-3.5 text-stock-up flex-shrink-0" />
+              {agentLabels[result.agent] ?? result.agent}
+            </summary>
+            <div className="px-3 pb-3 pt-1 text-sm">
+              <p className="text-muted-foreground leading-relaxed">
+                {result.summary}
+              </p>
+              {result.keyInsights.length > 0 && (
+                <ul className="mt-2 space-y-1">
+                  {result.keyInsights.map((insight, idx) => (
+                    <li key={idx} className="flex items-start gap-2 text-xs">
+                      <span
+                        className={cn(
+                          'mt-1.5 h-1.5 w-1.5 rounded-full flex-shrink-0',
+                          { high: 'bg-destructive', medium: 'bg-primary' }[insight.importance] ?? 'bg-muted-foreground'
+                        )}
+                      />
+                      <div>
+                        <span className="font-medium">{insight.title}:</span>{' '}
+                        <span className="text-muted-foreground">
+                          {insight.description}
+                        </span>
+                      </div>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
+          </details>
+        ))}
+      </div>
+    )
   }
 
   const renderSynthesisContent = () => {
@@ -498,7 +585,10 @@ export default function AnalysisPanel({ symbol, className }: AnalysisPanelProps)
       </CardHeader>
 
       <CardContent className="flex-1 pt-0">
-        <div className="pr-4">{renderSynthesisContent()}</div>
+        <div className="pr-4">
+          {renderAgentResults()}
+          {renderSynthesisContent()}
+        </div>
       </CardContent>
     </Card>
   )

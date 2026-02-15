@@ -50,6 +50,12 @@ class SearchKnowledgeBaseSkill(BaseSkill):
                     description="Optional: filter to a specific stock symbol",
                     required=False,
                 ),
+                SkillParameter(
+                    name="source_type",
+                    type="string",
+                    description="Optional: filter by source type (e.g., 'news', 'analysis')",
+                    required=False,
+                ),
             ],
         )
 
@@ -69,6 +75,7 @@ class SearchKnowledgeBaseSkill(BaseSkill):
 
         query = sanitize_input(kwargs.get("query", ""), max_length=500)
         symbol = _normalize_symbol(kwargs.get("symbol"))
+        source_type = kwargs.get("source_type")
 
         if not query:
             return SkillResult(
@@ -96,6 +103,7 @@ class SearchKnowledgeBaseSkill(BaseSkill):
             query_embedding=query_embedding,
             query_text=query,
             symbol=symbol,
+            source_type=source_type,
             top_k=3,
             embedding_model=embedding_model,
         )

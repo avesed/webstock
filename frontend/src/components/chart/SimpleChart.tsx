@@ -134,11 +134,9 @@ export default function SimpleChart({
         scaleMargins: { top: 0.1, bottom: 0.05 },
       },
       timeScale: {
-        borderVisible: false,
+        visible: false,
         fixLeftEdge: true,
         fixRightEdge: true,
-        timeVisible: ['1H', '1D', '1W', '1M'].includes(timeframe),
-        secondsVisible: false,
       },
       crosshair: {
         mode: CrosshairMode.Magnet,
@@ -210,11 +208,7 @@ export default function SimpleChart({
     const direction = getDirection(data, latestBar)
     applyDirectionColors(areaSeriesRef.current, direction, resolvedTheme)
 
-    // Update timeScale visibility for intraday vs daily
     if (chartRef.current) {
-      chartRef.current.timeScale().applyOptions({
-        timeVisible: ['1H', '1D', '1W', '1M'].includes(timeframe),
-      })
       chartRef.current.timeScale().fitContent()
     }
   }, [data, timeframe, resolvedTheme, getDirection, applyDirectionColors, latestBar])

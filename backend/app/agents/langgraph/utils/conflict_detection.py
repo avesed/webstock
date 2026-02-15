@@ -51,6 +51,8 @@ def _get_action_score(result: AgentAnalysisResult) -> Optional[int]:
         return ACTION_ORDER.get(result.fundamental.action)
     if result.technical and result.technical.action:
         return ACTION_ORDER.get(result.technical.action)
+    if result.news and result.news.action:
+        return ACTION_ORDER.get(result.news.action)
     return None
 
 
@@ -195,6 +197,26 @@ def detect_conflicts(results: List[AgentAnalysisResult]) -> List[Dict[str, Any]]
                     "type": "news_technical_conflict",
                     "description": "Recent news is positive but technical indicators suggest selling",
                     "severity": "medium",
+                })
+
+    # Check news action vs fundamental action conflict
+    if news and fundamental:
+        news_action = None
+        if news.news and news.news.action:
+            news_action = ACTION_ORDER.get(news.news.action)
+        fund_action = _get_action_score(fundamental)
+
+        if news_action is not None and fund_action is not None:
+            if abs(news_action - fund_action) >= 2:
+                news_action_name = news.news.action.value if news.news else "unknown"
+                fund_action_name = fundamental.fundamental.action.value if fundamental.fundamental else "unknown"
+
+                conflicts.append({
+                    "agent1": "news",
+                    "agent2": "fundamental",
+                    "type": "news_fundamental_conflict",
+                    "description": f"News suggests {news_action_name} but fundamental suggests {fund_action_name}",
+                    "severity": "high" if abs(news_action - fund_action) >= 3 else "medium",
                 })
 
     if conflicts:

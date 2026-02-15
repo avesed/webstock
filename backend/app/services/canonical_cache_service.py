@@ -390,10 +390,24 @@ class CanonicalCacheService:
             bars = self._trim_to_range(bars, start, end)
         elif period_days < resolution.max_days:
             # Period-based request: canonical tier is wider than requested.
-            # Compute a cutoff to return only the requested window.
-            cutoff = datetime.now(timezone.utc) - timedelta(days=period_days)
-            cutoff_str = cutoff.strftime("%Y-%m-%d %H:%M:%S")
-            bars = self._trim_to_range(bars, start=cutoff_str)
+            is_intraday = resolution.tier_interval in ("1m", "5m")
+            if is_intraday and period_days <= 5:
+                # For intraday intervals, "1d" means "last trading day", not
+                # "last 24h".  Widen the lookback to cover weekends/holidays,
+                # then keep only the last N *trading* days.
+                buffer_days = period_days + 4  # cover weekends + holidays
+                cutoff = datetime.now(timezone.utc) - timedelta(days=buffer_days)
+                cutoff_str = cutoff.strftime("%Y-%m-%d %H:%M:%S")
+                bars = self._trim_to_range(bars, start=cutoff_str)
+                # Extract unique trading dates and keep only the last N
+                if bars:
+                    trading_dates = sorted({b["date"][:10] for b in bars})
+                    keep_dates = set(trading_dates[-period_days:])
+                    bars = [b for b in bars if b["date"][:10] in keep_dates]
+            else:
+                cutoff = datetime.now(timezone.utc) - timedelta(days=period_days)
+                cutoff_str = cutoff.strftime("%Y-%m-%d %H:%M:%S")
+                bars = self._trim_to_range(bars, start=cutoff_str)
 
         # 4. Resample if needed
         if resolution.needs_resample and resolution.tier_interval != interval:

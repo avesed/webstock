@@ -358,6 +358,9 @@ class NewsAnalysisResult(CamelModel):
         AnalysisConfidence.MEDIUM,
         description="Confidence in news assessment"
     )
+    action: Optional[ActionRecommendation] = Field(
+        None, description="Recommended investment action based on news analysis"
+    )
     top_news: List[NewsItem] = Field(
         default_factory=list,
         description="Most relevant news items"

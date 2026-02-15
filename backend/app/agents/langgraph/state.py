@@ -25,6 +25,7 @@ class AnalysisState(TypedDict):
         symbol: Stock symbol being analyzed
         market: Market identifier (US, HK, CN, etc.)
         language: Output language ("en" or "zh")
+        shared_data: Pre-fetched skill results cache (populated by fetch_shared_data node)
         fundamental: Result from fundamental analysis agent
         technical: Result from technical analysis agent
         sentiment: Result from sentiment analysis agent
@@ -41,6 +42,9 @@ class AnalysisState(TypedDict):
     symbol: str
     market: str
     language: str  # "en" or "zh"
+
+    # Shared data cache (pre-fetched by fetch_shared_data node)
+    shared_data: Dict[str, Any]
 
     # Analysis results from each agent
     fundamental: Optional[AgentAnalysisResult]
@@ -81,6 +85,7 @@ def create_initial_state(
         symbol=symbol,
         market=market,
         language=language,
+        shared_data={},
         fundamental=None,
         technical=None,
         sentiment=None,
