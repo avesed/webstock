@@ -46,6 +46,7 @@ class FetchGlobalNewsSkill(BaseSkill):
                     ),
                     required=False,
                     default=["general", "forex", "crypto", "merger"],
+                    items={"type": "string"},
                 ),
                 SkillParameter(
                     name="include_akshare",

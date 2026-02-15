@@ -13,11 +13,11 @@ from datetime import datetime, timezone
 from typing import Any, Dict, List
 
 from worker.celery_app import celery_app
-from worker.db_utils import get_task_session
-from worker.tasks.news_monitor import (
+from app.db.task_session import get_task_session
+from worker.task_helpers import (
     run_async_task,
-    _run_layer1_scoring_if_enabled,
-    _build_score_details,
+    run_layer1_scoring_if_enabled,
+    build_score_details,
 )
 
 logger = logging.getLogger(__name__)
@@ -186,7 +186,7 @@ async def _monitor_rss_feeds_async() -> Dict[str, Any]:
 
                 scoring_results = []
                 try:
-                    scoring_results, _ = await _run_layer1_scoring_if_enabled(
+                    scoring_results, _ = await run_layer1_scoring_if_enabled(
                         db, system_settings, articles_for_scoring
                     )
                 except Exception as e:
@@ -205,7 +205,7 @@ async def _monitor_rss_feeds_async() -> Dict[str, Any]:
                             article.filter_status = FilterStatus.DISCARDED.value
                             article.content_score = scoring.total_score
                             article.processing_path = "discarded"
-                            article.score_details = _build_score_details(scoring)
+                            article.score_details = build_score_details(scoring)
                             stats["layer1_discard"] += 1
                             if scoring.is_critical:
                                 stats["layer1_critical"] += 1
@@ -215,7 +215,7 @@ async def _monitor_rss_feeds_async() -> Dict[str, Any]:
                         article.filter_status = FilterStatus.INITIAL_USEFUL.value
                         article.content_score = scoring.total_score
                         article.processing_path = scoring.routing_decision
-                        article.score_details = _build_score_details(scoring)
+                        article.score_details = build_score_details(scoring)
                         if scoring.routing_decision == "full_analysis":
                             stats["layer1_full_analysis"] += 1
                         else:

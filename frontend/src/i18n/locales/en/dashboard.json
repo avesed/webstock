@@ -193,6 +193,18 @@
       "viewOriginal": "View Original",
       "articleNotFound": "Article not found",
       "articleNotFoundDesc": "This article may have been removed or the link is invalid."
+    },
+    "filter": {
+      "searchPlaceholder": "Search articles...",
+      "all": "All",
+      "bullish": "Bullish",
+      "bearish": "Bearish",
+      "neutral": "Neutral",
+      "us": "US",
+      "hk": "HK",
+      "cn": "CN",
+      "clear": "Clear",
+      "noResults": "No articles match your filters"
     }
   },
   "stock": {

@@ -108,6 +108,16 @@ async def get_market_news(
         False,
         description="Show all articles including deleted/failed (admin view)",
     ),
+    search: Optional[str] = Query(
+        None,
+        max_length=100,
+        description="Keyword search on article title (ILIKE with pg_trgm)",
+    ),
+    sentiment_tag: Optional[str] = Query(
+        None,
+        pattern=r"^(bullish|bearish|neutral)$",
+        description="Filter by sentiment tag",
+    ),
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
     _rate_limit: None = Depends(FEED_RATE_LIMIT),
@@ -139,13 +149,24 @@ async def get_market_news(
             News.content_status.in_(["fetched", "embedded", "partial"]),
         )
 
-    # Optional market filter
+    # Optional market filter (CN maps to SH + SZ)
     if market:
-        query = query.where(News.market == market)
+        if market.upper() == "CN":
+            query = query.where(News.market.in_(["SH", "SZ"]))
+        else:
+            query = query.where(News.market == market)
 
     # Optional filter_status filter
     if filter_status:
         query = query.where(News.filter_status == filter_status)
+
+    # Optional sentiment_tag filter
+    if sentiment_tag:
+        query = query.where(News.sentiment_tag == sentiment_tag)
+
+    # Optional title keyword search (uses pg_trgm GIN index)
+    if search and search.strip():
+        query = query.where(News.title.ilike(f"%{search.strip()}%"))
 
     # Count total
     count_query = select(func.count()).select_from(query.subquery())
@@ -219,6 +240,16 @@ async def get_trending_news(
 async def get_news_feed(
     page: int = Query(1, ge=1, description="Page number"),
     page_size: int = Query(20, ge=1, le=100, description="Items per page"),
+    search: Optional[str] = Query(
+        None,
+        max_length=100,
+        description="Keyword search on article title",
+    ),
+    sentiment_tag: Optional[str] = Query(
+        None,
+        pattern=r"^(bullish|bearish|neutral)$",
+        description="Filter by sentiment tag",
+    ),
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
     _rate_limit: None = Depends(FEED_RATE_LIMIT),
@@ -272,6 +303,14 @@ async def get_news_feed(
             *entity_conditions,
         ),
     )
+
+    # Optional sentiment_tag filter
+    if sentiment_tag:
+        query = query.where(News.sentiment_tag == sentiment_tag)
+
+    # Optional title keyword search
+    if search and search.strip():
+        query = query.where(News.title.ilike(f"%{search.strip()}%"))
 
     # Count total
     count_query = select(func.count()).select_from(query.subquery())

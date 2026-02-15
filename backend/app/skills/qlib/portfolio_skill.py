@@ -28,6 +28,7 @@ class PortfolioOptimizationSkill(BaseSkill):
                     name="symbols",
                     type="array",
                     description="List of stock symbols to optimize (e.g., ['AAPL', 'MSFT', 'GOOGL']). Minimum 2.",
+                    items={"type": "string"},
                 ),
                 SkillParameter(
                     name="method",

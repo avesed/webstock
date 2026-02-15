@@ -7,7 +7,7 @@ from typing import Any, Dict, List
 from worker.celery_app import celery_app
 
 # Use Celery-safe database utilities (avoids event loop conflicts)
-from worker.db_utils import get_task_session
+from app.db.task_session import get_task_session
 
 logger = logging.getLogger(__name__)
 

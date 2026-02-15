@@ -64,11 +64,8 @@ class SearchKnowledgeBaseSkill(BaseSkill):
             )
 
         from app.prompts.analysis.sanitizer import sanitize_input
-        from app.services.embedding_service import (
-            get_embedding_model_from_db,
-            get_embedding_service,
-        )
-        from app.services.rag_service import get_rag_service
+        from app.services.rag import get_index_service
+        from app.services.rag.embedding import get_embedding_model_from_db
 
         query = sanitize_input(kwargs.get("query", ""), max_length=500)
         symbol = _normalize_symbol(kwargs.get("symbol"))
@@ -79,11 +76,13 @@ class SearchKnowledgeBaseSkill(BaseSkill):
                 error="query parameter is required",
             )
 
-        embedding_svc = get_embedding_service()
-        rag_svc = get_rag_service()
-        embedding_model = await get_embedding_model_from_db(db)
+        index_service = get_index_service()
+        try:
+            embedding_model = await get_embedding_model_from_db(db)
+        except ValueError as e:
+            return SkillResult(success=False, error=str(e))
 
-        query_embedding = await embedding_svc.generate_embedding(
+        query_embedding = await index_service.generate_embedding(
             query, model=embedding_model
         )
         if not query_embedding:
@@ -92,12 +91,13 @@ class SearchKnowledgeBaseSkill(BaseSkill):
                 data={"info": "Could not generate embedding for search query"},
             )
 
-        results = await rag_svc.search(
+        results = await index_service.search(
             db=db,
             query_embedding=query_embedding,
             query_text=query,
             symbol=symbol,
             top_k=3,
+            embedding_model=embedding_model,
         )
 
         if not results:

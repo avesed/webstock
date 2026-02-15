@@ -193,6 +193,18 @@
       "viewOriginal": "查看原文",
       "articleNotFound": "文章未找到",
       "articleNotFoundDesc": "该文章可能已被删除或链接无效。"
+    },
+    "filter": {
+      "searchPlaceholder": "搜索文章...",
+      "all": "全部",
+      "bullish": "看涨",
+      "bearish": "看跌",
+      "neutral": "中性",
+      "us": "美股",
+      "hk": "港股",
+      "cn": "A股",
+      "clear": "清除",
+      "noResults": "没有匹配筛选条件的文章"
     }
   },
   "stock": {

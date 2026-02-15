@@ -701,7 +701,8 @@ export const newsApi = {
 
   getFeed: async (
     page: number = 1,
-    pageSize: number = 20
+    pageSize: number = 20,
+    filters?: { search?: string; sentimentTag?: string }
   ): Promise<PaginatedResponse<NewsArticle>> => {
     interface FeedResponse {
       news: NewsArticle[]
@@ -711,7 +712,12 @@ export const newsApi = {
       hasMore: boolean
     }
     const response = await apiClient.get<FeedResponse>('/news/feed', {
-      params: { page, page_size: pageSize },
+      params: {
+        page,
+        page_size: pageSize,
+        ...(filters?.search ? { search: filters.search } : {}),
+        ...(filters?.sentimentTag ? { sentiment_tag: filters.sentimentTag } : {}),
+      },
     })
     // Transform backend response to frontend PaginatedResponse format
     const { news, total, page: currentPage, pageSize: size, hasMore } = response.data
@@ -726,7 +732,8 @@ export const newsApi = {
 
   getMarket: async (
     page: number = 1,
-    pageSize: number = 20
+    pageSize: number = 20,
+    filters?: { search?: string; sentimentTag?: string; market?: string }
   ): Promise<PaginatedResponse<NewsArticle>> => {
     interface MarketResponse {
       news: NewsArticle[]
@@ -736,7 +743,13 @@ export const newsApi = {
       hasMore: boolean
     }
     const response = await apiClient.get<MarketResponse>('/news/market', {
-      params: { page, page_size: pageSize },
+      params: {
+        page,
+        page_size: pageSize,
+        ...(filters?.search ? { search: filters.search } : {}),
+        ...(filters?.sentimentTag ? { sentiment_tag: filters.sentimentTag } : {}),
+        ...(filters?.market ? { market: filters.market } : {}),
+      },
     })
     const { news, total, page: currentPage, pageSize: size, hasMore } = response.data
     return {

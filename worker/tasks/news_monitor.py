@@ -5,12 +5,15 @@ import json
 import logging
 import time
 from datetime import datetime, timezone
-from typing import Any, Callable, Dict, List, Optional, TypeVar
+from typing import Any, Dict, List, Optional
 
 from worker.celery_app import celery_app
 
 # Use Celery-safe database utilities (avoids event loop conflicts)
-from worker.db_utils import get_task_session
+from app.db.task_session import get_task_session
+
+# Shared worker helpers (event loop lifecycle, scoring, cost tracking)
+from worker.task_helpers import run_async_task, run_layer1_scoring_if_enabled, build_score_details
 
 logger = logging.getLogger(__name__)
 
@@ -51,129 +54,6 @@ async def _finish_progress(stats: Dict[str, Any]):
         await redis.delete(MONITOR_PROGRESS_KEY)
     except Exception:
         pass
-
-T = TypeVar("T")
-
-# One-time registration flag for LLM usage recorder in Celery workers
-_recorder_registered = False
-
-
-def _ensure_usage_recorder():
-    """Register the LLM usage recorder once per worker process."""
-    global _recorder_registered
-    if _recorder_registered:
-        return
-    try:
-        from app.core.llm import set_llm_usage_recorder
-        from app.services.llm_cost_service import get_llm_cost_service
-
-        async def _record(
-            purpose: str, model: str, prompt_tokens: int = 0,
-            completion_tokens: int = 0, cached_tokens: int = 0,
-            user_id=None, metadata=None,
-        ):
-            await get_llm_cost_service().record_usage(
-                purpose=purpose, model=model,
-                prompt_tokens=prompt_tokens,
-                completion_tokens=completion_tokens,
-                cached_tokens=cached_tokens,
-                user_id=user_id, metadata=metadata,
-            )
-
-        set_llm_usage_recorder(_record)
-        _recorder_registered = True
-        logger.debug("LLM usage recorder registered for news monitor worker")
-    except Exception as e:
-        logger.warning("Failed to register LLM usage recorder: %s", e)
-
-
-def run_async_task(coro_func: Callable[..., T], *args, **kwargs) -> T:
-    """
-    Run an async function in a new event loop, properly cleaning up afterwards.
-
-    This helper ensures all singleton async clients are reset after each task
-    to avoid "Event loop is closed" errors when tasks reuse singleton clients
-    that were bound to different (now closed) event loops.
-    """
-    _ensure_usage_recorder()
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
-    try:
-        return loop.run_until_complete(coro_func(*args, **kwargs))
-    finally:
-        loop.close()
-        # Reset all singleton clients that may have bound to this event loop
-        try:
-            from app.core.llm import reset_llm_gateway
-            reset_llm_gateway()
-        except Exception as e:
-            logger.warning("Failed to reset LLM gateway: %s", e)
-        try:
-            from app.db.redis import reset_redis
-            reset_redis()
-        except Exception as e:
-            logger.warning("Failed to reset Redis client: %s", e)
-
-
-# ---------------------------------------------------------------------------
-# Layer 1 scoring
-# ---------------------------------------------------------------------------
-async def _run_layer1_scoring_if_enabled(
-    db,
-    system_settings,
-    articles: List[Dict[str, str]],
-) -> tuple[List, bool]:
-    """
-    Run Layer 1 scoring if LLM pipeline is enabled.
-
-    Args:
-        db: Database session
-        system_settings: System settings with feature flag
-        articles: List of dicts with url, title, text (summary)
-
-    Returns:
-        Tuple of (list of Layer1ScoringResult, is_enabled bool)
-    """
-    if not system_settings.enable_llm_pipeline:
-        return [], False
-
-    from app.services.layer1_scoring_service import get_layer1_scoring_service
-
-    scoring_service = get_layer1_scoring_service()
-
-    # Format articles for scoring service
-    scoring_articles = [
-        {
-            "url": a.get("url", ""),
-            "title": a.get("headline", a.get("title", "")),
-            "text": a.get("summary", ""),
-        }
-        for a in articles
-    ]
-
-    results = await scoring_service.batch_score_articles(db, scoring_articles)
-    return results, True
-
-
-def _build_score_details(scoring_result) -> dict:
-    """Build score_details dict from Layer1ScoringResult for DB storage."""
-    return {
-        "dimensionScores": {
-            name: s.score
-            for name, s in scoring_result.agent_scores.items()
-        },
-        "agentDetails": {
-            name: {
-                "tier": s.tier,
-                "score": s.score,
-                "reason": s.reason,
-            }
-            for name, s in scoring_result.agent_scores.items()
-        },
-        "reasoning": scoring_result.reasoning,
-        "isCriticalEvent": scoring_result.is_critical,
-    }
-
 
 @celery_app.task(bind=True, max_retries=3)
 def monitor_news(self):
@@ -329,7 +209,7 @@ async def _monitor_news_async() -> Dict[str, Any]:
 
                     scoring_results = []
                     try:
-                        scoring_results, _ = await _run_layer1_scoring_if_enabled(
+                        scoring_results, _ = await run_layer1_scoring_if_enabled(
                             db, system_settings, articles_for_scoring
                         )
                     except Exception as e:
@@ -363,7 +243,7 @@ async def _monitor_news_async() -> Dict[str, Any]:
                                 filter_status=FilterStatus.DISCARDED.value,
                                 content_score=scoring.total_score,
                                 processing_path="discarded",
-                                score_details=_build_score_details(scoring),
+                                score_details=build_score_details(scoring),
                             )
                             db.add(news)
                             stats["articles_stored"] += 1
@@ -384,7 +264,7 @@ async def _monitor_news_async() -> Dict[str, Any]:
                             filter_status = FilterStatus.INITIAL_USEFUL.value
                             content_score = scoring.total_score
                             processing_path = scoring.routing_decision  # "lightweight" or "full_analysis"
-                            score_details = _build_score_details(scoring)
+                            score_details = build_score_details(scoring)
                             is_critical = scoring.is_critical
                             decision_label = scoring.routing_decision
                             reasoning = scoring.reasoning
@@ -519,11 +399,110 @@ async def _monitor_news_async() -> Dict[str, Any]:
                     dedup_result = await db.execute(dedup_query)
                     existing_wl_urls = {row[0] for row in dedup_result.fetchall()}
 
-                # Pass 3: Store only new articles
+                # Pass 3: Collect new (non-duplicate) watchlist articles
+                new_watchlist = []
                 for symbol, article_data in watchlist_collected:
                     url = article_data.get("url", "")
                     if url in existing_wl_urls:
                         continue
+                    new_watchlist.append((symbol, article_data))
+
+                # Pass 4: Score + store watchlist articles
+                wl_scoring_map: dict = {}
+                wl_scoring_count = 0
+                if enable_pipeline and new_watchlist:
+                    # Run Layer 1 scoring (same as global articles)
+                    wl_articles_for_scoring = [
+                        {
+                            "url": ad.get("url", ""),
+                            "headline": ad.get("title", ""),
+                            "summary": ad.get("summary") or "",
+                        }
+                        for _, ad in new_watchlist
+                    ]
+                    await _update_progress(
+                        "wl_scoring",
+                        f"Watchlist: Scoring {len(new_watchlist)} articles...",
+                        55,
+                    )
+                    try:
+                        wl_scoring_results, _ = await run_layer1_scoring_if_enabled(
+                            db, system_settings, wl_articles_for_scoring
+                        )
+                        wl_scoring_map = {r.url: r for r in wl_scoring_results}
+                        wl_scoring_count = len(wl_scoring_results)
+                    except Exception as e:
+                        logger.warning(
+                            "Watchlist: Layer 1 scoring failed, defaulting to lightweight: %s", e
+                        )
+
+                for symbol, article_data in new_watchlist:
+                    url = article_data.get("url", "")
+                    scoring = wl_scoring_map.get(url) if enable_pipeline else None
+
+                    if enable_pipeline and scoring and scoring.routing_decision == "discard":
+                        # Discarded: store but don't dispatch to Layer 2
+                        news = News(
+                            symbol=article_data.get("symbol", symbol),
+                            title=article_data.get("title", "")[:500],
+                            summary=article_data.get("summary"),
+                            source=article_data.get("source", "unknown"),
+                            url=url,
+                            published_at=_parse_datetime(article_data.get("publishedAt")),
+                            market=article_data.get("market", "US"),
+                            related_entities=None,
+                            has_stock_entities=False,
+                            has_macro_entities=False,
+                            max_entity_score=None,
+                            primary_entity=None,
+                            primary_entity_type=None,
+                            filter_status=FilterStatus.DISCARDED.value,
+                            content_score=scoring.total_score,
+                            processing_path="discarded",
+                            score_details=build_score_details(scoring),
+                        )
+                        db.add(news)
+                        stats["articles_stored"] += 1
+                        stats["layer1_discard"] += 1
+                        if scoring.is_critical:
+                            stats["layer1_critical"] += 1
+                        trace_batch.append({
+                            "news_obj": news,
+                            "decision": "discarded",
+                            "reason": scoring.reasoning,
+                            "score": scoring.total_score,
+                        })
+                        continue
+
+                    # Not discarded: determine routing from scoring
+                    if enable_pipeline and scoring:
+                        filter_status = FilterStatus.INITIAL_USEFUL.value
+                        content_score = scoring.total_score
+                        processing_path = scoring.routing_decision
+                        score_details = build_score_details(scoring)
+                        decision_label = scoring.routing_decision
+                        reasoning = scoring.reasoning
+                        if scoring.routing_decision == "full_analysis":
+                            stats["layer1_full_analysis"] += 1
+                        else:
+                            stats["layer1_lightweight"] += 1
+                        if scoring.is_critical:
+                            stats["layer1_critical"] += 1
+                    elif enable_pipeline:
+                        # Scoring failed or unavailable — default to lightweight
+                        filter_status = FilterStatus.INITIAL_USEFUL.value
+                        content_score = 0
+                        processing_path = "lightweight"
+                        score_details = None
+                        decision_label = "lightweight"
+                        reasoning = "scoring_unavailable"
+                    else:
+                        filter_status = None
+                        content_score = None
+                        processing_path = None
+                        score_details = None
+                        decision_label = None
+                        reasoning = None
 
                     news = News(
                         symbol=article_data.get("symbol", symbol),
@@ -539,17 +518,22 @@ async def _monitor_news_async() -> Dict[str, Any]:
                         max_entity_score=None,
                         primary_entity=None,
                         primary_entity_type=None,
+                        filter_status=filter_status,
+                        content_score=content_score,
+                        processing_path=processing_path,
+                        score_details=score_details,
                     )
-
-                    if enable_pipeline:
-                        # Watchlist articles get default full_analysis routing
-                        news.filter_status = FilterStatus.INITIAL_USEFUL.value
-                        news.processing_path = "full_analysis"
-                        news.content_score = 0
-
                     db.add(news)
                     all_new_articles.append(news)
                     stats["articles_stored"] += 1
+
+                    if enable_pipeline:
+                        trace_batch.append({
+                            "news_obj": news,
+                            "decision": decision_label,
+                            "reason": reasoning,
+                            "score": content_score,
+                        })
 
                     importance = _score_article_importance(article_data)
                     if importance >= 2.0:
@@ -558,8 +542,12 @@ async def _monitor_news_async() -> Dict[str, Any]:
                         )
 
                 logger.info(
-                    f"Layer 2 (Watchlist): fetched={stats['watchlist_fetched']}, "
-                    f"collected={len(watchlist_collected)}, dupes={len(existing_wl_urls)}"
+                    "Watchlist: fetched=%d, collected=%d, dupes=%d, new=%d, scored=%d",
+                    stats["watchlist_fetched"],
+                    len(watchlist_collected),
+                    len(existing_wl_urls),
+                    len(new_watchlist),
+                    wl_scoring_count,
                 )
 
             except Exception as e:
@@ -795,7 +783,7 @@ async def _analyze_news_async(news_id: str) -> Dict[str, Any]:
     try:
         async with get_task_session() as db:
             # Load system AI config from DB (fallback to env)
-            from worker.db_utils import get_system_ai_config
+            from app.db.task_session import get_system_ai_config
             sys_config = await get_system_ai_config(db)
 
             if not sys_config.api_key:

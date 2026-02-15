@@ -12,7 +12,7 @@ from typing import Any, Dict, List
 from worker.celery_app import celery_app
 
 # Use Celery-safe database utilities (avoids event loop conflicts)
-from worker.db_utils import get_task_session
+from app.db.task_session import get_task_session
 
 logger = logging.getLogger(__name__)
 
@@ -24,6 +24,11 @@ def _reset_singletons() -> None:
         reset_llm_gateway()
     except Exception as e:
         logger.warning("Failed to reset LLM gateway in embedding task: %s", e)
+    try:
+        from app.services.rag import reset_index_service
+        reset_index_service()
+    except Exception as e:
+        logger.warning("Failed to reset IndexService in embedding task: %s", e)
 
 
 @celery_app.task(bind=True, max_retries=3)
@@ -146,7 +151,7 @@ async def _embed_document_async(
 
     Steps:
     1. Validate content is non-empty
-    2. Chunk the text via EmbeddingService
+    2. Chunk the text via IndexService
     3. Generate embeddings in batch (respects rate limits)
     4. Acquire advisory lock to prevent concurrent re-embedding of same doc
     5. Delete existing embeddings only if new embeddings were generated
@@ -156,18 +161,16 @@ async def _embed_document_async(
 
     from sqlalchemy import text
 
-    from app.services.embedding_service import get_embedding_service
-    from app.services.rag_service import get_rag_service
+    from app.services.rag import get_index_service
 
-    embedding_service = get_embedding_service()
-    rag_service = get_rag_service()
+    index_service = get_index_service()
 
     if not content or not content.strip():
         logger.warning("Empty content for embedding: %s/%s", source_type, source_id)
         return {"status": "skipped", "reason": "empty_content"}
 
     # Chunk the text into embedding-sized pieces
-    chunks = embedding_service.chunk_text(content)
+    chunks = index_service.chunk_text(content)
     logger.info(
         "Chunked %s/%s into %d chunks (total %d chars)",
         source_type,
@@ -180,12 +183,12 @@ async def _embed_document_async(
         return {"status": "skipped", "reason": "no_chunks"}
 
     # Read embedding config (model + provider credentials) from DB
-    from app.services.embedding_service import get_embedding_config_from_db
+    from app.services.rag.embedding import get_embedding_config_from_db
     async with get_task_session() as tmp_db:
         embed_config = await get_embedding_config_from_db(tmp_db)
 
     # Generate embeddings in batch (handles rate limiting internally)
-    embeddings = await embedding_service.generate_embeddings_batch(
+    embeddings = await index_service.generate_embeddings_batch(
         chunks, model=embed_config.model,
         api_key=embed_config.api_key, base_url=embed_config.base_url,
     )
@@ -225,10 +228,10 @@ async def _embed_document_async(
 
         try:
             # Delete existing embeddings for this source (supports re-embedding)
-            await rag_service.delete_embeddings(db, source_type, source_id)
+            await index_service.delete_embeddings(db, source_type, source_id)
 
             for i, chunk, embedding in valid_pairs:
-                await rag_service.store_embedding(
+                await index_service.store_embedding(
                     db=db,
                     source_type=source_type,
                     source_id=source_id,

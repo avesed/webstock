@@ -99,20 +99,191 @@ def get_tool_label(tool_name: str, args: Dict[str, Any]) -> str:
     return base
 
 
-def _truncate(text: str, max_len: int = MAX_TOOL_RESULT_CHARS) -> str:
-    """Truncate text to max length with ellipsis."""
-    if len(text) <= max_len:
-        return text
-    return text[: max_len - 3] + "..."
+def _smart_serialize(data: Any, max_chars: int = MAX_TOOL_RESULT_CHARS) -> str:
+    """Serialize data to JSON with structure-aware truncation.
 
-
-def _sanitize_result(result: Any) -> str:
-    """Convert tool result to a sanitized JSON string."""
+    Preserves valid JSON and financial precision by intelligently trimming
+    lists and dicts rather than hard-cutting the serialized string.
+    """
     try:
-        text = json.dumps(result, ensure_ascii=False, default=str)
+        full = json.dumps(data, ensure_ascii=False, default=str)
     except (TypeError, ValueError):
-        text = str(result)
-    return _truncate(text)
+        full = str(data)
+    if len(full) <= max_chars:
+        return full
+    if isinstance(data, list):
+        return _serialize_list(data, max_chars)
+    if isinstance(data, dict):
+        return _serialize_dict(data, max_chars)
+    # Fallback: hard truncate (non-list/dict values that are too long)
+    logger.debug("Smart serialize fallback: hard truncate %d -> %d chars", len(full), max_chars)
+    return full[: max_chars - 3] + "..."
+
+
+def _serialize_list(items: list, max_chars: int) -> str:
+    """Truncate a list to fit within max_chars using binary search.
+
+    Output format: first N items + an omitted-count sentinel object.
+    Always produces valid JSON.
+    """
+    total = len(items)
+    suffix_template = '{{"_omitted": "{n}/{t} items not shown"}}'
+
+    # Check if zero items fit (just the omitted marker)
+    zero_result = json.dumps(
+        [{"_omitted": f"all {total} items too large"}],
+        ensure_ascii=False, default=str,
+    )
+    if total == 0:
+        return "[]"
+
+    # Pre-serialize each item once so binary search is O(n) total, not O(n^2).
+    # Each serialized item contributes its length + 1 for the comma separator.
+    item_strs = []
+    for item in items:
+        try:
+            item_strs.append(json.dumps(item, ensure_ascii=False, default=str))
+        except (TypeError, ValueError):
+            item_strs.append(json.dumps(str(item), ensure_ascii=False, default=str))
+
+    # Build a prefix-sum of the serialized length when including items 0..i.
+    # json.dumps separates elements with ", " (2 chars).
+    # For n items + suffix: "[" + item0 + ", " + item1 + ... + ", " + suffix + "]"
+    #   = 1 + sum(item_lens) + 2*(n) separators (n items + suffix = n+1 elements, n separators) + len(suffix) + 1
+    # For n items without suffix (all fit): "[" + items + 2*(n-1) separators + "]"
+    # For n=0: just the zero_result fallback.
+    prefix_lens = []
+    cumulative = 0
+    for s in item_strs:
+        cumulative += len(s)
+        prefix_lens.append(cumulative)
+
+    def _total_len(n: int) -> int:
+        """Compute output length when keeping the first n items."""
+        if n == 0:
+            return len(zero_result)
+        omitted = total - n
+        if omitted == 0:
+            # All items fit — no suffix: "[" + items + ", " separators + "]"
+            return 1 + prefix_lens[n - 1] + 2 * (n - 1) + 1
+        suffix = suffix_template.format(n=omitted, t=total)
+        # "[" + items + ", " between each pair + ", " before suffix + suffix + "]"
+        # n items + 1 suffix = n+1 elements → n separators of ", " (2 chars each)
+        return 1 + prefix_lens[n - 1] + 2 * n + len(suffix) + 1
+
+    # If all items fit, return full serialization (shouldn't reach here
+    # normally since caller checked, but guard anyway).
+    if _total_len(total) <= max_chars:
+        return json.dumps(items, ensure_ascii=False, default=str)
+
+    # Binary search for the largest n where _total_len(n) <= max_chars.
+    lo, hi, best = 0, total - 1, 0
+    while lo <= hi:
+        mid = (lo + hi) // 2
+        if _total_len(mid) <= max_chars:
+            best = mid
+            lo = mid + 1
+        else:
+            hi = mid - 1
+
+    if best == 0:
+        return zero_result
+
+    kept = items[:best]
+    omitted = total - best
+    kept.append({"_omitted": f"{omitted}/{total} items not shown"})
+    return json.dumps(kept, ensure_ascii=False, default=str)
+
+
+def _serialize_dict(data: dict, max_chars: int) -> str:
+    """Truncate a dict keeping all scalar fields and selectively including complex ones.
+
+    Scalar fields (str, int, float, bool, None) are always preserved to
+    maintain financial data precision.  Complex fields (list, dict) are
+    added one by one; oversized lists are sampled and oversized dicts
+    replaced with a placeholder.
+    """
+    _dumps = lambda v: json.dumps(v, ensure_ascii=False, default=str)
+
+    scalars: Dict[str, Any] = {}
+    complex_keys: list[str] = []
+    for k, v in data.items():
+        if isinstance(v, (str, int, float, bool, type(None))):
+            scalars[k] = v
+        else:
+            complex_keys.append(k)
+
+    # If scalars alone already exceed budget, hard-truncate as last resort.
+    scalars_json = _dumps(scalars)
+    if len(scalars_json) > max_chars:
+        return scalars_json[: max_chars - 3] + "..."
+
+    # If no complex fields, we are done.
+    if not complex_keys:
+        return scalars_json
+
+    # Incrementally add complex fields.
+    result = dict(scalars)
+    for key in complex_keys:
+        value = data[key]
+        candidate = dict(result)
+        candidate[key] = value
+        candidate_json = _dumps(candidate)
+
+        if len(candidate_json) <= max_chars:
+            result[key] = value
+            continue
+
+        # Try to fit a reduced version of the value.
+        if isinstance(value, list) and len(value) > 0:
+            reduced = _try_reduce_list_field(value, key, result, max_chars, _dumps)
+            if reduced is not None:
+                result[key] = reduced
+                continue
+
+        if isinstance(value, dict):
+            # Replace with a placeholder.
+            candidate2 = dict(result)
+            candidate2[key] = "{...}"
+            if len(_dumps(candidate2)) <= max_chars:
+                result[key] = "{...}"
+                continue
+
+        # Skip this field entirely — doesn't fit even as placeholder.
+
+    # If we added nothing beyond scalars and there were complex fields, mark truncated.
+    if set(result.keys()) == set(scalars.keys()) and complex_keys:
+        logger.debug(
+            "Dict serialization: all %d complex fields dropped, keeping %d scalars",
+            len(complex_keys), len(scalars),
+        )
+        candidate = dict(result)
+        candidate["_truncated"] = True
+        if len(_dumps(candidate)) <= max_chars:
+            result["_truncated"] = True
+
+    return _dumps(result)
+
+
+def _try_reduce_list_field(
+    value: list,
+    key: str,
+    current: dict,
+    max_chars: int,
+    _dumps: Any,
+) -> Any:
+    """Try to fit a list field by sampling first 3 or 1 items with a suffix marker."""
+    total = len(value)
+    for sample_size in (3, 1):
+        if sample_size >= total:
+            continue
+        sampled = list(value[:sample_size])
+        sampled.append(f"...+{total - sample_size}")
+        candidate = dict(current)
+        candidate[key] = sampled
+        if len(_dumps(candidate)) <= max_chars:
+            return sampled
+    return None
 
 
 async def execute_chat_tool(
@@ -149,7 +320,7 @@ async def execute_chat_tool(
         if not result.success:
             return {"error": result.error or f"Tool {tool_name} failed"}
 
-        out: Dict[str, Any] = {"result": _sanitize_result(result.data)}
+        out: Dict[str, Any] = {"result": _smart_serialize(result.data)}
 
         # Preserve raw list result for knowledge_base so caller can emit
         # rag_sources without re-parsing the truncated string

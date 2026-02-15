@@ -1,199 +1,32 @@
-"""Embedding service for generating and managing vector embeddings."""
+"""DEPRECATED: Use app.services.rag instead.
 
-import logging
+This module re-exports symbols for backward compatibility.
+All new code should import from app.services.rag.
+"""
+
+import warnings
 from typing import List, Optional
 
-from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession
+from app.services.rag import get_index_service
+from app.services.rag.embedding import (
+    get_embedding_config_from_db,
+    get_embedding_model_from_db,
+)
 
-from app.core.llm import get_llm_gateway, EmbeddingRequest
-from app.core.token_bucket import get_embedding_rate_limiter
-from app.models.document_embedding import EMBEDDING_DIMENSIONS
-
-logger = logging.getLogger(__name__)
-
-# Maximum tokens per embedding request (text-embedding-3-small limit is 8191)
-MAX_CHUNK_TOKENS = 512
-# Overlap between chunks for context continuity
-CHUNK_OVERLAP_TOKENS = 50
-
-
-async def get_embedding_model_from_db(db: AsyncSession) -> str:
-    """Read embedding model name from system_settings (database only).
-
-    For backward compat, returns just the model name string.
-    Use get_embedding_config_from_db() for full provider config.
-    """
-    try:
-        from app.models.system_settings import SystemSettings
-        result = await db.execute(
-            select(SystemSettings.embedding_model).where(SystemSettings.id == 1)
-        )
-        row = result.scalar_one_or_none()
-        if row:
-            return row
-    except Exception as e:
-        logger.warning("Failed to read embedding model from DB: %s", e)
-    raise ValueError(
-        "No embedding model configured. "
-        "Please configure it in Admin Settings."
-    )
-
-
-async def get_embedding_config_from_db(db: AsyncSession):
-    """Resolve full embedding provider config (model + api_key + base_url).
-
-    Returns a ResolvedModelConfig dataclass.
-    """
-    from app.services.settings_service import get_settings_service, ResolvedModelConfig
-    try:
-        settings_service = get_settings_service()
-        return await settings_service.resolve_model_provider(db, "embedding")
-    except Exception:
-        # Fallback: try legacy model name only
-        model = await get_embedding_model_from_db(db)
-        return ResolvedModelConfig(
-            model=model,
-            provider_type="openai",
-            api_key=None,
-            base_url=None,
-        )
+# Re-export config helpers (these are the most commonly imported symbols)
+__all__ = [
+    "get_embedding_config_from_db",
+    "get_embedding_model_from_db",
+    "get_embedding_service",
+    "EmbeddingService",
+]
 
 
 class EmbeddingService:
+    """Backward-compatible wrapper around IndexService.
+
+    DEPRECATED: Use get_index_service() from app.services.rag instead.
     """
-    Service for generating text embeddings using OpenAI's API.
-
-    Handles:
-    - Text chunking for long documents
-    - Rate-limited embedding generation
-    - Batch processing
-    """
-
-    async def generate_embedding(
-        self, text: str, model: Optional[str] = None,
-        *, api_key: Optional[str] = None, base_url: Optional[str] = None,
-    ) -> Optional[List[float]]:
-        """
-        Generate embedding for a single text.
-
-        Args:
-            text: Text to embed (will be truncated if too long)
-            model: Embedding model name (must be provided or pre-loaded from DB)
-            api_key: Provider API key (falls back to context var / env if None)
-            base_url: Provider base URL (falls back to context var / env if None)
-
-        Returns:
-            Embedding vector or None on failure
-        """
-        if not text or not text.strip():
-            logger.warning("Empty text provided for embedding")
-            return None
-
-        if not model:
-            logger.error("No embedding model specified")
-            return None
-
-        # Rate limit check
-        rate_limiter = await get_embedding_rate_limiter()
-        if not await rate_limiter.acquire():
-            logger.warning("Embedding rate limit exceeded")
-            return None
-
-        try:
-            gateway = get_llm_gateway()
-            request = EmbeddingRequest(
-                input=text[:8000],
-                model=model,
-                dimensions=EMBEDDING_DIMENSIONS,
-            )
-            response = await gateway.embed(
-                request,
-                system_api_key=api_key,
-                system_base_url=base_url,
-                purpose="embedding",
-            )
-            embedding = response.embeddings[0]
-            logger.debug(
-                "Generated embedding (model=%s, dim=%d) for text of length %d",
-                model,
-                len(embedding),
-                len(text),
-            )
-            return embedding
-        except Exception as e:
-            logger.error("Failed to generate embedding: %s", e)
-            return None
-
-    async def generate_embeddings_batch(
-        self,
-        texts: List[str],
-        model: Optional[str] = None,
-        *, api_key: Optional[str] = None, base_url: Optional[str] = None,
-    ) -> List[Optional[List[float]]]:
-        """
-        Generate embeddings for multiple texts in a single API call.
-
-        Args:
-            texts: List of texts to embed
-            model: Embedding model name (must be provided or pre-loaded from DB)
-            api_key: Provider API key (falls back to context var / env if None)
-            base_url: Provider base URL (falls back to context var / env if None)
-
-        Returns:
-            List of embeddings (None for failed items)
-        """
-        if not texts:
-            return []
-
-        if not model:
-            logger.error("No embedding model specified for batch")
-            return [None] * len(texts)
-
-        # Filter empty texts
-        valid_texts = []
-        valid_indices = []
-        for i, text in enumerate(texts):
-            if text and text.strip():
-                valid_texts.append(text[:8000])
-                valid_indices.append(i)
-
-        if not valid_texts:
-            return [None] * len(texts)
-
-        # Rate limit check
-        rate_limiter = await get_embedding_rate_limiter()
-        if not await rate_limiter.acquire():
-            logger.warning("Embedding batch rate limit exceeded")
-            return [None] * len(texts)
-
-        try:
-            gateway = get_llm_gateway()
-            request = EmbeddingRequest(
-                input=valid_texts,
-                model=model,
-                dimensions=EMBEDDING_DIMENSIONS,
-            )
-            response = await gateway.embed(
-                request,
-                system_api_key=api_key,
-                system_base_url=base_url,
-                purpose="embedding",
-                usage_metadata={"batch_size": len(valid_texts)},
-            )
-
-            # Map results back to original indices
-            results: List[Optional[List[float]]] = [None] * len(texts)
-            for i, embedding in enumerate(response.embeddings):
-                if i < len(valid_indices):
-                    original_idx = valid_indices[i]
-                    results[original_idx] = embedding
-
-            logger.info("Generated %d embeddings in batch (model=%s)", len(response.embeddings), model)
-            return results
-        except Exception as e:
-            logger.error("Failed to generate batch embeddings: %s", e)
-            return [None] * len(texts)
 
     def chunk_text(
         self,
@@ -201,101 +34,43 @@ class EmbeddingService:
         max_chars: int = 1500,
         overlap_chars: int = 150,
     ) -> List[str]:
-        """
-        Split text into overlapping chunks for embedding.
+        return get_index_service().chunk_text(text, max_chars=max_chars, overlap_chars=overlap_chars)
 
-        Uses paragraph boundaries when possible, falls back to
-        sentence boundaries, then character boundaries.
+    async def generate_embedding(
+        self, text: str, model: Optional[str] = None,
+        *, api_key: Optional[str] = None, base_url: Optional[str] = None,
+    ) -> Optional[List[float]]:
+        return await get_index_service().generate_embedding(
+            text, model=model, api_key=api_key, base_url=base_url,
+        )
 
-        Each chunk is guaranteed to be <= max_chars.  Overlap is created by
-        carrying forward the tail of the previous chunk as a *prefix* for the
-        next chunk, and the budget for new content is reduced accordingly so
-        the total never exceeds max_chars.
-
-        Args:
-            text: Text to chunk
-            max_chars: Maximum characters per chunk
-            overlap_chars: Overlap between chunks (must be < max_chars)
-
-        Returns:
-            List of text chunks
-        """
-        if not text or len(text) <= max_chars:
-            return [text] if text else []
-
-        # Clamp overlap to a sane fraction of max_chars
-        overlap_chars = min(overlap_chars, max_chars // 3)
-
-        # --- Step 1: split into raw (non-overlapping) segments ------------
-        raw_segments: List[str] = []
-        paragraphs = text.split("\n\n")
-        current_segment = ""
-
-        for para in paragraphs:
-            para = para.strip()
-            if not para:
-                continue
-
-            if len(current_segment) + len(para) + 2 <= max_chars:
-                current_segment += ("\n\n" + para) if current_segment else para
-            else:
-                if current_segment:
-                    raw_segments.append(current_segment)
-                # If a single paragraph is too long, split by sentences
-                if len(para) > max_chars:
-                    sentences = para.replace(". ", ".\n").split("\n")
-                    current_segment = ""
-                    for sentence in sentences:
-                        if len(current_segment) + len(sentence) + 1 <= max_chars:
-                            current_segment += (
-                                (" " + sentence) if current_segment else sentence
-                            )
-                        else:
-                            if current_segment:
-                                raw_segments.append(current_segment)
-                            # If a single sentence exceeds max_chars, hard-cut it
-                            if len(sentence) > max_chars:
-                                for start in range(0, len(sentence), max_chars):
-                                    raw_segments.append(sentence[start : start + max_chars])
-                                current_segment = ""
-                            else:
-                                current_segment = sentence
-                else:
-                    current_segment = para
-
-        if current_segment:
-            raw_segments.append(current_segment)
-
-        if not raw_segments:
-            return []
-
-        # --- Step 2: build overlapping chunks (each <= max_chars) ---------
-        chunks: List[str] = [raw_segments[0]]
-        for i in range(1, len(raw_segments)):
-            prev_tail = chunks[-1][-overlap_chars:]
-            candidate = prev_tail + " " + raw_segments[i]
-            if len(candidate) <= max_chars:
-                chunks.append(candidate)
-            else:
-                # Trim the overlap prefix so that total stays within budget
-                available = max_chars - len(raw_segments[i]) - 1  # -1 for space
-                if available > 0:
-                    trimmed_tail = chunks[-1][-available:]
-                    chunks.append(trimmed_tail + " " + raw_segments[i])
-                else:
-                    # Segment itself fills the budget; no room for overlap
-                    chunks.append(raw_segments[i][:max_chars])
-
-        return chunks
+    async def generate_embeddings_batch(
+        self,
+        texts: List[str],
+        model: Optional[str] = None,
+        *, api_key: Optional[str] = None, base_url: Optional[str] = None,
+    ) -> List[Optional[List[float]]]:
+        return await get_index_service().generate_embeddings_batch(
+            texts, model=model, api_key=api_key, base_url=base_url,
+        )
 
 
-# Singleton
+# Singleton (deprecated)
 _embedding_service: Optional[EmbeddingService] = None
 
 
 def get_embedding_service() -> EmbeddingService:
-    """Get singleton EmbeddingService instance."""
+    """Get singleton EmbeddingService instance.
+
+    DEPRECATED: Use get_index_service() from app.services.rag instead.
+    """
     global _embedding_service
+    warnings.warn(
+        "get_embedding_service() is deprecated. "
+        "Use get_index_service() from app.services.rag instead.",
+        DeprecationWarning,
+        stacklevel=2,
+    )
     if _embedding_service is None:
         _embedding_service = EmbeddingService()
     return _embedding_service

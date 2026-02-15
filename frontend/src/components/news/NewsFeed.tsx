@@ -15,6 +15,11 @@ interface NewsFeedProps {
   compact?: boolean
   maxHeight?: string
   className?: string
+  filters?: {
+    search?: string
+    sentimentTag?: string
+    market?: string
+  }
 }
 
 export default function NewsFeed({
@@ -23,6 +28,7 @@ export default function NewsFeed({
   compact = false,
   maxHeight,
   className,
+  filters,
 }: NewsFeedProps) {
   const navigate = useNavigate()
   const { t } = useTranslation('dashboard')
@@ -38,7 +44,7 @@ export default function NewsFeed({
     isFetchingNextPage,
     refetch,
   } = useInfiniteQuery({
-    queryKey: ['news', mode, symbol],
+    queryKey: ['news', mode, symbol, filters?.search, filters?.sentimentTag, filters?.market],
     queryFn: async ({ pageParam = 1 }) => {
       if (mode === 'trending') {
         const articles = await newsApi.getTrending()
@@ -50,11 +56,14 @@ export default function NewsFeed({
           totalPages: 1,
         }
       } else if (mode === 'market') {
-        return newsApi.getMarket(pageParam, 10)
+        return newsApi.getMarket(pageParam, 10, filters)
       } else if (mode === 'symbol' && symbol) {
         return newsApi.getBySymbol(symbol, pageParam, 10)
       } else {
-        return newsApi.getFeed(pageParam, 10)
+        const feedFilters: { search?: string; sentimentTag?: string } = {}
+        if (filters?.search) feedFilters.search = filters.search
+        if (filters?.sentimentTag) feedFilters.sentimentTag = filters.sentimentTag
+        return newsApi.getFeed(pageParam, 10, Object.keys(feedFilters).length > 0 ? feedFilters : undefined)
       }
     },
     getNextPageParam: (lastPage) => {
@@ -125,12 +134,18 @@ export default function NewsFeed({
     )
   }
 
+  const hasActiveFilters = !!(filters?.search || filters?.sentimentTag || filters?.market)
+
   if (articles.length === 0) {
     return (
       <div className={cn('flex flex-col items-center justify-center gap-2 p-12', className)}>
         <Newspaper className="h-12 w-12 text-muted-foreground/50" />
         <p className="text-sm text-muted-foreground">
-          {symbol ? t('news.noNewsForSymbol', { symbol }) : t('news.noNews')}
+          {hasActiveFilters
+            ? t('news.filter.noResults')
+            : symbol
+              ? t('news.noNewsForSymbol', { symbol })
+              : t('news.noNews')}
         </p>
       </div>
     )

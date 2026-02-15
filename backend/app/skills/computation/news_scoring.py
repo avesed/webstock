@@ -85,6 +85,7 @@ class ScoreNewsArticlesSkill(BaseSkill):
                     type="array",
                     description="List of news article dicts with title, summary, and source fields",
                     required=True,
+                    items={"type": "object"},
                 ),
             ],
         )

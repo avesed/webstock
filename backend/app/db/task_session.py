@@ -3,6 +3,9 @@
 Celery workers run tasks in separate processes with different event loops.
 SQLAlchemy async engines/pools cannot be shared across event loops.
 This module provides utilities to create fresh connections per task.
+
+Moved from worker/db_utils.py to break the bidirectional dependency
+between worker/ and app/agents/ packages.
 """
 
 import logging

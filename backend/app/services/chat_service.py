@@ -642,39 +642,6 @@ class ChatService:
 
         return messages
 
-    # ------------------------------------------------------------------
-    # RAG retrieval (kept for potential direct use)
-    # ------------------------------------------------------------------
-
-    async def _retrieve_rag_context(
-        self,
-        db: AsyncSession,
-        query: str,
-        symbol: str | None = None,
-    ) -> list:
-        """Generate an embedding for *query* and search for relevant context."""
-        from app.services.embedding_service import get_embedding_service, get_embedding_model_from_db
-        from app.services.rag_service import get_rag_service
-
-        embedding_service = get_embedding_service()
-        embedding_model = await get_embedding_model_from_db(db)
-        embedding = await embedding_service.generate_embedding(query, model=embedding_model)
-        if embedding is None:
-            logger.warning("Embedding generation returned None; skipping RAG")
-            return []
-
-        rag_service = get_rag_service()
-        results = await rag_service.search(
-            db=db,
-            query_embedding=embedding,
-            query_text=query,
-            symbol=symbol,
-            top_k=3,
-        )
-        logger.info(
-            "RAG search returned %d results (symbol=%s)", len(results), symbol
-        )
-        return results
 
 
 # ---------------------------------------------------------------------------

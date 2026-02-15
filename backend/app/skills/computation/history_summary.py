@@ -75,6 +75,7 @@ class CalculateHistorySummarySkill(BaseSkill):
                     type="array",
                     description="OHLCV bar data list with date, open, high, low, close, volume fields",
                     required=True,
+                    items={"type": "object"},
                 ),
             ],
         )

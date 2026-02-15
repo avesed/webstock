@@ -29,6 +29,7 @@ class SkillParameter:
     required: bool = True
     enum: Optional[List[str]] = None
     default: Any = None
+    items: Optional[Dict[str, Any]] = None  # JSON Schema items for array types (e.g. {"type": "string"})
 
 
 @dataclass
@@ -50,6 +51,8 @@ class SkillDefinition:
                 prop["enum"] = p.enum
             if p.default is not None:
                 prop["default"] = p.default
+            if p.type == "array":
+                prop["items"] = p.items if p.items else {"type": "string"}
             properties[p.name] = prop
             if p.required:
                 required.append(p.name)

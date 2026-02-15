@@ -8,7 +8,7 @@ from datetime import datetime, timedelta
 from typing import Any, Callable, List, Optional, Set
 
 from app.services.providers.base import DataProvider
-from app.services.stock_service import (
+from app.services.stock_types import (
     DataSource,
     HistoryInterval,
     HistoryPeriod,

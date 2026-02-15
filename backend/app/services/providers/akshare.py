@@ -12,7 +12,7 @@ import pandas as pd
 
 from app.db.redis import get_redis
 from app.services.providers.base import DataProvider
-from app.services.stock_service import (
+from app.services.stock_types import (
     DataSource,
     HistoryInterval,
     HistoryPeriod,

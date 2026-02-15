@@ -138,7 +138,7 @@ def route_by_processing_path(state: NewsProcessingState) -> str:
 
 async def multi_agent_analysis_node(state: NewsProcessingState) -> dict:
     """Run 5-agent parallel deep analysis (full_analysis path)."""
-    from worker.db_utils import get_task_session
+    from app.db.task_session import get_task_session
     from app.services.multi_agent_filter_service import get_multi_agent_filter_service
     from app.services.pipeline_trace_service import PipelineTraceService
 
@@ -214,7 +214,7 @@ async def multi_agent_analysis_node(state: NewsProcessingState) -> dict:
 
 async def lightweight_filter_node(state: NewsProcessingState) -> dict:
     """Quick entity/tag extraction for low-score articles (lightweight path)."""
-    from worker.db_utils import get_task_session
+    from app.db.task_session import get_task_session
     from app.services.lightweight_filter_service import get_lightweight_filter_service
     from app.services.pipeline_trace_service import PipelineTraceService
 
@@ -295,7 +295,7 @@ def route_decision(state: NewsProcessingState) -> str:
 
 async def embed_node(state: NewsProcessingState) -> dict:
     """Generate embeddings for the article content."""
-    from worker.db_utils import get_task_session
+    from app.db.task_session import get_task_session
     from app.skills.registry import get_skill_registry
     from app.services.filter_stats_service import get_filter_stats_service
     from app.services.pipeline_trace_service import PipelineTraceService
@@ -432,7 +432,7 @@ async def mark_deleted_node(state: NewsProcessingState) -> dict:
 
 async def update_db_node(state: NewsProcessingState) -> dict:
     """Update the News database record with final pipeline results."""
-    from worker.db_utils import get_task_session
+    from app.db.task_session import get_task_session
     from sqlalchemy import select
     from app.models.news import News, ContentStatus, FilterStatus
 

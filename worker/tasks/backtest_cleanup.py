@@ -11,7 +11,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Dict
 
 from worker.celery_app import celery_app
-from worker.db_utils import get_task_session
+from app.db.task_session import get_task_session
 
 logger = logging.getLogger(__name__)
 

@@ -5,7 +5,7 @@ import logging
 from typing import Any, Callable, Dict, List, Optional, Set, TypeVar
 
 from app.services.providers.base import DataProvider
-from app.services.stock_service import (
+from app.services.stock_types import (
     HistoryInterval,
     HistoryPeriod,
     Market,

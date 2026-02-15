@@ -14,8 +14,8 @@ logger = logging.getLogger(__name__)
 class EmbedDocumentSkill(BaseSkill):
     """Chunk text, generate embeddings, and store in the document_embeddings table.
 
-    Wraps the embedding pipeline: ``EmbeddingService.chunk_text`` ->
-    ``EmbeddingService.generate_embeddings_batch`` -> ``RagService.store_embedding``.
+    Wraps the embedding pipeline: ``IndexService.chunk_text`` ->
+    ``IndexService.generate_embeddings_batch`` -> ``IndexService.store_embedding``.
 
     Uses a PostgreSQL advisory lock to prevent concurrent re-embedding of the
     same (source_type, source_id) pair.  Existing embeddings for the same
@@ -92,17 +92,13 @@ class EmbedDocumentSkill(BaseSkill):
 
         from sqlalchemy import text as sql_text
 
-        from app.services.embedding_service import (
-            get_embedding_config_from_db,
-            get_embedding_service,
-        )
-        from app.services.rag_service import get_rag_service
+        from app.services.rag import get_index_service
+        from app.services.rag.embedding import get_embedding_config_from_db
 
-        embedding_service = get_embedding_service()
-        rag_service = get_rag_service()
+        index_service = get_index_service()
 
         # Chunk text
-        chunks = embedding_service.chunk_text(content)
+        chunks = index_service.chunk_text(content)
         if not chunks:
             return SkillResult(
                 success=True,
@@ -121,7 +117,7 @@ class EmbedDocumentSkill(BaseSkill):
             )
 
         # Generate embeddings in batch
-        embeddings = await embedding_service.generate_embeddings_batch(
+        embeddings = await index_service.generate_embeddings_batch(
             chunks,
             model=embed_config.model,
             api_key=embed_config.api_key,
@@ -158,10 +154,10 @@ class EmbedDocumentSkill(BaseSkill):
 
         try:
             # Delete existing embeddings (supports re-embedding)
-            await rag_service.delete_embeddings(db, source_type, source_id)
+            await index_service.delete_embeddings(db, source_type, source_id)
 
             for i, chunk, embedding in valid_pairs:
-                await rag_service.store_embedding(
+                await index_service.store_embedding(
                     db=db,
                     source_type=source_type,
                     source_id=source_id,

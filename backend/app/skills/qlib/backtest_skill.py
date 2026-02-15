@@ -40,6 +40,7 @@ class QlibBacktestSkill(BaseSkill):
                     name="symbols",
                     type="array",
                     description="List of stock symbols to include in the backtest pool (e.g., ['AAPL', 'MSFT', 'GOOGL'])",
+                    items={"type": "string"},
                 ),
                 SkillParameter(
                     name="market",

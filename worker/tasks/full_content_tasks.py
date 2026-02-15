@@ -13,86 +13,17 @@ import logging
 import time
 import uuid
 from datetime import datetime, timedelta, timezone
-from typing import Any, Callable, Dict, List, Optional, TypeVar
+from typing import Any, Dict, List, Optional
 
 from worker.celery_app import celery_app
 
 # Use Celery-safe database utilities (avoids event loop conflicts)
-from worker.db_utils import get_task_session
+from app.db.task_session import get_task_session
+
+# Shared worker helpers (event loop lifecycle, cost tracking)
+from worker.task_helpers import run_async_task
 
 logger = logging.getLogger(__name__)
-
-T = TypeVar("T")
-
-# One-time registration flag for LLM usage recorder in Celery workers
-_recorder_registered = False
-
-
-def _ensure_usage_recorder():
-    """Register the LLM usage recorder once per worker process."""
-    global _recorder_registered
-    if _recorder_registered:
-        return
-    try:
-        from app.core.llm import set_llm_usage_recorder
-        from app.services.llm_cost_service import get_llm_cost_service
-
-        async def _record(
-            purpose: str, model: str, prompt_tokens: int = 0,
-            completion_tokens: int = 0, cached_tokens: int = 0,
-            user_id=None, metadata=None,
-        ):
-            await get_llm_cost_service().record_usage(
-                purpose=purpose, model=model,
-                prompt_tokens=prompt_tokens,
-                completion_tokens=completion_tokens,
-                cached_tokens=cached_tokens,
-                user_id=user_id, metadata=metadata,
-            )
-
-        set_llm_usage_recorder(_record)
-        _recorder_registered = True
-        logger.debug("LLM usage recorder registered for Celery worker")
-    except Exception as e:
-        logger.warning("Failed to register LLM usage recorder: %s", e)
-
-
-def run_async_task(coro_func: Callable[..., T], *args, **kwargs) -> T:
-    """
-    Run an async function in a new event loop, properly cleaning up afterwards.
-
-    This helper ensures all singleton async clients are reset after each task
-    to avoid "Event loop is closed" errors when tasks reuse singleton clients
-    that were bound to different (now closed) event loops.
-    """
-    _ensure_usage_recorder()
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
-    try:
-        return loop.run_until_complete(coro_func(*args, **kwargs))
-    finally:
-        loop.close()
-        # Reset all singleton clients that may have bound to this event loop
-        try:
-            from app.core.llm import reset_llm_gateway
-            reset_llm_gateway()
-        except Exception as e:
-            logger.warning("Failed to reset LLM gateway: %s", e)
-        try:
-            from app.db.redis import reset_redis
-            reset_redis()
-        except Exception as e:
-            logger.warning("Failed to reset Redis client: %s", e)
-        try:
-            from app.services.full_content_service import reset_full_content_service
-            reset_full_content_service()
-        except Exception as e:
-            logger.warning("Failed to reset full content service: %s", e)
-        try:
-            from app.services.content_cleaning_service import reset_content_cleaning_service
-            reset_content_cleaning_service()
-        except Exception as e:
-            logger.warning("Failed to reset content cleaning service: %s", e)
 
 
 @celery_app.task(bind=True, max_retries=3)
@@ -568,7 +499,7 @@ async def _cleanup_expired_news_async() -> Dict[str, Any]:
     from app.config import settings
     from app.models.news import News, ContentStatus
     from app.services.news_storage_service import get_news_storage_service
-    from app.services.rag_service import get_rag_service
+    from app.services.rag import get_index_service
 
     # Use system default retention period (News is global, not per-user)
     retention_days = settings.NEWS_RETENTION_DAYS_DEFAULT
@@ -581,7 +512,7 @@ async def _cleanup_expired_news_async() -> Dict[str, Any]:
     )
 
     storage_service = get_news_storage_service()
-    rag_service = get_rag_service()
+    index_service = get_index_service()
 
     stats = {
         "retention_days": retention_days,
@@ -618,7 +549,7 @@ async def _cleanup_expired_news_async() -> Dict[str, Any]:
                         logger.debug("Deleted content file: %s", news.content_file_path)
 
                 # Delete embeddings
-                deleted_count = await rag_service.delete_embeddings(
+                deleted_count = await index_service.delete_embeddings(
                     db, "news", str(news.id)
                 )
                 stats["embeddings_deleted"] += deleted_count
