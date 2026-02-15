@@ -37,7 +37,6 @@ const DEFAULT_PHASE2_CONFIG: Phase2Config = {
   fullAnalysisThreshold: 195,
   layer1Scoring: { providerId: null, model: 'gpt-4o-mini' },
   layer15Cleaning: { providerId: null, model: 'gpt-4o' },
-  layer2Scoring: { providerId: null, model: 'gpt-4o-mini' },
   layer2Analysis: { providerId: null, model: 'gpt-4o' },
   layer2Lightweight: { providerId: null, model: 'gpt-4o-mini' },
   cacheEnabled: true,
@@ -279,7 +278,7 @@ export function SystemSettings() {
 
   // Phase 2 layer model changes (from News tab)
   const handlePhase2LayerChange = useCallback((
-    layer: 'layer1Scoring' | 'layer15Cleaning' | 'layer2Scoring' | 'layer2Analysis' | 'layer2Lightweight',
+    layer: 'layer1Scoring' | 'layer15Cleaning' | 'layer2Analysis' | 'layer2Lightweight',
     field: 'providerId' | 'model',
     value: string | null
   ) => {
@@ -384,7 +383,6 @@ export function SystemSettings() {
           fullAnalysisThreshold: (config.phase2 ?? DEFAULT_PHASE2_CONFIG).fullAnalysisThreshold,
           layer1Scoring: (config.phase2 ?? DEFAULT_PHASE2_CONFIG).layer1Scoring,
           layer15Cleaning: (config.phase2 ?? DEFAULT_PHASE2_CONFIG).layer15Cleaning,
-          layer2Scoring: (config.phase2 ?? DEFAULT_PHASE2_CONFIG).layer2Scoring,
           layer2Analysis: (config.phase2 ?? DEFAULT_PHASE2_CONFIG).layer2Analysis,
           layer2Lightweight: (config.phase2 ?? DEFAULT_PHASE2_CONFIG).layer2Lightweight,
         },
@@ -617,7 +615,7 @@ export function SystemSettings() {
                   ) : (
                     <div className="space-y-4">
                       <ModelSelectorRow
-                        label={t('settings.models.newsFilterModel')}
+                        label={`${t('settings.models.newsFilterModel')} (${t('settings.models.fallback')})`}
                         providerId={ma.newsFilter.providerId}
                         model={ma.newsFilter.model}
                         providers={enabledProviders}
@@ -699,7 +697,7 @@ export function SystemSettings() {
                       </p>
                     ) : (
                       <div className="space-y-4">
-                        {(['layer1Scoring', 'layer15Cleaning', 'layer2Scoring', 'layer2Analysis', 'layer2Lightweight'] as const).map((layer) => (
+                        {(['layer1Scoring', 'layer15Cleaning', 'layer2Analysis', 'layer2Lightweight'] as const).map((layer) => (
                           <ModelSelectorRow
                             key={layer}
                             label={t(`settings.phase2.${layer}` as never)}
