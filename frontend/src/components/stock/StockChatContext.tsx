@@ -41,6 +41,7 @@ export interface StockChatActions {
   cancelStream: () => void
   clearError: () => void
   refreshConversation: () => Promise<void>
+  startNewChat: () => void
 }
 
 // -----------------------------------------------------------------------------
@@ -167,6 +168,8 @@ export function StockChatProvider({ symbol, children }: StockChatProviderProps) 
   const abortControllerRef = useRef<AbortController | null>(null)
   const navigationRef = useRef(0)
   const streamFinalizedRef = useRef(false)
+  /** Guards lazy creation IIFE against stale completions (e.g. user clicks "New Chat" mid-creation). */
+  const sendVersionRef = useRef(0)
 
   // -------------------------------------------------------------------------
   // Helpers
@@ -232,27 +235,19 @@ export function StockChatProvider({ symbol, children }: StockChatProviderProps) 
         (c) => c.symbol === symbol && !c.isArchived
       )
 
-      let convId: string
       if (existing) {
-        convId = existing.id
-        // Load existing messages
+        // Load most recent conversation for this symbol
         const msgs = await chatApi.getMessages(existing.id)
         if (navigationRef.current !== version) {
           console.warn(LOG_PREFIX, 'Stale message load discarded for', symbol)
           return
         }
         setMessages(msgs)
-      } else {
-        // Create new conversation
-        const newConv = await chatApi.createConversation(`${symbol} Chat`, symbol)
-        if (navigationRef.current !== version) {
-          console.warn(LOG_PREFIX, 'Stale conversation create discarded for', symbol)
-          return
-        }
-        convId = newConv.id
+        setConversationId(existing.id)
       }
-
-      setConversationId(convId)
+      else {
+        console.warn(LOG_PREFIX, 'No existing conversation for', symbol, '— will lazy-create on first message')
+      }
     } catch (err) {
       if (navigationRef.current !== version) return
       console.error(LOG_PREFIX, 'Conversation resolution failed:', err)
@@ -283,10 +278,6 @@ export function StockChatProvider({ symbol, children }: StockChatProviderProps) 
 
   const sendMessage = useCallback(
     (content: string) => {
-      if (!conversationId) {
-        setError('No active conversation. Please wait for loading to complete.')
-        return
-      }
       if (isStreaming) return
 
       // Reset finalization guard
@@ -295,7 +286,7 @@ export function StockChatProvider({ symbol, children }: StockChatProviderProps) 
       // Optimistically add user message
       const userMessage: ChatMessage = {
         id: `temp-${generateUUID()}`,
-        conversationId,
+        conversationId: conversationId ?? '',
         role: 'user',
         content,
         tokenCount: null,
@@ -312,127 +303,155 @@ export function StockChatProvider({ symbol, children }: StockChatProviderProps) 
       setActiveToolCalls([])
       setError(null)
 
-      const capturedConvId = conversationId
-
-      const onEvent = (event: ChatStreamEvent) => {
-        switch (event.type) {
-          case 'content_delta':
-            if (event.content) {
-              setStreamingContent((prev) => prev + event.content)
-            }
-            break
-          case 'rag_sources':
-            if (event.sources) {
-              setRagSources(event.sources)
-            }
-            break
-          case 'tool_call_start':
-            if (event.toolCallId && event.toolName) {
-              setActiveToolCalls((prev) => [
-                ...prev,
-                {
-                  id: event.toolCallId!,
-                  name: event.toolName!,
-                  label: event.toolLabel ?? event.toolName!,
-                  status: 'running' as const,
-                },
-              ])
-            }
-            break
-          case 'tool_call_result':
-            if (event.toolCallId) {
-              setActiveToolCalls((prev) =>
-                prev.map((tc) =>
-                  tc.id === event.toolCallId
-                    ? { ...tc, status: event.success ? ('completed' as const) : ('failed' as const) }
-                    : tc
+      // Inner function to start streaming with a known conversation ID
+      const startStream = (convId: string) => {
+        const onEvent = (event: ChatStreamEvent) => {
+          switch (event.type) {
+            case 'content_delta':
+              if (event.content) {
+                setStreamingContent((prev) => prev + event.content)
+              }
+              break
+            case 'rag_sources':
+              if (event.sources) {
+                setRagSources(event.sources)
+              }
+              break
+            case 'tool_call_start':
+              if (event.toolCallId && event.toolName) {
+                setActiveToolCalls((prev) => [
+                  ...prev,
+                  {
+                    id: event.toolCallId!,
+                    name: event.toolName!,
+                    label: event.toolLabel ?? event.toolName!,
+                    status: 'running' as const,
+                  },
+                ])
+              }
+              break
+            case 'tool_call_result':
+              if (event.toolCallId) {
+                setActiveToolCalls((prev) =>
+                  prev.map((tc) =>
+                    tc.id === event.toolCallId
+                      ? { ...tc, status: event.success ? ('completed' as const) : ('failed' as const) }
+                      : tc
+                  )
                 )
-              )
-            }
-            break
-          case 'message_end': {
-            if (streamFinalizedRef.current) break // already finalized
-            streamFinalizedRef.current = true
+              }
+              break
+            case 'message_end': {
+              if (streamFinalizedRef.current) break
+              streamFinalizedRef.current = true
 
-            setStreamingContent((prev) => {
+              setStreamingContent((prev) => {
+                const assistantMessage: ChatMessage = {
+                  id: event.messageId ?? `msg-${generateUUID()}`,
+                  conversationId: convId,
+                  role: 'assistant',
+                  content: prev,
+                  tokenCount: event.tokenCount ?? null,
+                  model: event.model ?? null,
+                  toolCalls: null,
+                  ragContext: null,
+                  createdAt: new Date().toISOString(),
+                }
+                setMessages((msgs) => [...msgs, assistantMessage])
+                return ''
+              })
+              setIsStreaming(false)
+              setActiveToolCalls([])
+              break
+            }
+            case 'error':
+              console.warn(LOG_PREFIX, 'Server-sent stream error:', event.error)
+              setError(event.error ?? 'An error occurred')
+              setIsStreaming(false)
+              setActiveToolCalls([])
+              break
+            case 'timeout':
+              console.warn(LOG_PREFIX, 'Stream timeout from server')
+              setError('Response timed out. Please try again.')
+              setIsStreaming(false)
+              setActiveToolCalls([])
+              break
+          }
+        }
+
+        const onError = (err: unknown) => {
+          if (abortControllerRef.current?.signal.aborted) return
+          console.error(LOG_PREFIX, 'Stream error:', err)
+          setError(getErrorMessage(err))
+          setIsStreaming(false)
+          setActiveToolCalls([])
+        }
+
+        const onDone = () => {
+          if (streamFinalizedRef.current) return
+          streamFinalizedRef.current = true
+
+          console.warn(LOG_PREFIX, 'Stream ended without message_end event')
+          setStreamingContent((prev) => {
+            if (prev) {
               const assistantMessage: ChatMessage = {
-                id: event.messageId ?? `msg-${generateUUID()}`,
-                conversationId: capturedConvId,
+                id: `msg-${generateUUID()}`,
+                conversationId: convId,
                 role: 'assistant',
                 content: prev,
-                tokenCount: event.tokenCount ?? null,
-                model: event.model ?? null,
+                tokenCount: null,
+                model: null,
                 toolCalls: null,
                 ragContext: null,
                 createdAt: new Date().toISOString(),
               }
               setMessages((msgs) => [...msgs, assistantMessage])
-              return ''
-            })
-            setIsStreaming(false)
-            setActiveToolCalls([])
-            break
-          }
-          case 'error':
-            console.warn(LOG_PREFIX, 'Server-sent stream error:', event.error)
-            setError(event.error ?? 'An error occurred')
-            setIsStreaming(false)
-            setActiveToolCalls([])
-            break
-          case 'timeout':
-            console.warn(LOG_PREFIX, 'Stream timeout from server')
-            setError('Response timed out. Please try again.')
-            setIsStreaming(false)
-            setActiveToolCalls([])
-            break
-        }
-      }
-
-      const onError = (err: unknown) => {
-        // Suppress errors from intentional abort
-        if (abortControllerRef.current?.signal.aborted) return
-        console.error(LOG_PREFIX, 'Stream error:', err)
-        setError(getErrorMessage(err))
-        setIsStreaming(false)
-        setActiveToolCalls([])
-      }
-
-      const onDone = () => {
-        // Finalize if streaming wasn't ended by message_end
-        if (streamFinalizedRef.current) return // already handled
-        streamFinalizedRef.current = true
-
-        console.warn(LOG_PREFIX, 'Stream ended without message_end event')
-        setStreamingContent((prev) => {
-          if (prev) {
-            const assistantMessage: ChatMessage = {
-              id: `msg-${generateUUID()}`,
-              conversationId: capturedConvId,
-              role: 'assistant',
-              content: prev,
-              tokenCount: null,
-              model: null,
-              toolCalls: null,
-              ragContext: null,
-              createdAt: new Date().toISOString(),
             }
-            setMessages((msgs) => [...msgs, assistantMessage])
-          }
-          return ''
-        })
-        setIsStreaming(false)
-        setActiveToolCalls([])
+            return ''
+          })
+          setIsStreaming(false)
+          setActiveToolCalls([])
+        }
+
+        abortControllerRef.current = chatApi.streamMessage(
+          convId,
+          content,
+          symbol,
+          locale,
+          onEvent,
+          onError,
+          onDone
+        )
       }
 
-      abortControllerRef.current = chatApi.streamMessage(
-        conversationId,
-        content,
-        symbol,
-        locale,
-        onEvent,
-        onError,
-        onDone
-      )
+      if (conversationId) {
+        // Existing conversation — stream directly
+        startStream(conversationId)
+      } else {
+        // Lazy creation: create conversation first, then stream.
+        // The sendVersion guard detects stale completions (e.g. user clicked "New Chat" mid-creation).
+        const sendVersion = ++sendVersionRef.current
+        void (async () => {
+          try {
+            const newConv = await chatApi.createConversation(undefined, symbol)
+            if (sendVersionRef.current !== sendVersion) {
+              console.warn(LOG_PREFIX, 'Stale lazy creation discarded for', symbol)
+              return
+            }
+            console.warn(LOG_PREFIX, 'Lazy-created conversation', newConv.id, 'for', symbol)
+            setConversationId(newConv.id)
+            startStream(newConv.id)
+          } catch (err) {
+            if (sendVersionRef.current !== sendVersion) return
+            console.error(LOG_PREFIX, 'Failed to create conversation:', err)
+            setError(getErrorMessage(err))
+            setIsStreaming(false)
+            setStreamingContent('')
+            // Remove the optimistic user message since we failed before sending
+            setMessages((prev) => prev.filter((m) => m.id !== userMessage.id))
+          }
+        })()
+      }
     },
     [conversationId, isStreaming, symbol, locale]
   )
@@ -450,6 +469,20 @@ export function StockChatProvider({ symbol, children }: StockChatProviderProps) 
   const clearError = useCallback(() => {
     setError(null)
   }, [])
+
+  const startNewChat = useCallback(() => {
+    console.warn(LOG_PREFIX, 'Starting new chat, clearing conversation for', symbol)
+    // Invalidate any in-flight lazy creation IIFE
+    sendVersionRef.current++
+    abortStream()
+    setConversationId(null)
+    setMessages([])
+    setStreamingContent('')
+    setRagSources([])
+    setActiveToolCalls([])
+    setIsStreaming(false)
+    setError(null)
+  }, [abortStream, symbol])
 
   // -------------------------------------------------------------------------
   // Context Values
@@ -475,8 +508,9 @@ export function StockChatProvider({ symbol, children }: StockChatProviderProps) 
       cancelStream,
       clearError,
       refreshConversation: resolveConversation,
+      startNewChat,
     }),
-    [sendMessage, cancelStream, clearError, resolveConversation]
+    [sendMessage, cancelStream, clearError, resolveConversation, startNewChat]
   )
 
   // -------------------------------------------------------------------------

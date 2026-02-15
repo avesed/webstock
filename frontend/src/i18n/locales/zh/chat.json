@@ -45,7 +45,8 @@
     "defaultGreeting": "您好！今天我能帮您分析什么股票？",
     "minimize": "最小化",
     "expand": "展开",
-    "close": "关闭"
+    "close": "关闭",
+    "newChat": "新对话"
   },
   "tools": {
     "searching": "搜索中...",

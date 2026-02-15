@@ -45,7 +45,8 @@
     "defaultGreeting": "Hello! How can I help you with stock analysis today?",
     "minimize": "Minimize",
     "expand": "Expand",
-    "close": "Close"
+    "close": "Close",
+    "newChat": "New Chat"
   },
   "tools": {
     "searching": "Searching...",

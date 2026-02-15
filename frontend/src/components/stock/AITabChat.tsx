@@ -1,6 +1,6 @@
 import { useEffect, useRef } from 'react'
 import { useTranslation } from 'react-i18next'
-import { Bot, AlertCircle, MessageSquareText } from 'lucide-react'
+import { Bot, AlertCircle, MessageSquareText, SquarePen } from 'lucide-react'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { ChatMessageBubble } from '@/components/chat/ChatMessageBubble'
 import { ChatInput } from '@/components/chat/ChatInput'
@@ -25,7 +25,7 @@ export function AITabChat() {
     isLoading,
   } = useStockChatState()
 
-  const { sendMessage, cancelStream, clearError } = useStockChatActions()
+  const { sendMessage, cancelStream, clearError, startNewChat } = useStockChatActions()
 
   const scrollRef = useRef<HTMLDivElement>(null)
 
@@ -58,12 +58,21 @@ export function AITabChat() {
         <div className="flex items-center gap-2">
           <MessageSquareText className="h-4 w-4 text-muted-foreground" />
           <CardTitle className="text-base">{t('title', 'AI Chat')}</CardTitle>
+          <div className="flex-1" />
+          <button
+            type="button"
+            aria-label={t('widget.newChat', 'New Chat')}
+            className="flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+            onClick={startNewChat}
+          >
+            <SquarePen className="h-4 w-4" />
+          </button>
         </div>
       </CardHeader>
 
       {/* Error banner */}
       {error && (
-        <div className="flex items-center gap-2 border-b bg-destructive/10 px-4 py-2 text-sm text-destructive shrink-0">
+        <div role="alert" className="flex items-center gap-2 border-b bg-destructive/10 px-4 py-2 text-sm text-destructive shrink-0">
           <AlertCircle className="h-4 w-4 shrink-0" />
           <span className="flex-1">{error}</span>
           <button

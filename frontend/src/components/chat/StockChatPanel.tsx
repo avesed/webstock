@@ -1,5 +1,5 @@
 import { useEffect, useRef } from 'react'
-import { Bot, X, AlertCircle, MessageSquareText } from 'lucide-react'
+import { Bot, X, AlertCircle, MessageSquareText, SquarePen } from 'lucide-react'
 
 import { cn } from '@/lib/utils'
 import { ChatMessageBubble } from './ChatMessageBubble'
@@ -21,6 +21,7 @@ interface StockChatPanelProps {
   readonly onCancel: () => void
   readonly onClose: () => void
   readonly onClearError: () => void
+  readonly onNewChat?: () => void
 }
 
 export function StockChatPanel({
@@ -36,6 +37,7 @@ export function StockChatPanel({
   onCancel,
   onClose,
   onClearError,
+  onNewChat,
 }: StockChatPanelProps) {
   const scrollRef = useRef<HTMLDivElement>(null)
 
@@ -80,6 +82,16 @@ export function StockChatPanel({
           <span>AI Chat</span>
         </div>
         <div className="flex-1" />
+        {onNewChat && (
+          <button
+            type="button"
+            aria-label="New chat"
+            className="flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+            onClick={onNewChat}
+          >
+            <SquarePen className="h-4 w-4" />
+          </button>
+        )}
         <button
           type="button"
           aria-label="Close chat"
