@@ -28,6 +28,11 @@ class Settings(BaseSettings):
     MAX_CONCURRENT_BACKTESTS: int = 1
     BACKTEST_TIMEOUT_SECONDS: int = 1800  # 30 minutes
 
+    # Backend data source configuration
+    WEBSTOCK_BACKEND_URL: str = "http://app:80"
+    INTERNAL_API_TOKEN: str = ""
+    QLIB_DATA_SOURCE: str = "backend"  # "backend" | "direct"
+
 
 @lru_cache()
 def get_settings() -> Settings:

@@ -68,6 +68,41 @@ class DataSyncService:
         logger.info("Starting data sync for market=%s, update_only=%s", market, update_only)
         start_time = time.monotonic()
 
+        # Normalize cn/sh/sz to a common market key for backend API
+        backend_market = market
+        if market in ("sh", "sz"):
+            backend_market = "cn"
+
+        # Try backend data source first if configured
+        data_source = os.environ.get("QLIB_DATA_SOURCE", "backend")
+        if data_source == "backend":
+            try:
+                result = DataSyncService._sync_from_backend(
+                    backend_market, data_dir, symbols, update_only,
+                )
+                # On success, skip direct download
+                elapsed = time.monotonic() - start_time
+                result["duration_s"] = round(elapsed, 2)
+                result["market"] = market
+                result["data_source"] = "backend"
+                DataSyncService._save_metadata(data_dir, market, result)
+                logger.info(
+                    "Data sync complete (backend) for market=%s: "
+                    "%d symbols, %d errors in %.1fs",
+                    market,
+                    result["symbol_count"],
+                    len(result.get("errors", [])),
+                    elapsed,
+                )
+                return result
+            except Exception as e:
+                logger.warning(
+                    "Backend sync failed for market=%s, falling back to direct: %s",
+                    market,
+                    e,
+                )
+
+        # Original direct sync logic
         if market == "us":
             result = DataSyncService._sync_us(data_dir, symbols, update_only)
         elif market == "hk":
@@ -84,6 +119,7 @@ class DataSyncService:
         elapsed = time.monotonic() - start_time
         result["duration_s"] = round(elapsed, 2)
         result["market"] = market
+        result["data_source"] = "direct"
 
         # Update sync metadata
         DataSyncService._save_metadata(data_dir, market, result)
@@ -428,6 +464,137 @@ class DataSyncService:
         }
 
     # ------------------------------------------------------------------ #
+    # Backend data source sync
+    # ------------------------------------------------------------------ #
+
+    @staticmethod
+    def _sync_from_backend(
+        market: str,
+        data_dir: str,
+        symbols: Optional[List[str]],
+        update_only: bool,
+    ) -> Dict[str, Any]:
+        """Sync market data from the main backend's internal API.
+
+        Uses BackendDataClient to fetch daily bars from PostgreSQL,
+        then converts to Qlib .bin format.
+        """
+        from app.services.backend_client import get_backend_client
+
+        # Determine market subdirectory
+        market_subdirs = {
+            "us": "us_data",
+            "hk": "hk_data",
+            "cn": "cn_data",
+            "metal": "metal_data",
+        }
+        market_dir = os.path.join(
+            data_dir, market_subdirs.get(market, f"{market}_data")
+        )
+        os.makedirs(market_dir, exist_ok=True)
+
+        client = get_backend_client()
+
+        # 1. Get symbols from backend if not provided
+        if symbols is None:
+            symbols = client.get_symbols(market)
+            if not symbols:
+                raise ValueError(
+                    f"No symbols returned from backend for market={market}"
+                )
+
+        # 2. Determine start_date for incremental sync
+        start_date: Optional[str] = None
+        if update_only:
+            start_date = DataSyncService._resolve_start_date(
+                market_dir, update_only, default="2000-01-01"
+            )
+
+        logger.info(
+            "Syncing %d %s symbols from backend (start_date=%s)",
+            len(symbols),
+            market,
+            start_date,
+        )
+
+        # 3. Fetch in batches of 30
+        all_dates: Set[str] = set()
+        errors: List[str] = []
+        success_count = 0
+        batch_size = 30
+
+        for i in range(0, len(symbols), batch_size):
+            batch = symbols[i : i + batch_size]
+            logger.info(
+                "  Backend batch %d/%d (%d symbols)",
+                i // batch_size + 1,
+                (len(symbols) + batch_size - 1) // batch_size,
+                len(batch),
+            )
+
+            data = client.get_history_batch(
+                symbols=batch,
+                market=market,
+                start_date=start_date,
+            )
+
+            if not data:
+                msg = f"batch_{i}: empty response from backend"
+                errors.append(msg)
+                logger.warning("  %s (market=%s)", msg, market)
+                continue
+
+            for sym in batch:
+                sym_data = data.get(sym)
+                if not sym_data or not sym_data.get("dates"):
+                    continue
+
+                try:
+                    # Convert columnar format to DataFrame
+                    df = pd.DataFrame(
+                        {
+                            "open": sym_data["open"],
+                            "high": sym_data["high"],
+                            "low": sym_data["low"],
+                            "close": sym_data["close"],
+                            "volume": sym_data["volume"],
+                        },
+                        index=pd.to_datetime(sym_data["dates"]),
+                    )
+
+                    if df.empty:
+                        continue
+
+                    qlib_sym = webstock_to_qlib(sym, market)
+                    dates = [d.strftime("%Y-%m-%d") for d in df.index]
+                    all_dates.update(dates)
+
+                    if dataframe_to_bin(df, qlib_sym, market_dir):
+                        update_instruments(
+                            market_dir, qlib_sym, dates[0], dates[-1]
+                        )
+                        success_count += 1
+                except Exception as e:
+                    logger.warning("  Failed to process %s: %s", sym, e)
+                    errors.append(f"{sym}: {e}")
+
+            time.sleep(_BATCH_DELAY)
+
+        if all_dates:
+            update_calendar(market_dir, sorted(all_dates))
+
+        logger.info(
+            "Backend sync data prepared: market=%s, success=%d, errors=%d, dates=%d",
+            market, success_count, len(errors), len(all_dates),
+        )
+
+        return {
+            "symbol_count": success_count,
+            "new_symbols": success_count,
+            "errors": errors,
+        }
+
+    # ------------------------------------------------------------------ #
     # Helper methods
     # ------------------------------------------------------------------ #
 
@@ -508,7 +675,8 @@ class DataSyncService:
         try:
             lines = Path(inst_path).read_text().strip().split("\n")
             return len([l for l in lines if l.strip()])
-        except Exception:
+        except Exception as e:
+            logger.debug("Failed to count instruments at %s: %s", inst_path, e)
             return 0
 
     @staticmethod
@@ -539,5 +707,8 @@ class DataSyncService:
             "date_range": date_range,
         }
 
-        with open(meta_path, "w") as f:
-            json.dump(metadata, f, indent=2)
+        try:
+            with open(meta_path, "w") as f:
+                json.dump(metadata, f, indent=2)
+        except (OSError, TypeError) as e:
+            logger.warning("Failed to save sync metadata for market=%s: %s", market, e)

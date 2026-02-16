@@ -121,6 +121,11 @@ class Settings(BaseSettings):
     CELERY_BROKER_URL: str = "redis://redis:6379/1"
     CELERY_RESULT_BACKEND: str = "redis://redis:6379/2"
 
+    # Internal API (machine-to-machine between services)
+    # Generate with: python -c "import secrets; print(secrets.token_hex(32))"
+    # Empty string disables the internal API (503 for all requests)
+    INTERNAL_API_TOKEN: str = ""
+
     # Qlib Service
     QLIB_SERVICE_URL: str = "http://qlib-service:8001"
 

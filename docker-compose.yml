@@ -184,6 +184,7 @@ services:
       - RSSHUB_ACCESS_KEY=${RSSHUB_ACCESS_KEY:-}
       - TAVILY_API_KEY=${TAVILY_API_KEY:-}
       - PLAYWRIGHT_SERVICE_URL=${PLAYWRIGHT_SERVICE_URL:-}
+      - INTERNAL_API_TOKEN=${INTERNAL_API_TOKEN:-}
     volumes:
       - app_data:/app/data
       - app_logs:/app/logs
@@ -227,6 +228,8 @@ services:
     depends_on:
       redis:
         condition: service_healthy
+      app:
+        condition: service_healthy
     volumes:
       - qlib_data:/app/data/qlib
     networks:
@@ -236,6 +239,9 @@ services:
       - REDIS_URL=redis://redis:6379/3
       - DEFAULT_MARKET=us
       - LOG_LEVEL=info
+      - WEBSTOCK_BACKEND_URL=http://app:80
+      - INTERNAL_API_TOKEN=${INTERNAL_API_TOKEN:-}
+      - QLIB_DATA_SOURCE=backend
     healthcheck:
       test: ["CMD", "curl", "-f", "http://127.0.0.1:8001/health"]
       interval: 30s

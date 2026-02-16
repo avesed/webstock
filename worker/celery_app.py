@@ -25,6 +25,8 @@ celery_app = Celery(
         "worker.tasks.stock_list_tasks",
         "worker.tasks.backtest_cleanup",
         "worker.tasks.rss_monitor",
+        "worker.tasks.daily_bar_tasks",
+        "worker.tasks.qlib_sync",
     ],
 )
 
@@ -46,6 +48,8 @@ celery_app.conf.update(
         "worker.tasks.full_content_tasks.cleanup_expired_news": {"queue": "default"},
         "worker.tasks.full_content_tasks.cleanup_pipeline_events": {"queue": "default"},
         "worker.tasks.full_content_tasks.cleanup_old_usage_records": {"queue": "default"},
+        "worker.tasks.daily_bar_tasks.collect_market_daily_bars": {"queue": "default"},
+        "worker.tasks.qlib_sync.sync_qlib_market": {"queue": "default"},
     },
 
     # Task execution settings
@@ -114,6 +118,26 @@ celery_app.conf.update(
         "monitor-rss-feeds": {
             "task": "worker.tasks.rss_monitor.monitor_rss_feeds",
             "schedule": crontab(minute="*/5"),
+        },
+        "collect-daily-bars-cn": {
+            "task": "worker.tasks.daily_bar_tasks.collect_market_daily_bars",
+            "schedule": crontab(hour=8, minute=0),  # 08:00 UTC, A-share close + 1h
+            "args": ["cn"],
+        },
+        "collect-daily-bars-hk": {
+            "task": "worker.tasks.daily_bar_tasks.collect_market_daily_bars",
+            "schedule": crontab(hour=9, minute=0),  # 09:00 UTC, HK close + 1h
+            "args": ["hk"],
+        },
+        "collect-daily-bars-us": {
+            "task": "worker.tasks.daily_bar_tasks.collect_market_daily_bars",
+            "schedule": crontab(hour=22, minute=0),  # 22:00 UTC, US close + 1h
+            "args": ["us"],
+        },
+        "collect-daily-bars-metal": {
+            "task": "worker.tasks.daily_bar_tasks.collect_market_daily_bars",
+            "schedule": crontab(hour=22, minute=30),  # 22:30 UTC, CME close
+            "args": ["metal"],
         },
         # JWT Key Rotation - DISABLED by default
         # Manual rotation recommended: python worker/scripts/manage_keys.py rotate

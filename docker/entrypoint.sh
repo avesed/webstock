@@ -71,6 +71,28 @@ http {
         root /var/www/html;
         index index.html;
 
+        # Internal API endpoints (service-to-service, longer timeout, no rate limit)
+        # Restricted to Docker-internal networks only (defense-in-depth)
+        location /api/v1/internal/ {
+            allow 172.16.0.0/12;
+            allow 10.0.0.0/8;
+            allow 192.168.0.0/16;
+            allow 127.0.0.0/8;
+            deny all;
+
+            proxy_pass http://backend;
+            proxy_http_version 1.1;
+            proxy_set_header Host $host;
+            proxy_set_header X-Real-IP $remote_addr;
+            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+            proxy_set_header X-Forwarded-Proto $scheme;
+            proxy_set_header Connection "";
+
+            proxy_connect_timeout 30s;
+            proxy_send_timeout 180s;
+            proxy_read_timeout 180s;
+        }
+
         # Qlib quantitative endpoints (longer timeout for factor computation)
         location /api/v1/qlib/ {
             limit_req zone=qlib_limit burst=10 nodelay;
