@@ -53,7 +53,7 @@ from sqlalchemy import select
 from app.db.task_session import get_task_session
 from app.models.news import News
 from app.services.rag import get_index_service, SearchResult
-from app.services.rag.embedding import get_embedding_model_from_db
+from app.services.rag.embedding import get_embedding_config_from_db
 
 logger = logging.getLogger(__name__)
 
@@ -1114,9 +1114,9 @@ async def _search_news_knowledge(
     start_time = time.time()
     try:
         async with get_task_session() as db:
-            # Get embedding model config
+            # Get embedding model config (full provider resolution)
             try:
-                embedding_model = await get_embedding_model_from_db(db)
+                embed_config = await get_embedding_config_from_db(db)
             except ValueError as e:
                 logger.warning(f"RAG news search skipped - no embedding model configured: {e}")
                 return []
@@ -1128,7 +1128,10 @@ async def _search_news_knowledge(
 
             # Generate query embedding
             query_embedding = await index_service.generate_embedding(
-                query_text, model=embedding_model
+                query_text,
+                model=embed_config.model,
+                api_key=embed_config.api_key,
+                base_url=embed_config.base_url,
             )
             if not query_embedding:
                 logger.warning(f"RAG news search: failed to generate embedding for {symbol}")
@@ -1142,7 +1145,7 @@ async def _search_news_knowledge(
                 symbol=symbol,
                 source_type="news",
                 top_k=limit,
-                embedding_model=embedding_model,
+                embedding_model=embed_config.model,
             )
 
             if not rag_results:

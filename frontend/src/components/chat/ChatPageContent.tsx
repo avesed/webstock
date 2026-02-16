@@ -58,11 +58,18 @@ export function ChatPageContent() {
 
   const swipeOpacity = swipeOffset > 0 ? Math.max(1 - swipeOffset / 200, 0.3) : 1
 
-  // Calculate height: viewport - header(64px) - breadcrumb(~36px) - main padding(16px top + 16px bottom on mobile, 24px on lg)
-  // Mobile: 100vh - 64px - 36px - 32px = 100vh - 132px
-  // Desktop: 100vh - 64px - 36px - 48px = 100vh - 148px
+  // Height = viewport - header - breadcrumb (if visible) - BottomNav (if visible)
+  // Margins negate <main>'s padding so the chat fills edge-to-edge.
+  // --safe-bottom adapts to iPhone notch / Android without hardcoding safe-area size.
+  //
+  // Phone  (<640px):  no breadcrumb, BottomNav ~56px + safe area → 100dvh - 120px - safe
+  // Tablet (640-1023): breadcrumb ~44px, BottomNav              → 100dvh - 164px - safe
+  // Desktop (≥1024):   breadcrumb ~44px, no BottomNav            → 100vh  - 108px
   return (
-    <div className="flex h-[calc(100dvh-188px)] lg:h-[calc(100vh-148px)] -m-4 lg:-m-6">
+    <div
+      className="flex -mx-4 -mt-4 -mb-20 lg:-m-6 h-[calc(100dvh-120px-var(--safe-bottom))] sm:h-[calc(100dvh-164px-var(--safe-bottom))] lg:h-[calc(100vh-108px)]"
+      style={{ '--safe-bottom': 'env(safe-area-inset-bottom, 0px)' } as React.CSSProperties}
+    >
       {/* Conversation sidebar */}
       <div
         className={cn(
