@@ -325,10 +325,20 @@
     "hk": "Hong Kong",
     "cn": "China A-Shares",
     "metal": "Precious Metals",
-    "open": "Market Open",
-    "closed": "Market Closed",
+    "open": "Open",
+    "closed": "Closed",
     "preMarket": "Pre-Market",
     "afterHours": "After Hours"
+  },
+  "marketStatus": {
+    "opensIn": "Opens in {{time}}",
+    "closesIn": "Closes in {{time}}"
+  },
+  "stats": {
+    "portfolioValue": "Portfolio Value",
+    "dayPnl": "Day P&L",
+    "watching": "Watching",
+    "alerts": "Alerts"
   },
   "metals": {
     "gold": "Gold",
@@ -353,5 +363,27 @@
     "gbp": "British Pound",
     "jpy": "Japanese Yen",
     "hkd": "Hong Kong Dollar"
+  },
+  "compactNews": {
+    "title": "Headlines",
+    "viewAll": "More"
+  },
+  "watchlistSnapshot": {
+    "title": "Watchlist",
+    "viewAll": "View All",
+    "empty": "No stocks in watchlist",
+    "addStocks": "Add stocks to your watchlist",
+    "noDefault": "No default watchlist",
+    "colSymbol": "Symbol",
+    "colPrice": "Price",
+    "colChange": "Change",
+    "colChangePercent": "Change%"
+  },
+  "portfolioChart": {
+    "title": "Portfolio",
+    "noPortfolio": "No portfolio yet",
+    "noHoldings": "No holdings in portfolio",
+    "noData": "No chart data available",
+    "monthChange": "1M Change"
   }
 }

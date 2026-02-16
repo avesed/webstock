@@ -5,7 +5,6 @@ import axios from 'axios'
 import { Search, X, Clock, TrendingUp, Loader2 } from 'lucide-react'
 import { Input } from '@/components/ui/input'
 import { Button } from '@/components/ui/button'
-import { ScrollArea } from '@/components/ui/scroll-area'
 import { cn } from '@/lib/utils'
 import { useStockStore } from '@/stores/stockStore'
 import { stockApi } from '@/api'
@@ -341,7 +340,7 @@ export default function StockSearch({
           aria-label="Search results"
           className="absolute top-full z-50 mt-1 w-full rounded-lg border bg-popover shadow-lg"
         >
-          <ScrollArea className="max-h-80">
+          <div className="max-h-80 overflow-y-auto overscroll-contain">
             {/* Search results */}
             {query.trim().length > 0 && (
               <>
@@ -438,7 +437,7 @@ export default function StockSearch({
                 ))}
               </div>
             )}
-          </ScrollArea>
+          </div>
         </div>
       )}
     </div>

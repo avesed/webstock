@@ -327,8 +327,18 @@
     "metal": "贵金属",
     "open": "交易中",
     "closed": "已收盘",
-    "preMarket": "盘前交易",
-    "afterHours": "盘后交易"
+    "preMarket": "盘前",
+    "afterHours": "盘后"
+  },
+  "marketStatus": {
+    "opensIn": "{{time}}后开盘",
+    "closesIn": "{{time}}后收盘"
+  },
+  "stats": {
+    "portfolioValue": "持仓总值",
+    "dayPnl": "日盈亏",
+    "watching": "关注",
+    "alerts": "提醒"
   },
   "metals": {
     "gold": "黄金",
@@ -353,5 +363,27 @@
     "gbp": "英镑",
     "jpy": "日元",
     "hkd": "港币"
+  },
+  "compactNews": {
+    "title": "快讯",
+    "viewAll": "更多"
+  },
+  "watchlistSnapshot": {
+    "title": "自选股",
+    "viewAll": "查看全部",
+    "empty": "自选列表为空",
+    "addStocks": "添加股票到自选列表",
+    "noDefault": "暂无默认自选组",
+    "colSymbol": "代码",
+    "colPrice": "价格",
+    "colChange": "涨跌",
+    "colChangePercent": "涨跌幅"
+  },
+  "portfolioChart": {
+    "title": "投资组合",
+    "noPortfolio": "暂无投资组合",
+    "noHoldings": "组合中暂无持仓",
+    "noData": "暂无图表数据",
+    "monthChange": "近1月变动"
   }
 }

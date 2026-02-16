@@ -301,10 +301,10 @@ export default function MainLayout() {
             </Button>
 
             {/* Search */}
-            <div className="flex-1 max-w-md">
+            <div className="flex-1 flex justify-center">
               <StockSearch
                 placeholder={t('layout.searchPlaceholder')}
-                className="w-full"
+                className="w-full max-w-md"
               />
             </div>
 
