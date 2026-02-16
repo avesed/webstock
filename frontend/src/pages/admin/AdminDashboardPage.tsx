@@ -8,43 +8,45 @@ export default function AdminDashboardPage() {
   const { t } = useTranslation('admin')
 
   return (
-    <div className="flex flex-col h-[calc(100vh-10rem)]">
+    <div className="flex flex-col h-[calc(100vh-10rem)] overflow-hidden">
       <div className="flex-shrink-0 pb-4">
         <h1 className="text-3xl font-bold tracking-tight">{t('title')}</h1>
         <p className="text-muted-foreground">{t('subtitle')}</p>
       </div>
 
-      <Tabs defaultValue="users" className="flex flex-col flex-1 min-h-0">
-        <TabsList className="flex-shrink-0">
-          <TabsTrigger value="users" className="flex items-center gap-2">
-            <Users className="h-4 w-4" />
-            {t('tabs.users')}
-          </TabsTrigger>
-          <TabsTrigger value="settings" className="flex items-center gap-2">
-            <Settings className="h-4 w-4" />
-            {t('tabs.settings')}
-          </TabsTrigger>
-          <TabsTrigger value="monitor" className="flex items-center gap-2">
-            <Activity className="h-4 w-4" />
-            {t('tabs.monitor')}
-          </TabsTrigger>
-          <TabsTrigger value="filter" className="flex items-center gap-2">
-            <Filter className="h-4 w-4" />
-            {t('tabs.filter')}
-          </TabsTrigger>
-          <TabsTrigger value="rss" className="flex items-center gap-2">
-            <Rss className="h-4 w-4" />
-            {t('tabs.rss')}
-          </TabsTrigger>
-          <TabsTrigger value="pipeline" className="flex items-center gap-2">
-            <GitBranch className="h-4 w-4" />
-            {t('tabs.pipeline')}
-          </TabsTrigger>
-          <TabsTrigger value="costs" className="flex items-center gap-2">
-            <DollarSign className="h-4 w-4" />
-            {t('tabs.costs')}
-          </TabsTrigger>
-        </TabsList>
+      <Tabs defaultValue="users" className="flex flex-col flex-1 min-h-0 min-w-0">
+        <div className="flex-shrink-0 overflow-x-auto scrollbar-none">
+          <TabsList className="inline-flex w-max lg:w-auto">
+            <TabsTrigger value="users" className="flex items-center gap-2">
+              <Users className="h-4 w-4" />
+              {t('tabs.users')}
+            </TabsTrigger>
+            <TabsTrigger value="settings" className="flex items-center gap-2">
+              <Settings className="h-4 w-4" />
+              {t('tabs.settings')}
+            </TabsTrigger>
+            <TabsTrigger value="monitor" className="flex items-center gap-2">
+              <Activity className="h-4 w-4" />
+              {t('tabs.monitor')}
+            </TabsTrigger>
+            <TabsTrigger value="filter" className="flex items-center gap-2">
+              <Filter className="h-4 w-4" />
+              {t('tabs.filter')}
+            </TabsTrigger>
+            <TabsTrigger value="rss" className="flex items-center gap-2">
+              <Rss className="h-4 w-4" />
+              {t('tabs.rss')}
+            </TabsTrigger>
+            <TabsTrigger value="pipeline" className="flex items-center gap-2">
+              <GitBranch className="h-4 w-4" />
+              {t('tabs.pipeline')}
+            </TabsTrigger>
+            <TabsTrigger value="costs" className="flex items-center gap-2">
+              <DollarSign className="h-4 w-4" />
+              {t('tabs.costs')}
+            </TabsTrigger>
+          </TabsList>
+        </div>
 
         <TabsContent value="users" className="flex-1 overflow-y-auto mt-4 pr-2">
           <UserManagement />

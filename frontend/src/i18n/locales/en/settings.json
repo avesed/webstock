@@ -79,7 +79,10 @@
     "weeklyDigest": "Weekly Digest",
     "weeklyDigestDescription": "Weekly summary of your portfolio performance",
     "promotions": "Promotions & Updates",
-    "promotionsDescription": "Product updates and special offers"
+    "promotionsDescription": "Product updates and special offers",
+    "pushNotifications": "Push Notifications",
+    "pushDescription": "Receive push notifications for price alerts and important updates",
+    "pushDenied": "Push notifications are blocked. Please enable them in your browser settings."
   },
   "privacy": {
     "title": "Privacy & Security",

@@ -79,7 +79,10 @@
     "weeklyDigest": "每周摘要",
     "weeklyDigestDescription": "每周投资组合表现汇总",
     "promotions": "推广与更新",
-    "promotionsDescription": "产品更新和特别优惠"
+    "promotionsDescription": "产品更新和特别优惠",
+    "pushNotifications": "推送通知",
+    "pushDescription": "接收价格提醒和重要更新的推送通知",
+    "pushDenied": "推送通知已被阻止。请在浏览器设置中启用。"
   },
   "privacy": {
     "title": "隐私与安全",

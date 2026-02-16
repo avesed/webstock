@@ -7,6 +7,7 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { useToast, useLocale } from '@/hooks'
+import { usePushNotification } from '@/hooks/usePushNotification'
 import { useAuthStore } from '@/stores/authStore'
 import apiClient from '@/api/client'
 import { User, Bell, Key, Moon, Sun, Eye, EyeOff, Loader2, Globe } from 'lucide-react'
@@ -98,6 +99,7 @@ export default function SettingsPage() {
   const { user } = useAuthStore()
   const { theme, setTheme } = useThemeStore()
   const { locale, setLocale } = useLocale()
+  const { isSubscribed, permission, subscribe, unsubscribe } = usePushNotification()
 
   // Fetch settings from backend
   const { data: settings, isLoading: isLoadingSettings } = useQuery({
@@ -340,6 +342,25 @@ export default function SettingsPage() {
               </CardDescription>
             </CardHeader>
             <CardContent className="space-y-4">
+              {/* Push Notifications */}
+              <div className="flex items-center justify-between">
+                <div className="space-y-0.5">
+                  <Label>{t('notifications.pushNotifications')}</Label>
+                  <p className="text-sm text-muted-foreground">
+                    {t('notifications.pushDescription')}
+                  </p>
+                  {permission === 'denied' && (
+                    <p className="text-xs text-destructive">
+                      {t('notifications.pushDenied')}
+                    </p>
+                  )}
+                </div>
+                <ToggleButton
+                  checked={isSubscribed}
+                  onCheckedChange={(checked) => checked ? subscribe() : unsubscribe()}
+                />
+              </div>
+
               <div className="flex items-center justify-between">
                 <div className="space-y-0.5">
                   <Label>{t('notifications.priceAlerts')}</Label>

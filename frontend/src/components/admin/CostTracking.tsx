@@ -655,6 +655,7 @@ export default function CostTracking() {
   const queryDays = customRange && startDate ? 365 : periodDays  // large fallback when using date range
 
   const periodOptions = [
+    { days: 1, label: t('costs.daysToday') },
     { days: 7, label: t('costs.days7') },
     { days: 30, label: t('costs.days30') },
     { days: 90, label: t('costs.days90') },
@@ -796,7 +797,9 @@ export default function CostTracking() {
               value={formatCost(summary.totalCostUsd)}
               subtitle={customRange && startDate
                 ? `${startDate} — ${endDate || t('costs.endDate')}`
-                : `${summary.periodDays} ${t('filter.days')}`}
+                : summary.periodDays === 1
+                  ? t('costs.daysToday')
+                  : `${summary.periodDays} ${t('filter.days')}`}
               icon={<DollarSign className="h-4 w-4 text-muted-foreground" />}
             />
             <StatCard

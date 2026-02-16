@@ -112,7 +112,12 @@ http {
             proxy_set_header Connection "";
             proxy_buffering off;
             proxy_cache off;
-            add_header X-Accel-Buffering "no";
+            add_header X-Accel-Buffering "no" always;
+            # Re-add security headers (Nginx drops parent add_header when child uses add_header)
+            add_header X-Frame-Options "DENY" always;
+            add_header X-Content-Type-Options "nosniff" always;
+            add_header X-XSS-Protection "1; mode=block" always;
+            add_header Referrer-Policy "strict-origin-when-cross-origin" always;
             proxy_read_timeout 86400s;
             proxy_send_timeout 86400s;
             chunked_transfer_encoding on;
@@ -131,7 +136,12 @@ http {
             proxy_set_header Connection "";
             proxy_buffering off;
             proxy_cache off;
-            add_header X-Accel-Buffering "no";
+            add_header X-Accel-Buffering "no" always;
+            # Re-add security headers (Nginx drops parent add_header when child uses add_header)
+            add_header X-Frame-Options "DENY" always;
+            add_header X-Content-Type-Options "nosniff" always;
+            add_header X-XSS-Protection "1; mode=block" always;
+            add_header Referrer-Policy "strict-origin-when-cross-origin" always;
             proxy_read_timeout 300s;
             proxy_send_timeout 300s;
             chunked_transfer_encoding on;
@@ -158,10 +168,37 @@ http {
             try_files $uri $uri/ /index.html;
         }
 
+        # Service worker - must not be cached aggressively
+        location = /sw.js {
+            add_header Cache-Control "no-cache" always;
+            add_header Service-Worker-Allowed "/" always;
+            # Re-add security headers
+            add_header X-Frame-Options "DENY" always;
+            add_header X-Content-Type-Options "nosniff" always;
+            add_header X-XSS-Protection "1; mode=block" always;
+            add_header Referrer-Policy "strict-origin-when-cross-origin" always;
+        }
+
+        # PWA manifest
+        location = /manifest.webmanifest {
+            add_header Cache-Control "no-cache" always;
+            # Re-add security headers
+            add_header X-Frame-Options "DENY" always;
+            add_header X-Content-Type-Options "nosniff" always;
+            add_header X-XSS-Protection "1; mode=block" always;
+            add_header Referrer-Policy "strict-origin-when-cross-origin" always;
+            default_type application/manifest+json;
+        }
+
         # Static asset caching
         location ~* \.(js|css|png|jpg|jpeg|gif|ico|svg|woff|woff2|ttf|eot)$ {
             expires 1y;
-            add_header Cache-Control "public, immutable";
+            add_header Cache-Control "public, immutable" always;
+            # Re-add security headers
+            add_header X-Frame-Options "DENY" always;
+            add_header X-Content-Type-Options "nosniff" always;
+            add_header X-XSS-Protection "1; mode=block" always;
+            add_header Referrer-Policy "strict-origin-when-cross-origin" always;
             access_log off;
         }
 
@@ -169,7 +206,12 @@ http {
         location /health {
             access_log off;
             return 200 "OK";
-            add_header Content-Type text/plain;
+            add_header Content-Type text/plain always;
+            # Re-add security headers
+            add_header X-Frame-Options "DENY" always;
+            add_header X-Content-Type-Options "nosniff" always;
+            add_header X-XSS-Protection "1; mode=block" always;
+            add_header Referrer-Policy "strict-origin-when-cross-origin" always;
         }
 
         # Deny hidden files

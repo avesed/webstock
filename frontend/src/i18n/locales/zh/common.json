@@ -217,5 +217,17 @@
     "efficientFrontier": "有效前沿",
     "frontierPoints": "前沿点数",
     "currentPortfolio": "当前组合"
+  },
+  "pwa": {
+    "offlineReady": "离线就绪",
+    "offlineReadyDesc": "应用已缓存，可离线使用。",
+    "updateAvailable": "有新版本",
+    "updateAvailableDesc": "新版本已就绪，刷新页面以更新。",
+    "reload": "刷新",
+    "dismiss": "关闭",
+    "pullToRefresh": "下拉刷新",
+    "swipeToDelete": "滑动删除",
+    "undoDelete": "撤销",
+    "itemDeleted": "已删除"
   }
 }

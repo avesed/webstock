@@ -293,12 +293,12 @@ export function UserManagement() {
 
   return (
     <Card>
-      <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-4">
+      <CardHeader className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between space-y-0 pb-4">
         <div>
           <CardTitle>{t('users.title')}</CardTitle>
           <CardDescription>{t('users.description')}</CardDescription>
         </div>
-        <Button onClick={() => setAddUserDialog(true)}>
+        <Button onClick={() => setAddUserDialog(true)} className="w-full sm:w-auto">
           <UserPlus className="mr-2 h-4 w-4" />
           {t('users.addUser')}
         </Button>
@@ -372,15 +372,15 @@ export function UserManagement() {
             <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
           </div>
         ) : (
-          <div className="rounded-md border">
+          <div className="rounded-md border overflow-x-auto">
             <table className="w-full">
               <thead>
                 <tr className="border-b bg-muted/50">
                   <th className="h-10 px-4 text-left font-medium">{t('users.email')}</th>
                   <th className="h-10 px-4 text-left font-medium">{t('users.role')}</th>
                   <th className="h-10 px-4 text-left font-medium">{t('users.status')}</th>
-                  <th className="h-10 px-4 text-left font-medium">{t('users.createdAt')}</th>
-                  <th className="h-10 px-4 text-left font-medium">{t('users.lastLogin')}</th>
+                  <th className="h-10 px-4 text-left font-medium hidden sm:table-cell">{t('users.createdAt')}</th>
+                  <th className="h-10 px-4 text-left font-medium hidden md:table-cell">{t('users.lastLogin')}</th>
                   <th className="h-10 px-4 text-right font-medium">{tCommon('actions.edit')}</th>
                 </tr>
               </thead>
@@ -428,8 +428,8 @@ export function UserManagement() {
                           : tCommon('status.inactive')}
                       </span>
                     </td>
-                    <td className="px-4 py-3 text-muted-foreground">{formatDate(user.createdAt)}</td>
-                    <td className="px-4 py-3 text-muted-foreground">{formatDate(user.lastLoginAt)}</td>
+                    <td className="px-4 py-3 text-muted-foreground hidden sm:table-cell">{formatDate(user.createdAt)}</td>
+                    <td className="px-4 py-3 text-muted-foreground hidden md:table-cell">{formatDate(user.lastLoginAt)}</td>
                     <td className="px-4 py-3 text-right">
                       <DropdownMenu>
                         <DropdownMenuTrigger asChild>

@@ -1,15 +1,17 @@
-import { useMemo } from 'react'
+import { useMemo, useRef, useState } from 'react'
 import { useParams, useLocation, useNavigate, Link } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
 import { useTranslation } from 'react-i18next'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { ArrowLeft, ExternalLink, Clock, Loader2, FileWarning } from 'lucide-react'
+import { useDrag } from '@use-gesture/react'
 import { Button } from '@/components/ui/button'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { Separator } from '@/components/ui/separator'
 import { formatRelativeTime, decodeHtmlEntities } from '@/lib/utils'
 import { newsApi } from '@/api'
+import { useIsMobile } from '@/hooks/useIsMobile'
 import ArticleScoreBadge from '@/components/news/ArticleScoreBadge'
 import ArticleNavigation from '@/components/news/ArticleNavigation'
 import type { NewsArticle, NewsNavigationContext } from '@/types'
@@ -66,6 +68,69 @@ export default function NewsReaderPage() {
     return { tabs: available, resolvedDefault: def }
   }, [article, defaultTab])
 
+  // Swipe gesture hooks - must be called unconditionally before any returns
+  const isMobile = useIsMobile()
+  const articleRef = useRef<HTMLElement>(null)
+  const [articleSwipeOffset, setArticleSwipeOffset] = useState(0)
+
+  const currentIndex = navigation?.currentIndex ?? -1
+  const navArticles = navigation?.articles ?? []
+  const canGoPrev = navigation != null && currentIndex > 0
+  const canGoNext = navigation != null && currentIndex < navArticles.length - 1
+
+  useDrag(
+    ({ active, movement: [mx], velocity: [vx], direction: [dx], cancel }) => {
+      if (!isMobile || !navigation) {
+        cancel()
+        return
+      }
+      if (active) {
+        // Limit swipe range if at boundary
+        if (mx < 0 && !canGoNext) {
+          setArticleSwipeOffset(0)
+          return
+        }
+        if (mx > 0 && !canGoPrev) {
+          setArticleSwipeOffset(0)
+          return
+        }
+        setArticleSwipeOffset(mx)
+      } else {
+        // Left swipe: next article
+        if (mx < -80 && vx > 0.3 && dx < 0 && canGoNext) {
+          const nextArticle = navArticles[currentIndex + 1]
+          if (nextArticle) {
+            navigate(`/news/${nextArticle.id}`, {
+              state: {
+                navigation: { articles: navArticles, currentIndex: currentIndex + 1 },
+                origin,
+              },
+            })
+          }
+        }
+        // Right swipe: previous article
+        if (mx > 80 && vx > 0.3 && dx > 0 && canGoPrev) {
+          const prevArticle = navArticles[currentIndex - 1]
+          if (prevArticle) {
+            navigate(`/news/${prevArticle.id}`, {
+              state: {
+                navigation: { articles: navArticles, currentIndex: currentIndex - 1 },
+                origin,
+              },
+            })
+          }
+        }
+        setArticleSwipeOffset(0)
+      }
+    },
+    {
+      target: articleRef,
+      filterTaps: true,
+      axis: 'x',
+      enabled: isMobile && navigation != null,
+    }
+  )
+
   // Loading state
   if (isLoading) {
     return (
@@ -94,7 +159,15 @@ export default function NewsReaderPage() {
   }
 
   return (
-    <article className="max-w-[720px] mx-auto px-4 py-8">
+    <article
+      ref={articleRef}
+      className="max-w-[720px] mx-auto px-4 py-8"
+      style={{
+        transform: articleSwipeOffset !== 0 ? `translateX(${articleSwipeOffset}px)` : undefined,
+        transition: articleSwipeOffset !== 0 ? 'none' : 'transform 0.3s ease-out',
+        touchAction: 'pan-y',
+      }}
+    >
       {/* Top bar: back + original link */}
       <div className="flex items-center justify-between mb-8">
         <Button

@@ -1,31 +1,34 @@
 import { Routes, Route, Navigate } from 'react-router-dom'
-import { useEffect } from 'react'
+import { lazy, useEffect } from 'react'
 import { useThemeStore } from '@/stores/themeStore'
 import { useAuthStore } from '@/stores/authStore'
 import { Toaster } from '@/components/ui/toaster'
+import { PWAUpdatePrompt } from '@/components/layout/PWAUpdatePrompt'
 
 // Layout
 import MainLayout from '@/components/layout/MainLayout'
 import { AdminRoute } from '@/components/layout/AdminRoute'
 
-// Pages
-import DashboardPage from '@/pages/DashboardPage'
+// Static imports for auth pages (must load immediately)
 import LoginPage from '@/pages/LoginPage'
 import RegisterPage from '@/pages/RegisterPage'
 import PendingApprovalPage from '@/pages/PendingApprovalPage'
-import StockDetailPage from '@/pages/StockDetailPage'
-import StockChartPage from '@/pages/StockChartPage'
-import WatchlistPage from '@/pages/WatchlistPage'
-import PortfolioPage from '@/pages/PortfolioPage'
-import AlertsPage from '@/pages/AlertsPage'
-import ReportsPage from '@/pages/ReportsPage'
-import NewsPage from '@/pages/NewsPage'
-import NewsReaderPage from '@/pages/NewsReaderPage'
-import ChatPage from '@/pages/ChatPage'
-import SettingsPage from '@/pages/SettingsPage'
-import AdminDashboardPage from '@/pages/admin/AdminDashboardPage'
-import QlibBacktestsPage from '@/pages/QlibBacktestsPage'
 import NotFoundPage from '@/pages/NotFoundPage'
+
+// Lazy-loaded pages
+const DashboardPage = lazy(() => import('@/pages/DashboardPage'))
+const StockDetailPage = lazy(() => import('@/pages/StockDetailPage'))
+const StockChartPage = lazy(() => import('@/pages/StockChartPage'))
+const WatchlistPage = lazy(() => import('@/pages/WatchlistPage'))
+const PortfolioPage = lazy(() => import('@/pages/PortfolioPage'))
+const AlertsPage = lazy(() => import('@/pages/AlertsPage'))
+const ReportsPage = lazy(() => import('@/pages/ReportsPage'))
+const NewsPage = lazy(() => import('@/pages/NewsPage'))
+const NewsReaderPage = lazy(() => import('@/pages/NewsReaderPage'))
+const ChatPage = lazy(() => import('@/pages/ChatPage'))
+const SettingsPage = lazy(() => import('@/pages/SettingsPage'))
+const AdminDashboardPage = lazy(() => import('@/pages/admin/AdminDashboardPage'))
+const QlibBacktestsPage = lazy(() => import('@/pages/QlibBacktestsPage'))
 
 // Protected Route wrapper
 function ProtectedRoute({ children }: { readonly children: React.ReactNode }) {
@@ -88,6 +91,16 @@ function App() {
       root.classList.add(systemTheme)
     } else {
       root.classList.add(theme)
+    }
+
+    // Sync theme-color meta tag for PWA
+    const resolvedTheme = theme === 'system'
+      ? (window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light')
+      : theme
+    const metaThemeColor = document.querySelector('meta[name="theme-color"]:not([media])')
+      ?? document.querySelector('meta[name="theme-color"]')
+    if (metaThemeColor) {
+      metaThemeColor.setAttribute('content', resolvedTheme === 'dark' ? '#0f172a' : '#ffffff')
     }
   }, [theme])
 
@@ -155,6 +168,7 @@ function App() {
         <Route path="*" element={<NotFoundPage />} />
       </Routes>
       <Toaster />
+      <PWAUpdatePrompt />
     </>
   )
 }

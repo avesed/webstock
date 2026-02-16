@@ -110,6 +110,15 @@
   .scrollbar-thin::-webkit-scrollbar-thumb:hover {
     background-color: hsl(var(--muted-foreground) / 0.5);
   }
+
+  .scrollbar-none {
+    scrollbar-width: none;
+    -ms-overflow-style: none;
+  }
+
+  .scrollbar-none::-webkit-scrollbar {
+    display: none;
+  }
 }
 
 /* Stock price change colors */
@@ -132,5 +141,28 @@
 
   .bg-stock-down {
     background-color: hsl(var(--stock-down));
+  }
+}
+
+/* PWA safe area insets for notched devices */
+@supports (padding: env(safe-area-inset-top)) {
+  body {
+    padding-top: env(safe-area-inset-top);
+  }
+}
+
+/* Touch target expansion for touch devices */
+@media (pointer: coarse) {
+  .touch-target-expand {
+    position: relative;
+  }
+  .touch-target-expand::after {
+    content: '';
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    min-width: 44px;
+    min-height: 44px;
   }
 }

@@ -39,6 +39,7 @@ import { cn, isMetal } from '@/lib/utils'
 import { formatCurrency, formatPercent, formatRelativeTime } from '@/lib/utils'
 import { alertsApi } from '@/api'
 import { useToast } from '@/hooks'
+import { SwipeableItem } from '@/components/ui/SwipeableItem'
 import type { Alert, AlertCondition, AlertStatus, CreateAlertInput } from '@/types'
 
 interface AlertListProps {
@@ -350,8 +351,8 @@ export default function AlertList({ className, filterSymbol }: AlertListProps) {
                   const ConditionIcon = CONDITION_ICONS[alert.conditionType]
                   const isMetalAlert = isMetal(alert.symbol)
                   return (
+                    <SwipeableItem key={alert.id} onDelete={() => deleteMutation.mutate(alert.id)}>
                     <div
-                      key={alert.id}
                       className="flex items-center justify-between rounded-lg border p-4 hover:bg-accent/50 transition-colors"
                     >
                       <div className="flex items-center gap-4">
@@ -419,6 +420,7 @@ export default function AlertList({ className, filterSymbol }: AlertListProps) {
                         </Button>
                       </div>
                     </div>
+                    </SwipeableItem>
                   )
                 })}
               </div>

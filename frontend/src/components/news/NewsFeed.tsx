@@ -4,8 +4,10 @@ import { useInfiniteQuery } from '@tanstack/react-query'
 import { useTranslation } from 'react-i18next'
 import { Loader2, AlertCircle, Newspaper } from 'lucide-react'
 import { Button } from '@/components/ui/button'
+import { PullToRefresh } from '@/components/ui/PullToRefresh'
 import { cn } from '@/lib/utils'
 import { newsApi } from '@/api'
+import { useIsMobile } from '@/hooks/useIsMobile'
 import NewsCard from './NewsCard'
 import type { NewsArticle } from '@/types'
 
@@ -33,6 +35,7 @@ export default function NewsFeed({
   const navigate = useNavigate()
   const { t } = useTranslation('dashboard')
   const loadMoreRef = useRef<HTMLDivElement>(null)
+  const isMobile = useIsMobile()
 
   const {
     data,
@@ -187,6 +190,16 @@ export default function NewsFeed({
         className={cn('overflow-y-auto pr-2 scrollbar-thin scrollbar-thumb-border scrollbar-track-transparent', className)}
       >
         {listContent}
+      </div>
+    )
+  }
+
+  if (isMobile) {
+    return (
+      <div className={className}>
+        <PullToRefresh onRefresh={async () => { await refetch() }} disabled={isLoading}>
+          {listContent}
+        </PullToRefresh>
       </div>
     )
   }

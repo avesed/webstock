@@ -627,6 +627,19 @@ export const alertsApi = {
     const response = await apiClient.post<Alert>(`/alerts/${id}/toggle`)
     return response.data
   },
+
+  getVapidKey: async (): Promise<string> => {
+    const response = await apiClient.get<{ vapidKey: string }>('/alerts/vapid-key')
+    return response.data.vapidKey
+  },
+
+  subscribePush: async (subscription: PushSubscriptionJSON): Promise<void> => {
+    await apiClient.post('/alerts/push-subscriptions', subscription)
+  },
+
+  unsubscribePush: async (endpoint: string): Promise<void> => {
+    await apiClient.delete('/alerts/push-subscriptions', { data: { endpoint } })
+  },
 }
 
 // Reports API

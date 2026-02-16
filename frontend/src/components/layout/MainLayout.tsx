@@ -1,4 +1,5 @@
 import { Outlet, Link, useLocation, useNavigate } from 'react-router-dom'
+import { Suspense } from 'react'
 import {
   LayoutDashboard,
   LineChart,
@@ -21,6 +22,7 @@ import {
 } from 'lucide-react'
 import { useState, useEffect } from 'react'
 import { useTranslation } from 'react-i18next'
+import { BottomNav } from '@/components/layout/BottomNav'
 
 import { cn } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
@@ -285,7 +287,7 @@ export default function MainLayout() {
         </aside>
 
         {/* Main content */}
-        <div className="flex flex-1 flex-col min-h-0">
+        <div className="flex flex-1 flex-col min-h-0 min-w-0 overflow-x-hidden">
           {/* Header */}
           <header className="shrink-0 z-30 flex h-16 items-center gap-4 border-b bg-card px-4 lg:px-6">
             {/* Mobile menu button */}
@@ -372,7 +374,7 @@ export default function MainLayout() {
 
           {/* Breadcrumb */}
           {breadcrumbs.length > 0 && (
-            <div className="shrink-0 border-b bg-muted/30 px-4 py-2 lg:px-6">
+            <div className="hidden sm:block shrink-0 border-b bg-muted/30 px-4 py-2 lg:px-6">
               <nav className="flex items-center gap-1 text-sm">
                 <Button
                   variant="ghost"
@@ -404,10 +406,19 @@ export default function MainLayout() {
           )}
 
           {/* Page content */}
-          <main className="flex-1 overflow-y-auto min-h-0 p-4 lg:p-6">
-            <Outlet />
+          <main className="flex-1 overflow-y-auto overflow-x-hidden min-h-0 p-4 pb-20 lg:p-6 lg:pb-6">
+            <Suspense
+              fallback={
+                <div className="flex h-full items-center justify-center">
+                  <div className="h-8 w-8 animate-spin rounded-full border-4 border-primary border-t-transparent" />
+                </div>
+              }
+            >
+              <Outlet />
+            </Suspense>
           </main>
         </div>
+        <BottomNav />
       </div>
     </TooltipProvider>
   )

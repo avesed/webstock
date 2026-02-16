@@ -716,19 +716,19 @@ export default function StockChart({
   return (
     <div className={cn('relative', className)}>
       {/* Crosshair data display */}
-      <div className="absolute left-4 top-2 z-10 rounded-lg bg-background/90 p-3 text-sm shadow-sm backdrop-blur-sm">
+      <div className="absolute left-4 top-2 z-10 rounded-lg bg-background/90 p-2 sm:p-3 text-xs sm:text-sm shadow-sm backdrop-blur-sm">
         <div className="mb-1 font-semibold">{symbol}</div>
         {displayData ? (
           <div className="space-y-1">
             <div className="flex items-center gap-2">
               <span className="text-muted-foreground">{t('stock.ohlc.open')}:</span>
               <span>{formatPrice(displayData.open)}</span>
-              <span className="text-muted-foreground">{t('stock.ohlc.high')}:</span>
-              <span>{formatPrice(displayData.high)}</span>
+              <span className="hidden sm:inline text-muted-foreground">{t('stock.ohlc.high')}:</span>
+              <span className="hidden sm:inline">{formatPrice(displayData.high)}</span>
             </div>
             <div className="flex items-center gap-2">
-              <span className="text-muted-foreground">{t('stock.ohlc.low')}:</span>
-              <span>{formatPrice(displayData.low)}</span>
+              <span className="hidden sm:inline text-muted-foreground">{t('stock.ohlc.low')}:</span>
+              <span className="hidden sm:inline">{formatPrice(displayData.low)}</span>
               <span className="text-muted-foreground">{t('stock.ohlc.close')}:</span>
               <span
                 className={cn(

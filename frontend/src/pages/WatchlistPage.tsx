@@ -12,6 +12,7 @@ import {
   Loader2,
   Star,
   AlertCircle,
+  ChevronRight,
 } from 'lucide-react'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
@@ -38,6 +39,8 @@ import { cn } from '@/lib/utils'
 import { formatCurrency, formatPercent, getPriceChangeColor } from '@/lib/utils'
 import { watchlistApi, stockApi } from '@/api'
 import { useToast } from '@/hooks'
+import { useIsMobile } from '@/hooks/useIsMobile'
+import { SwipeableItem } from '@/components/ui/SwipeableItem'
 import type { Watchlist, StockQuote } from '@/types'
 
 interface WatchlistWithQuotes extends Watchlist {
@@ -48,6 +51,7 @@ export default function WatchlistPage() {
   const navigate = useNavigate()
   const queryClient = useQueryClient()
   const { toast } = useToast()
+  const isMobile = useIsMobile()
 
   const [activeWatchlistId, setActiveWatchlistId] = useState<number | null>(null)
   const [isCreateDialogOpen, setIsCreateDialogOpen] = useState(false)
@@ -348,8 +352,8 @@ export default function WatchlistPage() {
 
       {watchlists && watchlists.length > 0 ? (
         <div className="grid gap-6 lg:grid-cols-4">
-          {/* Watchlist tabs */}
-          <Card className="lg:col-span-1">
+          {/* Watchlist sidebar — desktop only */}
+          <Card className="hidden lg:block lg:col-span-1">
             <CardHeader>
               <CardTitle className="text-base">My Watchlists</CardTitle>
             </CardHeader>
@@ -419,6 +423,67 @@ export default function WatchlistPage() {
 
           {/* Active watchlist content */}
           <Card className="lg:col-span-3">
+            {/* Mobile watchlist selector — replaces sidebar on small screens */}
+            {isMobile && (
+              <div className="flex items-center gap-2 border-b px-4 py-3 lg:hidden">
+                <DropdownMenu>
+                  <DropdownMenuTrigger asChild>
+                    <Button variant="outline" className="flex-1 justify-between">
+                      <div className="flex items-center gap-2">
+                        <Star className="h-4 w-4" />
+                        <span className="truncate">
+                          {activeWatchlist?.name ?? 'Select'}
+                        </span>
+                        <span className="text-xs text-muted-foreground">
+                          ({activeWatchlist?.symbols?.length ?? 0})
+                        </span>
+                      </div>
+                      <ChevronRight className="h-4 w-4 rotate-90 opacity-50" />
+                    </Button>
+                  </DropdownMenuTrigger>
+                  <DropdownMenuContent align="start" className="w-56">
+                    {watchlists.map((watchlist) => (
+                      <DropdownMenuItem
+                        key={watchlist.id}
+                        onClick={() => setActiveWatchlistId(watchlist.id)}
+                        className={cn(
+                          'flex items-center justify-between',
+                          activeWatchlistId === watchlist.id && 'bg-accent'
+                        )}
+                      >
+                        <span className="truncate">{watchlist.name}</span>
+                        <span className="text-xs text-muted-foreground">
+                          {watchlist.symbols?.length ?? 0}
+                        </span>
+                      </DropdownMenuItem>
+                    ))}
+                  </DropdownMenuContent>
+                </DropdownMenu>
+                {activeWatchlist && (
+                  <DropdownMenu>
+                    <DropdownMenuTrigger asChild>
+                      <Button variant="ghost" size="icon">
+                        <MoreHorizontal className="h-4 w-4" />
+                      </Button>
+                    </DropdownMenuTrigger>
+                    <DropdownMenuContent align="end">
+                      <DropdownMenuItem onClick={() => openRenameDialog(activeWatchlist)}>
+                        <Edit2 className="mr-2 h-4 w-4" />
+                        Rename
+                      </DropdownMenuItem>
+                      <DropdownMenuSeparator />
+                      <DropdownMenuItem
+                        onClick={() => openDeleteDialog(activeWatchlist)}
+                        className="text-destructive"
+                      >
+                        <Trash2 className="mr-2 h-4 w-4" />
+                        Delete
+                      </DropdownMenuItem>
+                    </DropdownMenuContent>
+                  </DropdownMenu>
+                )}
+              </div>
+            )}
             <CardHeader>
               <div className="flex items-center justify-between">
                 <div>
@@ -443,6 +508,41 @@ export default function WatchlistPage() {
                   <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
                 </div>
               ) : activeWatchlistWithQuotes?.symbols && activeWatchlistWithQuotes.symbols.length > 0 ? (
+                isMobile ? (
+                  <div className="divide-y">
+                    {activeWatchlistWithQuotes.symbols.map((symbol) => {
+                      const quote = activeWatchlistWithQuotes.quotes.get(symbol)
+                      return (
+                        <SwipeableItem key={symbol} onDelete={() => handleRemoveSymbol(symbol)}>
+                          <div
+                            className="flex items-center gap-3 px-4 py-3 cursor-pointer transition-colors active:bg-accent/50"
+                            onClick={() => handleStockClick(symbol)}
+                          >
+                            <div className="flex-1 min-w-0">
+                              <div className="flex items-center gap-2">
+                                <span className="font-medium">{symbol}</span>
+                                {quote && (
+                                  <span className={cn('flex items-center', getPriceChangeColor(quote.change))}>
+                                    {quote.change >= 0 ? <TrendingUp className="h-3 w-3" /> : <TrendingDown className="h-3 w-3" />}
+                                  </span>
+                                )}
+                              </div>
+                              {quote && (
+                                <p className="truncate text-xs text-muted-foreground">{quote.name}</p>
+                              )}
+                            </div>
+                            <div className="text-right shrink-0">
+                              <div className="font-medium">{quote ? formatCurrency(quote.price) : '--'}</div>
+                              <div className={cn('text-xs', quote && getPriceChangeColor(quote.change))}>
+                                {quote ? formatPercent(quote.changePercent) : '--'}
+                              </div>
+                            </div>
+                          </div>
+                        </SwipeableItem>
+                      )
+                    })}
+                  </div>
+                ) : (
                 <div className="rounded-lg border">
                   <table className="w-full">
                     <thead>
@@ -519,6 +619,7 @@ export default function WatchlistPage() {
                     </tbody>
                   </table>
                 </div>
+                )
               ) : activeWatchlist ? (
                 <div className="flex h-[400px] flex-col items-center justify-center gap-4">
                   <Search className="h-12 w-12 text-muted-foreground/50" />

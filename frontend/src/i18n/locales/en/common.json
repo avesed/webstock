@@ -217,5 +217,17 @@
     "efficientFrontier": "Efficient Frontier",
     "frontierPoints": "Frontier Points",
     "currentPortfolio": "Current Portfolio"
+  },
+  "pwa": {
+    "offlineReady": "Ready for Offline",
+    "offlineReadyDesc": "App has been cached for offline use.",
+    "updateAvailable": "Update Available",
+    "updateAvailableDesc": "A new version is available. Reload to update.",
+    "reload": "Reload",
+    "dismiss": "Dismiss",
+    "pullToRefresh": "Pull to refresh",
+    "swipeToDelete": "Swipe to delete",
+    "undoDelete": "Undo",
+    "itemDeleted": "Item deleted"
   }
 }

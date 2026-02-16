@@ -34,6 +34,7 @@ import {
 import { stockApi, watchlistApi, newsApi, synthesizeTodayBar, synthesizeIntradayUpdate } from '@/api'
 import { useStockStore } from '@/stores/stockStore'
 import { useToast } from '@/hooks'
+import { useIsMobile } from '@/hooks/useIsMobile'
 import { useTabNavigation, type AISubTab } from '@/hooks/useTabNavigation'
 import { StockChatWidget } from '@/components/chat'
 import {
@@ -55,6 +56,7 @@ export default function StockDetailPage() {
   const { toast } = useToast()
   const { setSelectedSymbol, setSelectedQuote, setSelectedInfo } = useStockStore()
   const navigate = useNavigate()
+  const isMobile = useIsMobile()
   const [lastBarTime, setLastBarTime] = useState<number>(0)
 
   // Simplified timeframe for area chart (no interval selector, no indicators)
@@ -432,7 +434,7 @@ export default function StockDetailPage() {
                       >
                         <Maximize2 className="h-4 w-4" />
                       </Button>
-                      <div className="flex items-center rounded-lg border bg-muted/50 p-0.5">
+                      <div className="flex flex-wrap items-center rounded-lg border bg-muted/50 p-0.5">
                         {SIMPLE_TIMEFRAMES.map((tf) => (
                           <Button
                             key={tf}
@@ -470,7 +472,7 @@ export default function StockDetailPage() {
                         timeframe={simpleTimeframe}
                         symbol={upperSymbol}
                         isLoading={isLoadingChart}
-                        height={280}
+                        height={isMobile ? 220 : 280}
                       />
                     )}
                   </CardContent>

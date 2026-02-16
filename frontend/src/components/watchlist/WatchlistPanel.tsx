@@ -37,6 +37,7 @@ import { cn, isMetal } from '@/lib/utils'
 import { formatCurrency, formatPercent, getPriceChangeColor } from '@/lib/utils'
 import { watchlistApi, stockApi } from '@/api'
 import { useToast } from '@/hooks'
+import { SwipeableItem } from '@/components/ui/SwipeableItem'
 import type { Watchlist, StockQuote } from '@/types'
 
 interface WatchlistPanelProps {
@@ -372,74 +373,75 @@ export default function WatchlistPanel({
               const quote = watchlistWithQuotes.quotes.get(symbol)
               const isMetalSymbol = isMetal(symbol)
               return (
-                <div
-                  key={symbol}
-                  className="group flex items-center gap-3 px-3 py-2 hover:bg-accent/50 transition-colors cursor-pointer"
-                  onClick={() => handleStockClick(symbol)}
-                >
-                  <div className="flex-1 min-w-0">
-                    <div className="flex items-center gap-2">
-                      <span className="font-medium">{symbol}</span>
-                      {isMetalSymbol && (
-                        <span
-                          className="inline-flex items-center rounded-full bg-amber-100 text-amber-800 dark:bg-amber-900/30 dark:text-amber-200 px-1.5 py-0.5 text-xs font-medium"
-                          aria-label="Precious metal asset"
-                        >
-                          {t('market.metal', 'METAL')}
-                        </span>
-                      )}
-                      {quote && (
-                        <span
-                          className={cn(
-                            'flex items-center text-xs',
-                            getPriceChangeColor(quote.change)
-                          )}
-                        >
-                          {quote.change >= 0 ? (
-                            <TrendingUp className="h-3 w-3" />
-                          ) : (
-                            <TrendingDown className="h-3 w-3" />
-                          )}
-                        </span>
+                <SwipeableItem key={symbol} onDelete={() => handleRemoveSymbol(symbol)}>
+                  <div
+                    className="group flex items-center gap-3 px-3 py-2 hover:bg-accent/50 transition-colors cursor-pointer"
+                    onClick={() => handleStockClick(symbol)}
+                  >
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center gap-2">
+                        <span className="font-medium">{symbol}</span>
+                        {isMetalSymbol && (
+                          <span
+                            className="inline-flex items-center rounded-full bg-amber-100 text-amber-800 dark:bg-amber-900/30 dark:text-amber-200 px-1.5 py-0.5 text-xs font-medium"
+                            aria-label="Precious metal asset"
+                          >
+                            {t('market.metal', 'METAL')}
+                          </span>
+                        )}
+                        {quote && (
+                          <span
+                            className={cn(
+                              'flex items-center text-xs',
+                              getPriceChangeColor(quote.change)
+                            )}
+                          >
+                            {quote.change >= 0 ? (
+                              <TrendingUp className="h-3 w-3" />
+                            ) : (
+                              <TrendingDown className="h-3 w-3" />
+                            )}
+                          </span>
+                        )}
+                      </div>
+                      {quote && !compact && (
+                        <p className="truncate text-xs text-muted-foreground">
+                          {quote.name}
+                        </p>
                       )}
                     </div>
-                    {quote && !compact && (
-                      <p className="truncate text-xs text-muted-foreground">
-                        {quote.name}
-                      </p>
-                    )}
+                    <div className="text-right">
+                      {quote ? (
+                        <>
+                          <div className="font-medium">
+                            {formatCurrency(quote.price)}
+                          </div>
+                          <div
+                            className={cn(
+                              'text-xs',
+                              getPriceChangeColor(quote.change)
+                            )}
+                          >
+                            {formatPercent(quote.changePercent)}
+                          </div>
+                        </>
+                      ) : (
+                        <span className="text-sm text-muted-foreground">--</span>
+                      )}
+                    </div>
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      className="h-6 w-6 opacity-0 group-hover:opacity-100 transition-opacity"
+                      onClick={(e) => {
+                        e.stopPropagation()
+                        handleRemoveSymbol(symbol)
+                      }}
+                    >
+                      <Trash2 className="h-3 w-3 text-muted-foreground hover:text-destructive" />
+                    </Button>
                   </div>
-                  <div className="text-right">
-                    {quote ? (
-                      <>
-                        <div className="font-medium">
-                          {formatCurrency(quote.price)}
-                        </div>
-                        <div
-                          className={cn(
-                            'text-xs',
-                            getPriceChangeColor(quote.change)
-                          )}
-                        >
-                          {formatPercent(quote.changePercent)}
-                        </div>
-                      </>
-                    ) : (
-                      <span className="text-sm text-muted-foreground">--</span>
-                    )}
-                  </div>
-                  <Button
-                    variant="ghost"
-                    size="icon"
-                    className="h-6 w-6 opacity-0 group-hover:opacity-100 transition-opacity"
-                    onClick={(e) => {
-                      e.stopPropagation()
-                      handleRemoveSymbol(symbol)
-                    }}
-                  >
-                    <Trash2 className="h-3 w-3 text-muted-foreground hover:text-destructive" />
-                  </Button>
-                </div>
+                </SwipeableItem>
               )
             })}
           </div>

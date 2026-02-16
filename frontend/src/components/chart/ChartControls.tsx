@@ -94,7 +94,7 @@ export default function ChartControls({
   return (
     <div className={cn('flex flex-wrap items-center gap-2', className)}>
       {/* Timeframe buttons */}
-      <div className="flex items-center rounded-lg border bg-muted/50 p-1">
+      <div className="flex flex-wrap items-center rounded-lg border bg-muted/50 p-1">
         {timeframes.map((tf) => (
           <Button
             key={tf.value}
