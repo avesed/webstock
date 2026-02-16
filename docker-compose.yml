@@ -158,8 +158,7 @@ services:
       dockerfile: Dockerfile
     container_name: webstock-app
     ports:
-      - "80:80"
-      - "443:443"
+      - "39000:80"
     environment:
       - DATABASE_URL=postgresql+asyncpg://webstock:${POSTGRES_PASSWORD:-webstock}@postgres:5432/webstock?ssl=disable
       - REDIS_URL=redis://redis:6379/0
