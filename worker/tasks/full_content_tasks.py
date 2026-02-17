@@ -26,7 +26,7 @@ from worker.task_helpers import run_async_task
 logger = logging.getLogger(__name__)
 
 
-@celery_app.task(bind=True, max_retries=3)
+@celery_app.task(bind=True, max_retries=3, soft_time_limit=600, time_limit=660)
 def process_news_article(
     self,
     news_id: str,

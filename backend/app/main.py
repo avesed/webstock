@@ -163,6 +163,50 @@ async def seed_default_rss_feeds() -> None:
         logger.info("Default RSS feeds seeded successfully")
 
 
+async def _maybe_seed_stock_knowledge_base() -> None:
+    """Dispatch knowledge base build if no stock profiles exist yet.
+
+    Uses a Redis SETNX lock to prevent duplicate dispatches when multiple
+    uvicorn workers start concurrently.
+    """
+    from sqlalchemy import text
+
+    from app.db.redis import get_redis
+
+    try:
+        async with AsyncSessionLocal() as db:
+            result = await db.execute(text(
+                "SELECT COUNT(*) FROM document_embeddings "
+                "WHERE source_type = 'stock_profile'"
+            ))
+            count = result.scalar() or 0
+
+        if count == 0:
+            # Use Redis lock to ensure only one worker dispatches the task
+            redis = await get_redis()
+            lock_key = "stock_kb:seed_lock"
+            acquired = await redis.set(lock_key, "1", nx=True, ex=300)
+            if not acquired:
+                logger.debug(
+                    "Stock knowledge base seed already dispatched by another worker"
+                )
+                return
+
+            logger.info(
+                "Stock knowledge base is empty, dispatching initial build "
+                "(countdown=60s to wait for Celery worker)"
+            )
+            from worker.tasks.stock_profile_tasks import build_stock_knowledge_base
+            build_stock_knowledge_base.apply_async(countdown=60)
+        else:
+            logger.debug(
+                "Stock knowledge base already has %d profiles, skipping seed",
+                count,
+            )
+    except Exception as e:
+        logger.warning("Stock knowledge base seed check failed: %s", e)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     """Application lifespan manager for startup and shutdown events."""
@@ -205,6 +249,9 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
     set_llm_usage_recorder(_record_llm_usage)
     logger.info("LLM usage recorder registered for cost tracking")
+
+    # Check if stock knowledge base needs initial build
+    await _maybe_seed_stock_knowledge_base()
 
     yield
 

@@ -59,11 +59,16 @@ class DailyBarService:
         db: AsyncSession,
         market: str,
         symbols: list[str],
+        on_progress=None,
     ) -> dict[str, Any]:
         """Collect daily bars for a list of symbols and upsert into DB.
 
         Commits periodically (every 50 symbols) to keep transaction size bounded.
         Returns summary dict with symbol_count, new_bars, and errors.
+
+        Args:
+            on_progress: Optional async callable(completed, total, with_data, error_count)
+                         called every 50 symbols during fetch phase.
         """
         if not symbols:
             return {"symbol_count": 0, "new_bars": 0, "errors": []}
@@ -114,6 +119,11 @@ class DailyBarService:
                             "Fetch progress: %d/%d completed (%d with data, %d errors)",
                             completed, len(symbols), len(all_bars), len(errors),
                         )
+                    if on_progress and (completed % 50 == 0 or completed == len(symbols)):
+                        try:
+                            await on_progress(completed, len(symbols), len(all_bars), len(errors))
+                        except Exception:
+                            pass  # Non-critical
 
         tasks = []
         for i, symbol in enumerate(symbols):
@@ -390,7 +400,7 @@ class DailyBarService:
                 params[f"{prefix}_h"] = bar.get("high", 0)
                 params[f"{prefix}_l"] = bar.get("low", 0)
                 params[f"{prefix}_c"] = bar.get("close", 0)
-                params[f"{prefix}_v"] = int(bar.get("volume", 0))
+                params[f"{prefix}_v"] = int(bar.get("volume") or 0)
                 params[f"{prefix}_ds"] = data_source
 
             if not values_clauses:

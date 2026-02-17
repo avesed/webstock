@@ -1,0 +1,542 @@
+"""Celery tasks for building and maintaining the stock profile knowledge base.
+
+Two tasks with tiered scheduling:
+- ``sync_concept_boards``: Daily at 6 AM UTC — diff-based A-share concept sync
+- ``build_stock_knowledge_base``: Weekly Sunday 6 AM UTC — full market rebuild
+
+Stock profiles are embedded and stored in ``document_embeddings`` with
+``source_type="stock_profile"`` and ``source_id=<symbol>``.
+"""
+
+import asyncio
+import json
+import logging
+from typing import Any, Dict, List, Optional, Set
+
+from worker.celery_app import celery_app
+from worker.task_helpers import run_async_task
+
+logger = logging.getLogger(__name__)
+
+# Redis key for caching the previous concept board mapping
+CONCEPT_CACHE_KEY = "stock_profile:cn_concept_mapping"
+EMBED_BATCH_SIZE = 50
+
+# Redis locks to prevent concurrent execution
+_BUILD_LOCK_KEY = "stock_profile:build_lock"
+_SYNC_LOCK_KEY = "stock_profile:sync_lock"
+
+# Redis progress key for admin dashboard
+_PROGRESS_KEY = "kb:stock_profile:progress"
+_PROGRESS_TTL = 600  # 10 minutes — auto-expires if task crashes
+
+
+def _acquire_redis_lock(lock_key: str, ttl: int) -> bool:
+    """Try to acquire a Redis lock (sync, for use inside Celery tasks)."""
+    import redis as redis_lib
+
+    from app.config import settings
+
+    try:
+        r = redis_lib.from_url(str(settings.REDIS_URL), decode_responses=True)
+        return bool(r.set(lock_key, "1", nx=True, ex=ttl))
+    except Exception as e:
+        logger.warning("[StockProfileTask] Redis lock check failed: %s", e)
+        return True  # fail-open: proceed if Redis is down
+
+
+def _release_redis_lock(lock_key: str):
+    """Release a Redis lock (sync)."""
+    import redis as redis_lib
+
+    from app.config import settings
+
+    try:
+        r = redis_lib.from_url(str(settings.REDIS_URL), decode_responses=True)
+        r.delete(lock_key)
+    except Exception:
+        pass
+
+
+def _clear_progress_sync():
+    """Clear the progress key from Redis (sync, called in task finally)."""
+    import redis as redis_lib
+
+    from app.config import settings
+
+    try:
+        r = redis_lib.from_url(str(settings.REDIS_URL), decode_responses=True)
+        r.delete(_PROGRESS_KEY)
+    except Exception:
+        pass
+
+
+@celery_app.task(
+    bind=True,
+    max_retries=1,
+    time_limit=14400,      # 4 hours hard limit (CN+US+HK collection is slow)
+    soft_time_limit=13800, # 3h50m soft limit
+)
+def build_stock_knowledge_base(self):
+    """Full rebuild of stock profile knowledge base across all markets.
+
+    Pipeline architecture — each market embeds as soon as collection finishes:
+    1. CN (akshare) pipeline runs parallel with yfinance pipeline
+    2. yfinance pipeline: US collect → US embed (background) → HK collect → HK embed
+    3. Each batch (50 profiles) is embedded and stored idempotently
+    4. Redis concept mapping cache updated at the end
+    """
+    if not _acquire_redis_lock(_BUILD_LOCK_KEY, ttl=14400):
+        logger.info("[StockProfileTask] Build already in progress, skipping")
+        return {"skipped": True, "reason": "already_running"}
+
+    logger.info("[StockProfileTask] Starting full knowledge base build")
+    try:
+        result = run_async_task(_build_kb_async)
+        logger.info("[StockProfileTask] Build complete: %s", result)
+        return result
+    except Exception as e:
+        logger.exception("[StockProfileTask] Build failed: %s", e)
+        raise self.retry(exc=e, countdown=300)
+    finally:
+        _release_redis_lock(_BUILD_LOCK_KEY)
+        _clear_progress_sync()
+
+
+@celery_app.task(
+    bind=True,
+    max_retries=1,
+    time_limit=3600,       # 1 hour hard limit
+    soft_time_limit=3300,  # 55 min soft limit
+)
+def sync_concept_boards(self):
+    """Daily incremental sync of A-share concept board mappings.
+
+    Steps:
+    1. Fetch current concept board → stock mapping
+    2. Compare with cached mapping from Redis
+    3. Re-embed only stocks whose concepts changed + newly listed stocks
+    4. Update Redis cache
+    """
+    if not _acquire_redis_lock(_SYNC_LOCK_KEY, ttl=3600):
+        logger.info("[StockProfileTask] Concept sync already in progress, skipping")
+        return {"skipped": True, "reason": "already_running"}
+
+    logger.info("[StockProfileTask] Starting daily concept board sync")
+    try:
+        result = run_async_task(_sync_concepts_async)
+        logger.info("[StockProfileTask] Concept sync complete: %s", result)
+        return result
+    except Exception as e:
+        logger.exception("[StockProfileTask] Concept sync failed: %s", e)
+        raise self.retry(exc=e, countdown=300)
+    finally:
+        _release_redis_lock(_SYNC_LOCK_KEY)
+
+
+# ---------------------------------------------------------------------------
+# Async implementations
+# ---------------------------------------------------------------------------
+
+async def _update_kb_progress(
+    phase: str, current: int, total: int, stats: Optional[Dict] = None,
+) -> None:
+    """Write stock profile build progress to Redis for admin dashboard."""
+    try:
+        from datetime import datetime, timezone
+        from app.db.redis import get_redis
+
+        redis = await get_redis()
+        pct = int(current * 100 / total) if total > 0 else 0
+        progress = {
+            "phase": phase,
+            "current": current,
+            "total": total,
+            "percent": pct,
+            "stats": stats or {},
+            "updatedAt": datetime.now(timezone.utc).isoformat(),
+        }
+        await redis.set(_PROGRESS_KEY, json.dumps(progress), ex=_PROGRESS_TTL)
+    except Exception:
+        pass  # Non-critical
+
+
+async def _build_kb_async() -> Dict[str, Any]:
+    """Full knowledge base rebuild (all markets).
+
+    Pipeline architecture: each market starts embedding as soon as its
+    collection finishes, overlapping embedding with remaining collection.
+    CN (akshare) runs in parallel with the yfinance group (US→HK serial).
+    """
+    import time as _time
+
+    from app.db.task_session import get_task_session
+    from app.services.rag import get_index_service
+    from app.services.rag.embedding import get_embedding_config_from_db
+    from app.services.stock_profile_service import get_stock_profile_service
+
+    svc = get_stock_profile_service()
+    stats: Dict[str, Any] = {
+        "cn": 0, "us": 0, "hk": 0,
+        "embedded": 0, "errors": 0,
+    }
+    build_t0 = _time.monotonic()
+
+    await _update_kb_progress("collecting", 0, 1, stats)
+
+    # Fetch embedding config upfront (shared by all markets)
+    async with get_task_session() as db:
+        embed_config = await get_embedding_config_from_db(db)
+    index_service = get_index_service()
+
+    # ── CN pipeline: collect → embed → save concept cache ──
+    async def _cn_pipeline() -> tuple:
+        t0 = _time.monotonic()
+        await _update_kb_progress("collecting_cn", 0, 1, stats)
+        profiles = await svc.collect_cn_profiles()
+        stats["cn"] = len(profiles)
+        collect_s = _time.monotonic() - t0
+        logger.info(
+            "[StockProfileTask] CN collected: %d profiles in %.0fs, starting embed",
+            len(profiles), collect_s,
+        )
+        if not profiles:
+            return 0, 0, []
+
+        async def _cn_progress(embedded_so_far: int):
+            await _update_kb_progress(
+                "embedding_cn", embedded_so_far, len(profiles), stats,
+            )
+
+        emb, err = await _batch_embed_profiles(
+            profiles, index_service, embed_config, market_label="CN",
+            progress_callback=_cn_progress,
+        )
+        logger.info(
+            "[StockProfileTask] CN embed done: %d embedded, %d errors in %.0fs total",
+            emb, err, _time.monotonic() - t0,
+        )
+        return emb, err, profiles
+
+    # ── yfinance pipeline: US collect→embed‖HK collect→embed ──
+    async def _yfinance_pipeline() -> tuple:
+        total_emb, total_err = 0, 0
+
+        # US collection
+        t0 = _time.monotonic()
+        await _update_kb_progress("collecting_us", 0, 1, stats)
+        us_profiles = await svc.collect_us_profiles()
+        stats["us"] = len(us_profiles)
+        logger.info(
+            "[StockProfileTask] US collected: %d profiles in %.0fs, starting embed",
+            len(us_profiles), _time.monotonic() - t0,
+        )
+
+        async def _us_progress(embedded_so_far: int):
+            await _update_kb_progress(
+                "embedding_us", embedded_so_far, len(us_profiles), stats,
+            )
+
+        # Start US embedding in background while HK collects
+        us_embed_task: Optional[asyncio.Task] = None
+        if us_profiles:
+            us_embed_task = asyncio.create_task(
+                _batch_embed_profiles(
+                    us_profiles, index_service, embed_config, market_label="US",
+                    progress_callback=_us_progress,
+                )
+            )
+
+        # HK collection (serial after US to share yfinance rate limit)
+        t0_hk = _time.monotonic()
+        hk_profiles = await svc.collect_hk_profiles()
+        stats["hk"] = len(hk_profiles)
+        logger.info(
+            "[StockProfileTask] HK collected: %d profiles in %.0fs, starting embed",
+            len(hk_profiles), _time.monotonic() - t0_hk,
+        )
+
+        async def _hk_progress(embedded_so_far: int):
+            await _update_kb_progress(
+                "embedding_hk", embedded_so_far, len(hk_profiles), stats,
+            )
+
+        # Embed HK (runs concurrently with US embed if still in progress)
+        if hk_profiles:
+            hk_emb, hk_err = await _batch_embed_profiles(
+                hk_profiles, index_service, embed_config, market_label="HK",
+                progress_callback=_hk_progress,
+            )
+            total_emb += hk_emb
+            total_err += hk_err
+
+        # Await US embedding result
+        if us_embed_task:
+            us_emb, us_err = await us_embed_task
+            total_emb += us_emb
+            total_err += us_err
+
+        logger.info(
+            "[StockProfileTask] yfinance pipeline done: US+HK %d embedded, %d errors in %.0fs",
+            total_emb, total_err, _time.monotonic() - t0,
+        )
+        return total_emb, total_err
+
+    # Run both pipelines concurrently
+    cn_task = asyncio.create_task(_cn_pipeline())
+    yf_task = asyncio.create_task(_yfinance_pipeline())
+
+    cn_emb, cn_err, cn_profiles = await cn_task
+    yf_emb, yf_err = await yf_task
+
+    stats["embedded"] = cn_emb + yf_emb
+    stats["errors"] = cn_err + yf_err
+
+    # Update concept mapping cache in Redis
+    if cn_profiles:
+        cn_mapping: Dict[str, List[str]] = {}
+        for p in cn_profiles:
+            code = p.symbol.split(".")[0]
+            cn_mapping[code] = p.concepts
+        await _save_concept_cache(cn_mapping)
+
+    total = stats["cn"] + stats["us"] + stats["hk"]
+    logger.info(
+        "[StockProfileTask] Full build done: %d total (CN=%d, US=%d, HK=%d), "
+        "%d embedded, %d errors, %.0fs elapsed",
+        total, stats["cn"], stats["us"], stats["hk"],
+        stats["embedded"], stats["errors"],
+        _time.monotonic() - build_t0,
+    )
+    return stats
+
+
+async def _sync_concepts_async() -> Dict[str, Any]:
+    """Daily incremental concept board sync."""
+    from app.db.task_session import get_task_session
+    from app.services.rag import get_index_service
+    from app.services.rag.embedding import get_embedding_config_from_db
+    from app.services.stock_profile_service import get_stock_profile_service
+
+    svc = get_stock_profile_service()
+    stats: Dict[str, Any] = {"changed": 0, "new": 0, "embedded": 0, "errors": 0}
+
+    # 1. Fetch current concept mapping
+    current_mapping = await svc.collect_cn_concept_mapping()
+    if not current_mapping:
+        logger.warning("[StockProfileTask] Empty concept mapping, aborting sync")
+        return stats
+
+    # 2. Load previous mapping from Redis
+    old_mapping = await _load_concept_cache()
+
+    # 3. Find changed stocks
+    changed_codes: Set[str] = set()
+    new_codes: Set[str] = set()
+
+    for code, concepts in current_mapping.items():
+        old_concepts = old_mapping.get(code)
+        if old_concepts is None:
+            new_codes.add(code)
+        elif set(concepts) != set(old_concepts):
+            changed_codes.add(code)
+
+    stats["changed"] = len(changed_codes)
+    stats["new"] = len(new_codes)
+
+    codes_to_update = changed_codes | new_codes
+    if not codes_to_update:
+        logger.info("[StockProfileTask] No concept changes detected, skipping embed")
+        await _save_concept_cache(current_mapping)
+        return stats
+
+    logger.info(
+        "[StockProfileTask] Concept changes: %d changed, %d new stocks to re-embed",
+        len(changed_codes), len(new_codes),
+    )
+
+    # 4. Build minimal profiles for changed stocks (concepts only, no full info fetch)
+    from app.services.stock_list_service import get_stock_list_service
+    from app.services.stock_profile_service import StockProfile
+
+    stock_list_svc = await get_stock_list_service()
+    profiles = []
+    for code in codes_to_update:
+        concepts = current_mapping.get(code, [])
+        if code.startswith(("6", "9")):
+            suffix, market = ".SS", "sh"
+        elif code.startswith(("0", "2", "3")):
+            suffix, market = ".SZ", "sz"
+        else:
+            suffix, market = ".SS", "sh"
+
+        symbol = f"{code}{suffix}"
+
+        # Try to get name from stock list
+        name_zh = ""
+        if stock_list_svc and stock_list_svc.is_loaded:
+            results = stock_list_svc.search(code, limit=1)
+            if results and results[0].get("symbol") == symbol:
+                name_zh = results[0].get("name_zh", "")
+
+        profiles.append(StockProfile(
+            symbol=symbol,
+            name=name_zh,
+            name_zh=name_zh,
+            market=market,
+            concepts=concepts,
+        ))
+
+    # 5. Embed changed profiles
+    async with get_task_session() as db:
+        embed_config = await get_embedding_config_from_db(db)
+
+    index_service = get_index_service()
+    embedded_count, error_count = await _batch_embed_profiles(
+        profiles, index_service, embed_config,
+    )
+    stats["embedded"] = embedded_count
+    stats["errors"] = error_count
+
+    # 6. Update Redis cache
+    await _save_concept_cache(current_mapping)
+
+    logger.info(
+        "[StockProfileTask] Concept sync done: %d updated, %d embedded, %d errors",
+        len(codes_to_update), embedded_count, error_count,
+    )
+    return stats
+
+
+# ---------------------------------------------------------------------------
+# Shared helpers
+# ---------------------------------------------------------------------------
+
+async def _batch_embed_profiles(
+    profiles,
+    index_service,
+    embed_config,
+    market_label: str = "",
+    progress_callback=None,
+) -> tuple:
+    """Batch-embed stock profiles and store in DB.
+
+    Args:
+        profiles: List of StockProfile to embed.
+        index_service: RAG index service instance.
+        embed_config: Embedding model config.
+        market_label: Optional label (e.g. "CN", "US") for progress logs.
+        progress_callback: Optional async callable(embedded_so_far) for progress reporting.
+
+    Returns:
+        Tuple of (embedded_count, error_count).
+    """
+    from app.db.task_session import get_task_session
+
+    tag = f"[{market_label}] " if market_label else ""
+    embedded_count = 0
+    error_count = 0
+
+    for i in range(0, len(profiles), EMBED_BATCH_SIZE):
+        batch = profiles[i : i + EMBED_BATCH_SIZE]
+
+        # Generate embedding texts — keep profiles and texts paired
+        pairs = [(p, p.to_embedding_text()) for p in batch]
+        pairs = [(p, t) for p, t in pairs if t.strip()]
+
+        if not pairs:
+            continue
+
+        batch_profiles, texts = zip(*pairs)
+
+        try:
+            embeddings = await index_service.generate_embeddings_batch(
+                list(texts),
+                model=embed_config.model,
+                api_key=embed_config.api_key,
+                base_url=embed_config.base_url,
+            )
+        except Exception as e:
+            logger.error(
+                "[StockProfileTask] %sBatch embed failed at offset %d: %s",
+                tag, i, e,
+            )
+            error_count += len(batch_profiles)
+            continue
+
+        # Store embeddings — delete old + insert new per stock (idempotent)
+        async with get_task_session() as db:
+            for profile, text, embedding in zip(batch_profiles, texts, embeddings):
+                if embedding is None:
+                    error_count += 1
+                    continue
+                try:
+                    await index_service.delete_embeddings(
+                        db, "stock_profile", profile.symbol
+                    )
+                    await index_service.store_embedding(
+                        db=db,
+                        source_type="stock_profile",
+                        source_id=profile.symbol,
+                        chunk_text=text,
+                        embedding=embedding,
+                        symbol=profile.symbol,
+                        chunk_index=0,
+                        model=embed_config.model,
+                    )
+                    embedded_count += 1
+                except Exception as e:
+                    error_count += 1
+                    logger.warning(
+                        "[StockProfileTask] %sStore error for %s: %s",
+                        tag, profile.symbol, e,
+                    )
+            await db.commit()
+
+        if (i // EMBED_BATCH_SIZE) % 10 == 0 and i > 0:
+            logger.info(
+                "[StockProfileTask] %sEmbedded %d/%d profiles so far",
+                tag, embedded_count, len(profiles),
+            )
+
+        # Report progress after each batch
+        if progress_callback:
+            try:
+                await progress_callback(embedded_count)
+            except Exception:
+                pass
+
+    return embedded_count, error_count
+
+
+async def _load_concept_cache() -> Dict[str, List[str]]:
+    """Load previous concept mapping from Redis."""
+    try:
+        from app.db.redis import get_redis
+
+        redis = await get_redis()
+        raw = await redis.get(CONCEPT_CACHE_KEY)
+        if raw:
+            return json.loads(raw)
+    except Exception as e:
+        logger.warning("[StockProfileTask] Failed to load concept cache: %s", e)
+    return {}
+
+
+async def _save_concept_cache(mapping: Dict[str, List[str]]) -> None:
+    """Save concept mapping to Redis with 14-day TTL."""
+    try:
+        from app.db.redis import get_redis
+
+        redis = await get_redis()
+        # 14-day TTL so cache self-heals if weekly rebuild stops running
+        await redis.set(
+            CONCEPT_CACHE_KEY,
+            json.dumps(mapping, ensure_ascii=False),
+            ex=86400 * 14,
+        )
+        logger.info(
+            "[StockProfileTask] Saved concept cache: %d stocks", len(mapping)
+        )
+    except Exception as e:
+        logger.warning("[StockProfileTask] Failed to save concept cache: %s", e)

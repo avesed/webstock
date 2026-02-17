@@ -4,13 +4,52 @@ Each market has its own Celery Beat schedule aligned to market close times.
 On successful collection, triggers qlib-service sync via chain task.
 """
 
+import json
 import logging
+from datetime import datetime, timezone
 
 from celery import shared_task
 
 from worker.task_helpers import run_async_task
 
 logger = logging.getLogger(__name__)
+
+# Redis progress key pattern for admin dashboard
+_PROGRESS_KEY_TEMPLATE = "kb:daily_bars:{market}:progress"
+_PROGRESS_TTL = 600  # 10 minutes — auto-expires if task crashes
+
+
+def _update_daily_bar_progress_sync(market: str, symbols_done: int, symbols_total: int, new_bars: int):
+    """Write daily bar collection progress to Redis (sync, for use in async callback)."""
+    import redis as redis_lib
+    from app.config import settings
+
+    try:
+        r = redis_lib.from_url(str(settings.REDIS_URL), decode_responses=True)
+        pct = int(symbols_done * 100 / symbols_total) if symbols_total > 0 else 0
+        progress = {
+            "symbolsDone": symbols_done,
+            "symbolsTotal": symbols_total,
+            "newBars": new_bars,
+            "percent": pct,
+            "updatedAt": datetime.now(timezone.utc).isoformat(),
+        }
+        key = _PROGRESS_KEY_TEMPLATE.format(market=market)
+        r.set(key, json.dumps(progress), ex=_PROGRESS_TTL)
+    except Exception:
+        pass  # Non-critical
+
+
+def _clear_daily_bar_progress_sync(market: str):
+    """Clear the progress key from Redis (sync, called in task finally)."""
+    import redis as redis_lib
+    from app.config import settings
+
+    try:
+        r = redis_lib.from_url(str(settings.REDIS_URL), decode_responses=True)
+        r.delete(_PROGRESS_KEY_TEMPLATE.format(market=market))
+    except Exception:
+        pass
 
 
 @shared_task(
@@ -41,10 +80,16 @@ def collect_market_daily_bars(self, market: str):
             return {"symbol_count": 0, "new_bars": 0, "errors": ["No symbols"]}
 
         logger.info("Resolved %d symbols for market=%s", len(symbols), market)
+        _update_daily_bar_progress_sync(market, 0, len(symbols), 0)
+
+        async def _on_progress(completed: int, total: int, with_data: int, errors: int):
+            _update_daily_bar_progress_sync(market, completed, total, with_data)
 
         async with get_task_session() as db:
             service = DailyBarService()
-            result = await service.collect_market(db, market, symbols)
+            result = await service.collect_market(
+                db, market, symbols, on_progress=_on_progress,
+            )
             return result
 
     try:
@@ -71,6 +116,8 @@ def collect_market_daily_bars(self, market: str):
             "Daily bar collection failed for market=%s: %s", market, exc
         )
         raise self.retry(exc=exc)
+    finally:
+        _clear_daily_bar_progress_sync(market)
 
 
 async def _get_symbols_for_market(market: str) -> list[str]:

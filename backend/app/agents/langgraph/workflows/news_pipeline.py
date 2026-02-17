@@ -371,13 +371,32 @@ async def embed_node(state: NewsProcessingState) -> dict:
     if not result.success:
         logger.warning("embed_node failed for %s: %s", state["news_id"], result.error)
         await stats_service.increment("embedding_error")
+
+        # Dispatch async retry via dedicated embedding task
+        try:
+            from worker.tasks.embedding_tasks import embed_news_article
+            embed_news_article.apply_async(
+                args=[state["news_id"], content, state.get("symbol")],
+                countdown=30,  # retry after 30s
+            )
+            logger.info(
+                "embed_node: dispatched async embedding retry for %s",
+                state["news_id"],
+            )
+        except Exception as retry_err:
+            logger.warning(
+                "embed_node: failed to dispatch retry for %s: %s",
+                state["news_id"], retry_err,
+            )
+
         elapsed = (time.monotonic() - t0) * 1000
         return {
-            "final_status": "failed",
+            # Use "embedding_pending" so update_db_node saves analysis results
+            "final_status": "embedding_pending",
             "error": result.error,
             "trace_events": [PipelineTraceService.make_event(
                 news_id=state["news_id"], layer="3", node="embed",
-                status="error", duration_ms=elapsed,
+                status="retry_dispatched", duration_ms=elapsed,
                 error=str(result.error)[:200] if result.error else "unknown error",
             )],
         }
@@ -449,8 +468,12 @@ async def update_db_node(state: NewsProcessingState) -> dict:
                 logger.warning("update_db_node: news record not found: %s", news_id)
                 return {}
 
-            if final_status == "embedded":
-                news.content_status = ContentStatus.EMBEDDED.value
+            if final_status in ("embedded", "embedding_pending"):
+                news.content_status = (
+                    ContentStatus.EMBEDDED.value
+                    if final_status == "embedded"
+                    else ContentStatus.EMBEDDING_FAILED.value
+                )
 
                 # Scoring fields (from Layer 1, passed via Celery task args)
                 if state.get("content_score") is not None:

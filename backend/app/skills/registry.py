@@ -109,6 +109,7 @@ def _register_all_skills(registry: SkillRegistry) -> None:
     # Knowledge skills
     from app.skills.knowledge.search_kb import SearchKnowledgeBaseSkill
     from app.skills.knowledge.embed_document import EmbedDocumentSkill
+    from app.skills.knowledge.search_related_stocks import SearchRelatedStocksSkill
 
     # Quantitative (Qlib)
     from app.skills.qlib.factor_skill import QlibFactorSkill
@@ -144,6 +145,7 @@ def _register_all_skills(registry: SkillRegistry) -> None:
         # Knowledge
         SearchKnowledgeBaseSkill,
         EmbedDocumentSkill,
+        SearchRelatedStocksSkill,
         # Quantitative (Qlib)
         QlibFactorSkill,
         QlibExpressionSkill,

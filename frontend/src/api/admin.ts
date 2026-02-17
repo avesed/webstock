@@ -425,6 +425,37 @@ export const adminApi = {
   deleteModelPricing: async (id: string): Promise<void> => {
     await apiClient.delete(`/admin/model-pricing/${id}`)
   },
+
+  // Knowledge Base Management
+  getKnowledgeBaseStats: async (): Promise<KnowledgeBaseStatsResponse> => {
+    const response = await apiClient.get<KnowledgeBaseStatsResponse>('/admin/knowledge-base/stats')
+    return response.data
+  },
+
+  rebuildKnowledgeBase: async (sourceType: string): Promise<{ message: string; taskId: string | null }> => {
+    const response = await apiClient.post<{ message: string; taskId: string | null }>(`/admin/knowledge-base/${sourceType}/rebuild`)
+    return response.data
+  },
+
+  retryFailedEmbeddings: async (sourceType: string): Promise<{ message: string; taskId: string; failedCount: number }> => {
+    const response = await apiClient.post<{ message: string; taskId: string; failedCount: number }>(`/admin/knowledge-base/${sourceType}/retry-failed`)
+    return response.data
+  },
+
+  clearKnowledgeBase: async (sourceType: string): Promise<{ message: string; deleted: number }> => {
+    const response = await apiClient.post<{ message: string; deleted: number }>(`/admin/knowledge-base/${sourceType}/clear`)
+    return response.data
+  },
+
+  collectDailyBars: async (market: string): Promise<{ message: string; taskId: string }> => {
+    const response = await apiClient.post<{ message: string; taskId: string }>(`/admin/knowledge-base/daily-bars/${market}/collect`)
+    return response.data
+  },
+
+  collectAllDailyBars: async (): Promise<{ message: string; taskIds: Record<string, string> }> => {
+    const response = await apiClient.post<{ message: string; taskIds: Record<string, string> }>('/admin/knowledge-base/daily-bars/collect-all')
+    return response.data
+  },
 }
 
 // Filter stats types
@@ -689,4 +720,58 @@ export interface NewsPipelineStats {
   scoreDistribution: ScoreDistributionBucket[]
   cacheStats: NewsPipelineCacheStats
   nodeLatency: NewsPipelineNodeLatency[]
+}
+
+// Knowledge Base stats response type
+
+interface KBEmbeddingStats {
+  count: number
+  lastUpdated: string | null
+  model: string | null
+  failedCount?: number
+}
+
+interface KBDailyBarMarketStats {
+  count: number
+  symbolCount: number
+  firstDate: string | null
+  lastDate: string | null
+}
+
+interface KBDailyBarProgress {
+  symbolsDone: number
+  symbolsTotal: number
+  newBars: number
+  percent: number
+  updatedAt: string
+}
+
+export interface KnowledgeBaseStatsResponse {
+  embeddings: {
+    stock_profile: KBEmbeddingStats
+    news: KBEmbeddingStats & { failedCount: number }
+    analysis: KBEmbeddingStats
+    report: KBEmbeddingStats & { failedCount: number }
+  }
+  dailyBars: {
+    cn: KBDailyBarMarketStats
+    us: KBDailyBarMarketStats
+    hk: KBDailyBarMarketStats
+    metal: KBDailyBarMarketStats
+  }
+  progress: {
+    stockProfile: {
+      phase: string
+      current: number
+      total: number
+      percent: number
+      updatedAt: string
+    } | null
+    dailyBars: {
+      cn: KBDailyBarProgress | null
+      us: KBDailyBarProgress | null
+      hk: KBDailyBarProgress | null
+      metal: KBDailyBarProgress | null
+    }
+  }
 }

@@ -81,6 +81,41 @@ def _reset_singletons():
             logger.warning("Failed to call %s.%s: %s", module_path, func_name, e)
 
 
+async def _close_async_clients():
+    """Gracefully close async clients while the event loop is still alive.
+
+    Must be called BEFORE loop.close() so that httpx/asyncpg protocol
+    objects can properly clean up their Futures on the current loop.
+    """
+    # LLM gateway — closes OpenAI/Anthropic httpx clients
+    try:
+        mod = importlib.import_module("app.core.llm")
+        gateway = mod.get_llm_gateway()
+        await gateway.close()
+    except Exception as e:
+        logger.debug("Gateway close: %s", e)
+
+    # Redis — close aioredis connection
+    try:
+        mod = importlib.import_module("app.db.redis")
+        redis_close = getattr(mod, "close_redis", None)
+        if redis_close:
+            await redis_close()
+    except Exception as e:
+        logger.debug("Redis close: %s", e)
+
+    # Database engine — dispose pooled asyncpg connections.
+    # The module-level engine in database.py keeps a connection pool;
+    # those connections hold asyncpg protocol Futures bound to the
+    # current event loop.  Disposing frees them so the next task
+    # (on a new loop) gets fresh connections.
+    try:
+        db_mod = importlib.import_module("app.db.database")
+        await db_mod.engine.dispose()
+    except Exception as e:
+        logger.debug("Database engine dispose: %s", e)
+
+
 def run_async_task(coro_func: Callable[..., T], *args, **kwargs) -> T:
     """Run an async function in a new event loop, properly cleaning up afterwards.
 
@@ -101,6 +136,14 @@ def run_async_task(coro_func: Callable[..., T], *args, **kwargs) -> T:
     try:
         return loop.run_until_complete(coro_func(*args, **kwargs))
     finally:
+        # Close async clients BEFORE closing the loop — their internal
+        # httpx connections hold protocol Futures bound to this loop.
+        # If we close the loop first, those Futures become stale and cause
+        # "got Future attached to a different loop" in the next task.
+        try:
+            loop.run_until_complete(_close_async_clients())
+        except Exception as e:
+            logger.warning("Error closing async clients: %s", e)
         loop.close()
         _reset_singletons()
 

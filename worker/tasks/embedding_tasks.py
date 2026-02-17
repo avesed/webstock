@@ -16,6 +16,41 @@ from app.db.task_session import get_task_session
 
 logger = logging.getLogger(__name__)
 
+# Redis lock keys to prevent concurrent rebuild/retry tasks
+_LOCK_KEY_PREFIX = "kb:embedding_task_lock:"
+_LOCK_TTL = {
+    "rebuild_news": 7200,
+    "rebuild_report": 3600,
+    "retry_news": 3600,
+    "retry_report": 3600,
+}
+
+
+def _acquire_embedding_lock(task_name: str) -> bool:
+    """Try to acquire a Redis lock (sync, for use inside Celery tasks)."""
+    import redis as redis_lib
+    from app.config import settings
+
+    try:
+        r = redis_lib.from_url(str(settings.REDIS_URL), decode_responses=True)
+        ttl = _LOCK_TTL.get(task_name, 3600)
+        return bool(r.set(f"{_LOCK_KEY_PREFIX}{task_name}", "1", nx=True, ex=ttl))
+    except Exception as e:
+        logger.warning("[EmbeddingTask] Redis lock check failed for %s: %s", task_name, e)
+        return True  # fail-open: proceed if Redis is down
+
+
+def _release_embedding_lock(task_name: str) -> None:
+    """Release a Redis lock (sync)."""
+    import redis as redis_lib
+    from app.config import settings
+
+    try:
+        r = redis_lib.from_url(str(settings.REDIS_URL), decode_responses=True)
+        r.delete(f"{_LOCK_KEY_PREFIX}{task_name}")
+    except Exception:
+        pass
+
 
 def _reset_singletons() -> None:
     """Reset singleton clients after each Celery task event loop closes."""
@@ -133,6 +168,282 @@ def embed_report(self, report_id: str, content: str, symbol: str = None):
     except Exception as e:
         logger.exception("Embedding task failed for report %s: %s", report_id, e)
         raise self.retry(exc=e, countdown=30 * (2 ** self.request.retries))
+
+
+# ---------------------------------------------------------------------------
+# Retry & rebuild tasks
+# ---------------------------------------------------------------------------
+
+
+@celery_app.task(bind=True, max_retries=1, time_limit=3600, soft_time_limit=3500)
+def retry_failed_news_embeddings(self):
+    """
+    Retry embedding for all news articles whose content_status is 'embedding_failed'.
+
+    For each failed article, constructs embed text preferring detailed_summary
+    (with title prefix), falling back to title + summary, then dispatches an
+    individual embed_news_article task.
+
+    Returns:
+        dict with "dispatched" count.
+    """
+    if not _acquire_embedding_lock("retry_news"):
+        logger.info("[RetryFailedNews] Already running, skipping")
+        return {"skipped": True, "reason": "already_running"}
+
+    from worker.task_helpers import run_async_task
+
+    async def _retry():
+        from sqlalchemy import text
+        async with get_task_session() as db:
+            rows = await db.execute(text(
+                "SELECT id, symbol, title, summary, detailed_summary "
+                "FROM news WHERE content_status = 'embedding_failed'"
+            ))
+            articles = rows.fetchall()
+
+        dispatched = 0
+        for row in articles:
+            news_id = str(row.id)
+            # Prefer detailed_summary, fallback to title + summary
+            parts = []
+            if row.title:
+                parts.append(row.title)
+            if row.detailed_summary:
+                parts.append(row.detailed_summary)
+            elif row.summary:
+                parts.append(row.summary)
+            content = "\n\n".join(parts)
+            if not content.strip():
+                continue
+            embed_news_article.delay(news_id, content, row.symbol)
+            dispatched += 1
+
+        logger.info("[RetryFailedNews] Dispatched %d embedding tasks", dispatched)
+        return {"dispatched": dispatched}
+
+    try:
+        return run_async_task(_retry)
+    except Exception as e:
+        logger.exception("retry_failed_news_embeddings failed: %s", e)
+        raise self.retry(exc=e, countdown=60)
+    finally:
+        _release_embedding_lock("retry_news")
+
+
+@celery_app.task(bind=True, max_retries=1, time_limit=3600, soft_time_limit=3500)
+def retry_failed_report_embeddings(self):
+    """
+    Retry embedding for completed reports that are missing from document_embeddings.
+
+    Queries reports with status='completed' that have no corresponding entry in
+    document_embeddings, extracts text from the JSONB content field, and dispatches
+    individual embed_report tasks.
+
+    Returns:
+        dict with "dispatched" count.
+    """
+    if not _acquire_embedding_lock("retry_report"):
+        logger.info("[RetryFailedReports] Already running, skipping")
+        return {"skipped": True, "reason": "already_running"}
+
+    from worker.task_helpers import run_async_task
+
+    async def _retry():
+        import json
+        from sqlalchemy import text
+        async with get_task_session() as db:
+            rows = await db.execute(text(
+                "SELECT r.id, r.title, r.content FROM reports r "
+                "WHERE r.status = 'completed' "
+                "AND NOT EXISTS ("
+                "  SELECT 1 FROM document_embeddings de "
+                "  WHERE de.source_type = 'report' AND de.source_id = r.id::text"
+                ")"
+            ))
+            reports = rows.fetchall()
+
+        dispatched = 0
+        skipped = 0
+        for row in reports:
+            report_id = str(row.id)
+            try:
+                content_data = row.content
+                if isinstance(content_data, str):
+                    content_data = json.loads(content_data)
+                # Extract text from the content dict
+                text_parts = [row.title] if row.title else []
+                if isinstance(content_data, dict):
+                    for key, val in content_data.items():
+                        if isinstance(val, str) and len(val) > 20:
+                            text_parts.append(val)
+                content_text = "\n\n".join(text_parts)
+                if not content_text.strip():
+                    skipped += 1
+                    continue
+                embed_report.delay(report_id, content_text, None)
+                dispatched += 1
+            except (json.JSONDecodeError, TypeError) as e:
+                skipped += 1
+                logger.warning(
+                    "[RetryFailedReports] Skipping report %s: malformed content: %s",
+                    report_id, e,
+                )
+
+        logger.info(
+            "[RetryFailedReports] Dispatched %d embedding tasks, skipped %d",
+            dispatched, skipped,
+        )
+        return {"dispatched": dispatched, "skipped": skipped}
+
+    try:
+        return run_async_task(_retry)
+    except Exception as e:
+        logger.exception("retry_failed_report_embeddings failed: %s", e)
+        raise self.retry(exc=e, countdown=60)
+    finally:
+        _release_embedding_lock("retry_report")
+
+
+@celery_app.task(bind=True, max_retries=1, time_limit=7200, soft_time_limit=7100)
+def rebuild_news_embeddings(self):
+    """
+    Delete all news embeddings and re-embed all news with useful content.
+
+    Steps:
+    1. DELETE all document_embeddings where source_type='news'
+    2. SELECT all news with content_status IN ('fetched', 'embedded', 'embedding_failed')
+    3. For each, construct content and dispatch embed_news_article task
+
+    Returns:
+        dict with "deleted" and "dispatched" counts.
+    """
+    if not _acquire_embedding_lock("rebuild_news"):
+        logger.info("[RebuildNewsEmbeddings] Already running, skipping")
+        return {"skipped": True, "reason": "already_running"}
+
+    from worker.task_helpers import run_async_task
+
+    async def _rebuild():
+        from sqlalchemy import text
+        async with get_task_session() as db:
+            result = await db.execute(text(
+                "DELETE FROM document_embeddings WHERE source_type = 'news'"
+            ))
+            deleted = result.rowcount
+            await db.commit()
+            logger.info("[RebuildNewsEmbeddings] Deleted %d existing news embeddings", deleted)
+
+        async with get_task_session() as db:
+            rows = await db.execute(text(
+                "SELECT id, symbol, title, summary, detailed_summary "
+                "FROM news WHERE content_status IN ('fetched', 'embedded', 'embedding_failed')"
+            ))
+            articles = rows.fetchall()
+
+        dispatched = 0
+        for row in articles:
+            news_id = str(row.id)
+            parts = []
+            if row.title:
+                parts.append(row.title)
+            if row.detailed_summary:
+                parts.append(row.detailed_summary)
+            elif row.summary:
+                parts.append(row.summary)
+            content = "\n\n".join(parts)
+            if not content.strip():
+                continue
+            embed_news_article.delay(news_id, content, row.symbol)
+            dispatched += 1
+
+        logger.info("[RebuildNewsEmbeddings] Dispatched %d embedding tasks", dispatched)
+        return {"deleted": deleted, "dispatched": dispatched}
+
+    try:
+        return run_async_task(_rebuild)
+    except Exception as e:
+        logger.exception("rebuild_news_embeddings failed: %s", e)
+        raise self.retry(exc=e, countdown=60)
+    finally:
+        _release_embedding_lock("rebuild_news")
+
+
+@celery_app.task(bind=True, max_retries=1, time_limit=3600, soft_time_limit=3500)
+def rebuild_report_embeddings(self):
+    """
+    Delete all report embeddings and re-embed all completed reports.
+
+    Steps:
+    1. DELETE all document_embeddings where source_type='report'
+    2. SELECT all reports with status='completed'
+    3. For each, extract text from JSONB content and dispatch embed_report task
+
+    Returns:
+        dict with "deleted" and "dispatched" counts.
+    """
+    if not _acquire_embedding_lock("rebuild_report"):
+        logger.info("[RebuildReportEmbeddings] Already running, skipping")
+        return {"skipped": True, "reason": "already_running"}
+
+    from worker.task_helpers import run_async_task
+
+    async def _rebuild():
+        import json
+        from sqlalchemy import text
+        async with get_task_session() as db:
+            result = await db.execute(text(
+                "DELETE FROM document_embeddings WHERE source_type = 'report'"
+            ))
+            deleted = result.rowcount
+            await db.commit()
+            logger.info("[RebuildReportEmbeddings] Deleted %d existing report embeddings", deleted)
+
+        async with get_task_session() as db:
+            rows = await db.execute(text(
+                "SELECT id, title, content FROM reports WHERE status = 'completed'"
+            ))
+            reports = rows.fetchall()
+
+        dispatched = 0
+        skipped = 0
+        for row in reports:
+            report_id = str(row.id)
+            try:
+                content_data = row.content
+                if isinstance(content_data, str):
+                    content_data = json.loads(content_data)
+                text_parts = [row.title] if row.title else []
+                if isinstance(content_data, dict):
+                    for key, val in content_data.items():
+                        if isinstance(val, str) and len(val) > 20:
+                            text_parts.append(val)
+                content_text = "\n\n".join(text_parts)
+                if not content_text.strip():
+                    skipped += 1
+                    continue
+                embed_report.delay(report_id, content_text, None)
+                dispatched += 1
+            except (json.JSONDecodeError, TypeError) as e:
+                skipped += 1
+                logger.warning(
+                    "[RebuildReportEmbeddings] Skipping report %s: malformed content: %s",
+                    report_id, e,
+                )
+
+        logger.info(
+            "[RebuildReportEmbeddings] Dispatched %d embedding tasks, skipped %d",
+            dispatched, skipped,
+        )
+        return {"deleted": deleted, "dispatched": dispatched, "skipped": skipped}
+
+    try:
+        return run_async_task(_rebuild)
+    except Exception as e:
+        logger.exception("rebuild_report_embeddings failed: %s", e)
+        raise self.retry(exc=e, countdown=60)
+    finally:
+        _release_embedding_lock("rebuild_report")
 
 
 # ---------------------------------------------------------------------------
@@ -281,6 +592,24 @@ async def _embed_document_async(
             stored_count,
             len(chunks),
         )
+
+    # If this is a news embedding (possibly retried), update content_status
+    if source_type == "news" and stored_count > 0:
+        try:
+            async with get_task_session() as status_db:
+                await status_db.execute(
+                    text(
+                        "UPDATE news SET content_status = 'embedded' "
+                        "WHERE id = :nid AND content_status = 'embedding_failed'"
+                    ),
+                    {"nid": source_id},
+                )
+                await status_db.commit()
+        except Exception as status_err:
+            logger.warning(
+                "Failed to update content_status for %s: %s",
+                source_id, status_err,
+            )
 
     return {
         "status": "success",

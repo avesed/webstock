@@ -112,18 +112,22 @@ def extract_json_from_response(text: str) -> Dict[str, Any]:
         return {}
 
 
-def validate_entities(entities: List[Any]) -> List[EntityInfo]:
+def validate_entities(
+    entities: List[Any],
+    max_entities: int = 6,
+) -> List[EntityInfo]:
     """
     Validate and normalize entity list from LLM response.
 
     Args:
         entities: Raw entity list from LLM
+        max_entities: Maximum number of entities to return (default 6).
 
     Returns:
         Validated list of EntityInfo dicts
     """
     validated = []
-    for e in entities[:6]:  # Max 6 entities
+    for e in entities[:max_entities]:
         if not isinstance(e, dict):
             continue
         entity_name = e.get("entity", "")
@@ -137,15 +141,89 @@ def validate_entities(entities: List[Any]) -> List[EntityInfo]:
             score = 0.5
 
         if entity_name:
-            validated.append(EntityInfo(
-                entity=str(entity_name),
-                type=entity_type,
-                score=score,
-            ))
+            # Build entity dict with base fields
+            entity_dict: Dict[str, Any] = {
+                "entity": str(entity_name),
+                "type": entity_type,
+                "score": score,
+            }
+            # Preserve extra fields if present (company_name, relation)
+            for extra_key in ("company_name", "relation"):
+                val = e.get(extra_key)
+                if val:
+                    entity_dict[extra_key] = str(val)
+            validated.append(entity_dict)  # type: ignore[arg-type]
 
     # Sort by score descending
     validated.sort(key=lambda x: x["score"], reverse=True)
     return validated
+
+
+def resolve_entity_tickers(
+    entities: List[Dict[str, Any]],
+    stock_list_svc: Any = None,
+) -> List[Dict[str, Any]]:
+    """Validate and correct ticker symbols using the local stock list.
+
+    For entities with type="stock", checks if the ticker matches a valid
+    pattern. If invalid or suspicious, uses ``company_name`` (or the ticker
+    itself) to search ``StockListService`` for the correct symbol.
+
+    Args:
+        entities: List of entity dicts (may include company_name, relation).
+        stock_list_svc: StockListService instance (sync search). If None,
+            returns entities unchanged.
+
+    Returns:
+        Entities with corrected ticker symbols where possible.
+    """
+    if not stock_list_svc or not stock_list_svc.is_loaded:
+        return entities
+
+    # Valid ticker patterns (metal checked BEFORE US to avoid SI/SI=F conflict)
+    metal_pattern = re.compile(r"^(GC|SI|PL|PA)=F$")
+    us_pattern = re.compile(r"^[A-Z]{1,5}$")
+    cn_pattern = re.compile(r"^\d{6}\.\w{2,3}$")
+    hk_pattern = re.compile(r"^\d{4,5}\.HK$")
+
+    resolved = []
+    for e in entities:
+        entity = dict(e)  # shallow copy
+
+        if entity.get("type") != "stock":
+            resolved.append(entity)
+            continue
+
+        ticker = entity.get("entity", "")
+        is_valid = bool(
+            metal_pattern.match(ticker)
+            or us_pattern.match(ticker)
+            or cn_pattern.match(ticker)
+            or hk_pattern.match(ticker)
+        )
+
+        if not is_valid:
+            # Try to resolve using company_name or the ticker string itself
+            search_term = entity.get("company_name") or ticker
+            if search_term:
+                try:
+                    results = stock_list_svc.search(search_term, limit=1)
+                    if results:
+                        old_ticker = ticker
+                        entity["entity"] = results[0]["symbol"]
+                        logger.info(
+                            "Resolved entity ticker: '%s' -> '%s' (via '%s')",
+                            old_ticker, entity["entity"], search_term,
+                        )
+                except Exception as search_err:
+                    logger.debug(
+                        "Ticker resolution search failed for '%s': %s",
+                        search_term, search_err,
+                    )
+
+        resolved.append(entity)
+
+    return resolved
 
 
 class NewsLayer3AnalysisService:
@@ -172,8 +250,8 @@ class NewsLayer3AnalysisService:
 {{
   "decision": "keep" 或 "delete",
   "entities": [
-    {{"entity": "AAPL", "type": "stock", "score": 0.95}},
-    {{"entity": "Fed利率", "type": "macro", "score": 0.7}}
+    {{"entity": "AAPL", "type": "stock", "company_name": "苹果", "score": 0.95}},
+    {{"entity": "Fed利率", "type": "macro", "company_name": "", "score": 0.7}}
   ],
   "industry_tags": ["tech", "semiconductor"],
   "event_tags": ["earnings", "guidance"],
@@ -187,9 +265,12 @@ class NewsLayer3AnalysisService:
 
 【字段说明】
 - decision: 是否有投资价值（delete = 广告/水文/无价值）
-- entities: 关联实体，score 0.0-1.0，最多6个
-  - type=stock: **必须使用股票代码**，不要用公司名。例：苹果→AAPL，特斯拉/SpaceX→TSLA，英伟达→NVDA，首都机场→00694.HK，贵州茅台→600519.SH，腾讯→0700.HK，比亚迪→002594.SZ
-  - type=index: 指数代码。例：标普500→SPX，纳指→IXIC，上证→000001.SH，恒生→HSI
+- entities: 关联实体，score 0.0-1.0，最多10个
+  - type=stock: 尽量使用股票代码（如AAPL, 600519.SS, 0700.HK），不确定时填company_name
+  - company_name: 公司中文/英文名（便于系统校验代码，stock类型建议填写）
+  - 贵金属期货用type=stock，代码格式：黄金→GC=F，白银→SI=F，铂金→PL=F，钯金→PA=F（不要用XAU/XAG等）
+  - 除直接提及的实体外，也应联想相关的行业同行和供应链公司
+  - type=index: 指数代码。例：标普500→SPX，纳指→IXIC，上证→000001.SS，恒生→HSI
   - type=macro: 宏观因素，用简短中文/英文名。例：Fed利率、CPI、美元指数
 - industry_tags: 行业（tech/finance/healthcare/energy/consumer/industrial/materials/utilities/realestate/telecom）
 - event_tags: 事件类型（earnings/merger/ipo/regulatory/executive/product/lawsuit/dividend/buyback/guidance/macro）
@@ -236,7 +317,7 @@ class NewsLayer3AnalysisService:
 - investment_summary 必须是1句话，不超过50字
 - detailed_summary 要保留所有关键信息，但尽可能精炼
 - analysis_report 使用Markdown格式，包含上述6个章节
-- entities 中 type=stock 的 entity 字段**必须**是可交易的股票代码（如 TSLA, 00694.HK, 600519.SH），不能是公司名称"""
+- entities 中 type=stock 的 entity 字段**尽量**使用股票代码（如 TSLA, 00694.HK, 600519.SS），不确定时用company_name标注公司名"""
 
     # JSON Schema for OpenAI Structured Outputs (deep filter)
     DEEP_FILTER_SCHEMA = {
@@ -251,6 +332,8 @@ class NewsLayer3AnalysisService:
                         "entity": {"type": "string"},
                         "type": {"type": "string", "enum": ["stock", "index", "macro"]},
                         "score": {"type": "number"},
+                        "company_name": {"type": "string"},
+                        "relation": {"type": "string"},
                     },
                     "required": ["entity", "type", "score"],
                     "additionalProperties": False,
@@ -425,7 +508,7 @@ class NewsLayer3AnalysisService:
 
             deep_result = DeepFilterResult(
                 decision=decision,
-                entities=validate_entities(result.get("entities", [])),
+                entities=validate_entities(result.get("entities", []), max_entities=10),
                 industry_tags=result.get("industry_tags", [])[:5],  # Max 5 tags
                 event_tags=result.get("event_tags", [])[:5],
                 sentiment=sentiment,

@@ -61,7 +61,7 @@ TOOL_LABELS = {
 
 # Skills that need user_id and db injection
 _USER_SCOPED_SKILLS = {"get_portfolio", "get_watchlist", "qlib_create_backtest"}
-_DB_SCOPED_SKILLS = {"get_portfolio", "get_watchlist", "search_knowledge_base", "get_news", "qlib_create_backtest"}
+_DB_SCOPED_SKILLS = {"get_portfolio", "get_watchlist", "search_knowledge_base", "search_related_stocks", "get_news", "qlib_create_backtest"}
 
 
 def skill_to_tool_definition(skill: BaseSkill) -> ToolDefinition:

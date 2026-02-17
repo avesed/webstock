@@ -16,6 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.llm import get_llm_gateway, ChatRequest, Message, Role
 from app.services.news_layer3_analysis_service import (
     extract_json_from_response,
+    resolve_entity_tickers,
     validate_entities,
 )
 
@@ -26,7 +27,7 @@ LIGHTWEIGHT_PROMPT = """快速提取以下新闻信息，返回JSON格式：
 
 {{
   "decision": "keep" 或 "delete",
-  "entities": [{{"entity": "AAPL", "type": "stock", "score": 0.8}}],
+  "entities": [{{"entity": "AAPL", "type": "stock", "company_name": "苹果", "score": 0.8}}],
   "sentiment": "bullish/bearish/neutral",
   "industry_tags": ["tech"],
   "event_tags": ["earnings"],
@@ -34,7 +35,9 @@ LIGHTWEIGHT_PROMPT = """快速提取以下新闻信息，返回JSON格式：
 }}
 
 - decision: 是否有投资价值（delete = 广告/水文/完全无价值）
-- entities: 关联实体，最多4个，type: stock(必须用代码)/index/macro
+- entities: 关联实体，最多8个，type: stock(尽量用代码，不确定时填company_name)/index/macro
+  - 除直接提及的公司外，也应包含同行业的知名公司（如提到机器人行业，可加入相关龙头股）
+  - company_name: 公司中文/英文名（便于校验代码）
 - investment_summary: 精炼的1句话
 - 不需要生成detailed_summary和analysis_report
 
@@ -196,8 +199,20 @@ class LightweightFilterService:
             if sentiment not in ("bullish", "bearish", "neutral"):
                 sentiment = "neutral"
 
-            # Entities: reuse shared validator, but cap at 4 for lightweight
-            entities = validate_entities(result.get("entities", []))[:4]
+            # Entities: reuse shared validator, cap at 8 for lightweight
+            entities = validate_entities(result.get("entities", []), max_entities=8)
+
+            # Resolve ticker symbols using local stock list (non-fatal)
+            try:
+                from app.services.stock_list_service import get_stock_list_service
+
+                stock_list_svc = await get_stock_list_service()
+                entities = resolve_entity_tickers(entities, stock_list_svc)
+            except Exception as resolve_err:
+                logger.debug(
+                    "[Lightweight] Ticker resolution failed (non-fatal): %s",
+                    resolve_err,
+                )
 
             lightweight_result = LightweightResult(
                 decision=decision,

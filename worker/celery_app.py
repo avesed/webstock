@@ -27,6 +27,7 @@ celery_app = Celery(
         "worker.tasks.rss_monitor",
         "worker.tasks.daily_bar_tasks",
         "worker.tasks.qlib_sync",
+        "worker.tasks.stock_profile_tasks",
     ],
 )
 
@@ -138,6 +139,14 @@ celery_app.conf.update(
             "task": "worker.tasks.daily_bar_tasks.collect_market_daily_bars",
             "schedule": crontab(hour=22, minute=30),  # 22:30 UTC, CME close
             "args": ["metal"],
+        },
+        "sync-concept-boards": {
+            "task": "worker.tasks.stock_profile_tasks.sync_concept_boards",
+            "schedule": crontab(hour=6, minute=0, day_of_week="1-6"),  # Mon-Sat 6:00 AM UTC (skip Sunday)
+        },
+        "build-stock-knowledge-base": {
+            "task": "worker.tasks.stock_profile_tasks.build_stock_knowledge_base",
+            "schedule": crontab(day_of_week=0, hour=6, minute=0),  # Weekly Sunday 6:00 AM UTC
         },
         # JWT Key Rotation - DISABLED by default
         # Manual rotation recommended: python worker/scripts/manage_keys.py rotate

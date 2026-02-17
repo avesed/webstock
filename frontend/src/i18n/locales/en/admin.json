@@ -8,7 +8,8 @@
     "filter": "Filter Stats",
     "rss": "RSS Feeds",
     "pipeline": "Pipeline Trace",
-    "costs": "Cost Tracking"
+    "costs": "Cost Tracking",
+    "knowledge": "Knowledge Base"
   },
   "users": {
     "title": "User Management",
@@ -462,6 +463,58 @@
     "noCategoryData": "No usage data in this category",
     "inputTokens": "Input",
     "outputTokens": "Output"
+  },
+  "knowledge": {
+    "title": "Knowledge Base Management",
+    "description": "Monitor and manage AI knowledge bases powering analysis, chat, and search",
+    "embeddings": "Embeddings",
+    "model": "Model",
+    "lastUpdated": "Last Updated",
+    "failed": "{{count}} failed",
+    "noData": "No data",
+
+    "stockProfile": "Stock Profiles",
+    "stockProfileDesc": "Vectorized stock profiles for entity extraction and search",
+    "news": "News Embeddings",
+    "newsDesc": "News article embeddings for RAG-enhanced chat",
+    "analysis": "Analysis Embeddings",
+    "analysisDesc": "AI analysis report embeddings (cannot be re-generated)",
+    "report": "Report Embeddings",
+    "reportDesc": "Scheduled report embeddings for search",
+    "dailyBars": "Daily Bars (Qlib)",
+    "dailyBarsDesc": "OHLCV market data for quantitative analysis",
+
+    "bars": "bars",
+    "symbols": "symbols",
+    "dateRange": "{{from}} ~ {{to}}",
+
+    "market_cn": "A-Share (CN)",
+    "market_us": "US",
+    "market_hk": "HK",
+    "market_metal": "Metal",
+
+    "rebuild": "Rebuild",
+    "rebuildConfirm": "This will delete all existing {{type}} embeddings and re-generate them. Continue?",
+    "rebuildStarted": "Rebuild task started",
+    "syncConcepts": "Sync Concepts",
+    "retryFailed": "Retry Failed ({{count}})",
+    "clear": "Clear",
+    "clearConfirm": "This will permanently delete all {{type}} embeddings. Continue?",
+    "collect": "Collect",
+    "collectAll": "Collect All",
+    "collectStarted": "Collection task started",
+    "actionSuccess": "Action completed successfully",
+    "error": "Action failed",
+
+    "progress": {
+      "collecting": "Collecting...",
+      "collecting_cn": "Collecting CN...",
+      "collecting_us": "Collecting US...",
+      "embedding_cn": "Embedding CN",
+      "embedding_us": "Embedding US",
+      "embedding_hk": "Embedding HK",
+      "fetching": "Fetching"
+    }
   },
   "pipeline": {
     "statsTitle": "Pipeline Statistics",

@@ -8,7 +8,8 @@
     "filter": "筛选统计",
     "rss": "RSS订阅",
     "pipeline": "管线追踪",
-    "costs": "成本追踪"
+    "costs": "成本追踪",
+    "knowledge": "知识库"
   },
   "users": {
     "title": "用户管理",
@@ -462,6 +463,58 @@
     "noCategoryData": "该分类暂无用量数据",
     "inputTokens": "输入",
     "outputTokens": "输出"
+  },
+  "knowledge": {
+    "title": "知识库管理",
+    "description": "监控和管理为AI分析、对话和搜索提供支持的知识库",
+    "embeddings": "向量数",
+    "model": "模型",
+    "lastUpdated": "最后更新",
+    "failed": "{{count}} 个失败",
+    "noData": "暂无数据",
+
+    "stockProfile": "股票画像",
+    "stockProfileDesc": "用于实体提取和搜索的股票画像向量库",
+    "news": "新闻向量",
+    "newsDesc": "用于RAG增强对话的新闻文章向量库",
+    "analysis": "分析向量",
+    "analysisDesc": "AI分析报告的向量（无法重新生成）",
+    "report": "报告向量",
+    "reportDesc": "定期报告的向量库",
+    "dailyBars": "日线数据 (Qlib)",
+    "dailyBarsDesc": "用于量化分析的OHLCV市场数据",
+
+    "bars": "条记录",
+    "symbols": "只股票",
+    "dateRange": "{{from}} ~ {{to}}",
+
+    "market_cn": "A股",
+    "market_us": "美股",
+    "market_hk": "港股",
+    "market_metal": "贵金属",
+
+    "rebuild": "重建",
+    "rebuildConfirm": "这将删除所有现有的{{type}}向量并重新生成。确定继续？",
+    "rebuildStarted": "重建任务已启动",
+    "syncConcepts": "同步概念板块",
+    "retryFailed": "重试失败 ({{count}})",
+    "clear": "清除",
+    "clearConfirm": "这将永久删除所有{{type}}向量数据。确定继续？",
+    "collect": "采集",
+    "collectAll": "全部采集",
+    "collectStarted": "采集任务已启动",
+    "actionSuccess": "操作成功",
+    "error": "操作失败",
+
+    "progress": {
+      "collecting": "采集中...",
+      "collecting_cn": "采集A股...",
+      "collecting_us": "采集美股...",
+      "embedding_cn": "向量化A股",
+      "embedding_us": "向量化美股",
+      "embedding_hk": "向量化港股",
+      "fetching": "获取中"
+    }
   },
   "pipeline": {
     "statsTitle": "管线统计",

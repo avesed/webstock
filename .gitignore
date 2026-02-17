@@ -112,3 +112,4 @@ docs/
 # Runtime generated data
 data/stock_list/
 PLAN_market_data_provider.md
+e2e_test.py
