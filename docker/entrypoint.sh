@@ -185,9 +185,15 @@ http {
             proxy_read_timeout 60s;
         }
 
-        # Frontend SPA
+        # Frontend SPA - index.html must not be cached to ensure new deployments are picked up
         location / {
             try_files $uri $uri/ /index.html;
+            add_header Cache-Control "no-cache" always;
+            # Re-add security headers
+            add_header X-Frame-Options "DENY" always;
+            add_header X-Content-Type-Options "nosniff" always;
+            add_header X-XSS-Protection "1; mode=block" always;
+            add_header Referrer-Policy "strict-origin-when-cross-origin" always;
         }
 
         # Service worker - must not be cached aggressively

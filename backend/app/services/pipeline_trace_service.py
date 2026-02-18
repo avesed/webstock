@@ -502,9 +502,9 @@ class PipelineTraceService:
                 if cache_row and cache_row.avg_cache_hit_rate is not None
                 else None
             ),
-            "cache_hits": cache_row.cache_hits if cache_row else 0,
-            "total_cached_tokens": cache_row.total_cached_tokens if cache_row else 0,
-            "total_prompt_tokens": cache_row.total_prompt_tokens if cache_row else 0,
+            "cache_hits": (cache_row.cache_hits or 0) if cache_row else 0,
+            "total_cached_tokens": (cache_row.total_cached_tokens or 0) if cache_row else 0,
+            "total_prompt_tokens": (cache_row.total_prompt_tokens or 0) if cache_row else 0,
         }
 
         # Per-node latency for Phase 2 nodes

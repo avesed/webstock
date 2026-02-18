@@ -18,7 +18,11 @@ export function PWAUpdatePrompt() {
   } = useRegisterSW({
     onRegistered(registration) {
       if (registration) {
-        // Periodically check for updates
+        // Check for updates immediately on page load
+        registration.update().catch((err: unknown) => {
+          console.warn('[PWA] Initial update check failed:', err)
+        })
+        // Then periodically check for updates
         intervalRef.current = setInterval(() => {
           registration.update().catch((err: unknown) => {
             console.warn('[PWA] Update check failed:', err)
