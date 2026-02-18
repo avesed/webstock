@@ -8,7 +8,7 @@ export default function AdminDashboardPage() {
   const { t } = useTranslation('admin')
 
   return (
-    <div className="flex flex-col h-[calc(100vh-10rem)] overflow-hidden">
+    <div className="flex flex-col h-[calc(100dvh-10rem)] overflow-hidden">
       <div className="flex-shrink-0 pb-4">
         <h1 className="text-3xl font-bold tracking-tight">{t('title')}</h1>
         <p className="text-muted-foreground">{t('subtitle')}</p>

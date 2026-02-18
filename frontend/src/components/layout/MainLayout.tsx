@@ -167,7 +167,10 @@ export default function MainLayout() {
 
   return (
     <TooltipProvider delayDuration={0}>
-      <div className="flex h-screen bg-background">
+      <div
+        className="flex h-dvh overflow-hidden bg-background"
+        style={{ paddingTop: 'env(safe-area-inset-top, 0px)' }}
+      >
         {/* Mobile sidebar overlay */}
         {mobileMenuOpen && (
           <div
@@ -406,7 +409,7 @@ export default function MainLayout() {
           )}
 
           {/* Page content */}
-          <main className="flex-1 overflow-y-auto overflow-x-hidden min-h-0 p-4 pb-20 lg:p-6 lg:pb-6">
+          <main className="flex-1 overflow-y-auto overflow-x-hidden min-h-0 p-4 pb-[calc(80px_+_var(--safe-area-bottom))] lg:p-6 lg:pb-6">
             <Suspense
               fallback={
                 <div className="flex h-full items-center justify-center">

@@ -58,17 +58,17 @@ export function ChatPageContent() {
 
   const swipeOpacity = swipeOffset > 0 ? Math.max(1 - swipeOffset / 200, 0.3) : 1
 
-  // Height = viewport - header - breadcrumb (if visible) - BottomNav (if visible)
+  // Height = viewport - safe-area-top - header - breadcrumb (if visible) - BottomNav (if visible) - safe-area-bottom
   // Margins negate <main>'s padding so the chat fills edge-to-edge.
-  // --safe-bottom adapts to iPhone notch / Android without hardcoding safe-area size.
+  // --safe-top/--safe-bottom adapt to notched devices without hardcoding safe-area size.
   //
-  // Phone  (<640px):  no breadcrumb, BottomNav ~56px + safe area → 100dvh - 120px - safe
-  // Tablet (640-1023): breadcrumb ~44px, BottomNav              → 100dvh - 164px - safe
-  // Desktop (≥1024):   breadcrumb ~44px, no BottomNav            → 100vh  - 108px
+  // Phone  (<640px):  no breadcrumb, BottomNav ~56px → 100dvh - 120px - safe-top - safe-bottom
+  // Tablet (640-1023): breadcrumb ~44px, BottomNav   → 100dvh - 164px - safe-top - safe-bottom
+  // Desktop (≥1024):   breadcrumb ~44px, no BottomNav → 100dvh - 108px
   return (
     <div
-      className="flex -mx-4 -mt-4 -mb-20 lg:-m-6 h-[calc(100dvh-120px-var(--safe-bottom))] sm:h-[calc(100dvh-164px-var(--safe-bottom))] lg:h-[calc(100vh-108px)]"
-      style={{ '--safe-bottom': 'env(safe-area-inset-bottom, 0px)' } as React.CSSProperties}
+      className="flex -mx-4 -mt-4 -mb-20 lg:-m-6 h-[calc(100dvh-120px-var(--safe-top)-var(--safe-bottom))] sm:h-[calc(100dvh-164px-var(--safe-top)-var(--safe-bottom))] lg:h-[calc(100dvh-108px)]"
+      style={{ '--safe-top': 'env(safe-area-inset-top, 0px)', '--safe-bottom': 'env(safe-area-inset-bottom, 0px)' } as React.CSSProperties}
     >
       {/* Conversation sidebar */}
       <div

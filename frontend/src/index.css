@@ -34,6 +34,9 @@
 
     --radius: 0.5rem;
 
+    /* Safe area insets for PWA/notched devices */
+    --safe-area-bottom: env(safe-area-inset-bottom, 0px);
+
     /* Stock-specific colors */
     --stock-up: 142.1 76.2% 36.3%;
     --stock-down: 0 84.2% 60.2%;
@@ -144,12 +147,6 @@
   }
 }
 
-/* PWA safe area insets for notched devices */
-@supports (padding: env(safe-area-inset-top)) {
-  body {
-    padding-top: env(safe-area-inset-top);
-  }
-}
 
 /* Touch target expansion for touch devices */
 @media (pointer: coarse) {
