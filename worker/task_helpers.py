@@ -28,6 +28,7 @@ _SINGLETON_RESETS = [
     ("app.services.full_content_service", "reset_full_content_service"),
     ("app.services.content_cleaning_service", "reset_content_cleaning_service"),
     ("app.services.rag", "reset_index_service"),
+    ("app.services.stock_list_service", "reset_stock_list_service_sync"),
 ]
 
 

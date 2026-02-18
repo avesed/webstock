@@ -35,6 +35,7 @@ _CN_MARKETS = {Market.SH.value, Market.SZ.value}
 INSERT_CHUNK_SIZE = 500
 # CN direct path: conservative concurrency to avoid Eastmoney rate limiting
 _CN_MAX_CONCURRENT = 12
+_CN_BATCH_SIZE = 50            # symbols per fetch-upsert cycle (bounds memory)
 _CN_FETCH_TIMEOUT = 60  # seconds per symbol
 # yfinance batch path for US/HK/Metal markets
 _YF_BATCH_SIZE = 50           # symbols per yfinance.download() call
@@ -115,58 +116,56 @@ class DailyBarService:
         total_inserted = 0
 
         if market == "cn":
-            all_bars: list[tuple[str, str, list[dict]]] = []
-            completed = 0
+            # Fetch + upsert in batches to bound memory.  Each batch of
+            # _CN_BATCH_SIZE symbols is fetched concurrently, upserted, and
+            # committed before the next batch starts.  Prevents OOM on 4500+
+            # A-shares and lets partial progress survive crashes.
             executor = await _get_cn_bulk_executor()
-            semaphore = asyncio.Semaphore(_CN_MAX_CONCURRENT)
+            symbols_done = 0
+            symbols_with_data = 0
 
-            async def fetch_one(symbol: str) -> None:
-                nonlocal completed
-                async with semaphore:
+            for batch_start in range(0, len(symbols), _CN_BATCH_SIZE):
+                batch = symbols[batch_start : batch_start + _CN_BATCH_SIZE]
+                batch_bars: list[tuple[str, str, list[dict]]] = []
+                semaphore = asyncio.Semaphore(_CN_MAX_CONCURRENT)
+
+                async def _fetch_one(sym: str) -> None:
+                    async with semaphore:
+                        try:
+                            bars = await self._fetch_cn_bars_direct(
+                                sym, latest_dates.get(sym), executor,
+                            )
+                            if bars:
+                                batch_bars.append((sym, "akshare", bars))
+                        except Exception as exc:
+                            errors.append(f"{sym}: {exc}")
+
+                await asyncio.gather(*[_fetch_one(s) for s in batch])
+
+                # Upsert + commit this batch immediately
+                for symbol, data_source, bars in batch_bars:
                     try:
-                        bars = await self._fetch_cn_bars_direct(
-                            symbol, latest_dates.get(symbol), executor,
+                        count = await self._batch_upsert(
+                            db, symbol, market, data_source, bars,
                         )
-                        if bars:
-                            all_bars.append((symbol, "akshare", bars))
-                        elif bars is None:
-                            logger.warning(
-                                "No data returned for %s (market=cn)", symbol,
-                            )
+                        total_inserted += count
                     except Exception as exc:
-                        errors.append(f"{symbol}: {exc}")
-                        logger.error("Failed to fetch CN bars for %s: %s", symbol, exc)
-                    finally:
-                        completed += 1
-                        if completed % 200 == 0 or completed == len(symbols):
-                            logger.info(
-                                "Fetch progress: %d/%d completed (%d with data, %d errors)",
-                                completed, len(symbols), len(all_bars), len(errors),
-                            )
-                        if on_progress and (completed % 50 == 0 or completed == len(symbols)):
-                            try:
-                                await on_progress(completed, len(symbols), len(all_bars), len(errors))
-                            except Exception:
-                                pass
-
-            tasks = [fetch_one(symbol) for symbol in symbols]
-            await asyncio.gather(*tasks)
-
-            # Upsert all CN bars with periodic commits
-            symbols_since_commit = 0
-            for symbol, data_source, bars in all_bars:
-                try:
-                    count = await self._batch_upsert(db, symbol, market, data_source, bars)
-                    total_inserted += count
-                except Exception as exc:
-                    errors.append(f"{symbol}: upsert error - {exc}")
-                    logger.error("Upsert failed for %s: %s", symbol, exc)
-                symbols_since_commit += 1
-                if symbols_since_commit >= _UPSERT_COMMIT_INTERVAL:
-                    await db.commit()
-                    symbols_since_commit = 0
-            if symbols_since_commit > 0:
+                        errors.append(f"{symbol}: upsert - {exc}")
                 await db.commit()
+
+                symbols_done += len(batch)
+                symbols_with_data += len(batch_bars)
+                logger.info(
+                    "CN batch: %d/%d done (%d with data, %d errors)",
+                    symbols_done, len(symbols), symbols_with_data, len(errors),
+                )
+                if on_progress:
+                    try:
+                        await on_progress(
+                            symbols_done, len(symbols), symbols_with_data, len(errors),
+                        )
+                    except Exception:
+                        pass
 
         else:
             # US / HK / Metal: download + upsert per batch (inline).

@@ -507,6 +507,9 @@
     "rebuildAll": "全部重建",
     "rebuildBarsConfirm": "这将删除{{market}}所有日线数据并重新采集，耗时可能较长。确定继续？",
     "rebuildBarsConfirmAll": "这将删除所有市场的日线数据并重新采集，耗时可能非常长。确定继续？",
+    "locked": "锁定中 ({{ttl}}分钟)",
+    "unlock": "解锁",
+    "unlockConfirm": "这将终止{{market}}正在运行的任务并释放锁。确定继续？",
     "actionSuccess": "操作成功",
     "error": "操作失败",
 

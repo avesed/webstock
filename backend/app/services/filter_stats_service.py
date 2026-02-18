@@ -50,11 +50,6 @@ class FilterStatsService:
         "filter_error",
         "embedding_success",
         "embedding_error",
-        # Phase 2 routing stats
-        "phase2_full_analysis",
-        "phase2_lightweight",
-        "phase2_critical_event",
-        "phase2_scoring_error",
         # Layer 1 three-agent scoring stats
         "layer1_discard",
         "layer1_lightweight",
@@ -424,19 +419,19 @@ class FilterStatsService:
             "alerts": alerts,
         }
 
-    async def get_phase2_stats(self, days: int = 7) -> Dict[str, any]:
+    async def get_pipeline_routing_stats(self, days: int = 7) -> Dict[str, any]:
         """
-        Get Phase 2 multi-agent pipeline statistics from Redis counters.
+        Get pipeline routing statistics and token breakdown from Redis counters.
 
-        Returns routing counts and per-stage token breakdown.
+        Uses Layer 1 three-agent scoring counters for routing decisions.
         """
         summary = await self.get_summary_stats(days)
 
-        # Routing counts
-        full_count = summary.get("phase2_full_analysis", 0)
-        lw_count = summary.get("phase2_lightweight", 0)
-        critical_count = summary.get("phase2_critical_event", 0)
-        error_count = summary.get("phase2_scoring_error", 0)
+        # Routing counts from Layer 1 scoring
+        full_count = summary.get("layer1_full_analysis", 0)
+        lw_count = summary.get("layer1_lightweight", 0)
+        critical_count = summary.get("layer1_critical_event", 0)
+        error_count = 0
         total_count = full_count + lw_count
 
         # Token breakdown per stage

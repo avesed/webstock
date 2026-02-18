@@ -247,7 +247,7 @@ async def get_news_pipeline_stats(
     from app.services.filter_stats_service import get_filter_stats_service
 
     stats_service = get_filter_stats_service()
-    redis_stats = await stats_service.get_phase2_stats(days)
+    redis_stats = await stats_service.get_pipeline_routing_stats(days)
 
     routing = NewsPipelineRoutingStats(
         total=redis_stats["routing"]["total"],

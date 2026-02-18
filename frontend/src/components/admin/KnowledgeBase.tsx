@@ -1,7 +1,7 @@
 import { useCallback, useRef, useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useTranslation } from 'react-i18next'
-import { Database, Newspaper, FileText, BookOpen, BarChart3, Loader2, RefreshCw, AlertCircle, AlertTriangle } from 'lucide-react'
+import { Database, Newspaper, FileText, BookOpen, BarChart3, Loader2, RefreshCw, AlertCircle, AlertTriangle, Unlock } from 'lucide-react'
 
 import { adminApi, type KnowledgeBaseStatsResponse } from '@/api/admin'
 import { getErrorMessage } from '@/api/client'
@@ -157,11 +157,13 @@ function EmbeddingCard({
 function DailyBarsCard({
   dailyBars,
   progress,
+  locks,
   actionLoading,
   onAction,
 }: {
   dailyBars: KnowledgeBaseStats['dailyBars'] | undefined
   progress: KnowledgeBaseStats['progress']['dailyBars'] | undefined
+  locks: KnowledgeBaseStats['locks'] | undefined
   actionLoading: string | null
   onAction: (key: string, action: () => Promise<unknown>, confirmMsg?: string) => void
 }) {
@@ -220,47 +222,78 @@ function DailyBarsCard({
           {markets.map((market) => {
             const stats = dailyBars?.[market]
             const prog = progress?.[market]
+            const lock = locks?.[market]
+            const isLocked = lock?.locked === true
             return (
               <div key={market} className="space-y-2 rounded-md border p-3">
                 <div className="flex items-center justify-between">
                   <span className="font-medium text-sm">
                     {td(t, `knowledge.market_${market}`)}
+                    {isLocked && (
+                      <Badge variant="outline" className="ml-2 text-[10px] px-1.5 py-0 text-orange-600 border-orange-300">
+                        {td(t, 'knowledge.locked', { ttl: Math.round((lock?.ttlSeconds ?? 0) / 60) })}
+                      </Badge>
+                    )}
                   </span>
                   <div className="flex gap-1">
-                    <Button
-                      size="sm"
-                      variant="ghost"
-                      className="h-7 px-2 text-xs"
-                      disabled={actionLoading !== null}
-                      onClick={() =>
-                        onAction(`collect-${market}`, () => adminApi.collectDailyBars(market))
-                      }
-                    >
-                      {actionLoading === `collect-${market}` ? (
-                        <Loader2 className="h-3 w-3 animate-spin" />
-                      ) : (
-                        t('knowledge.collect')
-                      )}
-                    </Button>
-                    <Button
-                      size="sm"
-                      variant="ghost"
-                      className="h-7 px-2 text-xs text-destructive hover:text-destructive"
-                      disabled={actionLoading !== null}
-                      onClick={() =>
-                        onAction(
-                          `rebuild-${market}`,
-                          () => adminApi.rebuildDailyBars(market),
-                          td(t, 'knowledge.rebuildBarsConfirm', { market: td(t, `knowledge.market_${market}`) }),
-                        )
-                      }
-                    >
-                      {actionLoading === `rebuild-${market}` ? (
-                        <Loader2 className="h-3 w-3 animate-spin" />
-                      ) : (
-                        t('knowledge.rebuildBars')
-                      )}
-                    </Button>
+                    {isLocked ? (
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        className="h-7 px-2 text-xs text-orange-600 hover:text-orange-700"
+                        disabled={actionLoading !== null}
+                        onClick={() =>
+                          onAction(
+                            `unlock-${market}`,
+                            () => adminApi.unlockDailyBars(market),
+                            td(t, 'knowledge.unlockConfirm', { market: td(t, `knowledge.market_${market}`) }),
+                          )
+                        }
+                      >
+                        {actionLoading === `unlock-${market}` ? (
+                          <Loader2 className="h-3 w-3 animate-spin" />
+                        ) : (
+                          <><Unlock className="h-3 w-3 mr-1" />{t('knowledge.unlock')}</>
+                        )}
+                      </Button>
+                    ) : (
+                      <>
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          className="h-7 px-2 text-xs"
+                          disabled={actionLoading !== null}
+                          onClick={() =>
+                            onAction(`collect-${market}`, () => adminApi.collectDailyBars(market))
+                          }
+                        >
+                          {actionLoading === `collect-${market}` ? (
+                            <Loader2 className="h-3 w-3 animate-spin" />
+                          ) : (
+                            t('knowledge.collect')
+                          )}
+                        </Button>
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          className="h-7 px-2 text-xs text-destructive hover:text-destructive"
+                          disabled={actionLoading !== null}
+                          onClick={() =>
+                            onAction(
+                              `rebuild-${market}`,
+                              () => adminApi.rebuildDailyBars(market),
+                              td(t, 'knowledge.rebuildBarsConfirm', { market: td(t, `knowledge.market_${market}`) }),
+                            )
+                          }
+                        >
+                          {actionLoading === `rebuild-${market}` ? (
+                            <Loader2 className="h-3 w-3 animate-spin" />
+                          ) : (
+                            t('knowledge.rebuildBars')
+                          )}
+                        </Button>
+                      </>
+                    )}
                   </div>
                 </div>
 
@@ -612,6 +645,7 @@ export default function KnowledgeBase() {
       <DailyBarsCard
         dailyBars={stats?.dailyBars}
         progress={progress?.dailyBars}
+        locks={stats?.locks}
         actionLoading={actionLoading}
         onAction={handleAction}
       />

@@ -71,18 +71,24 @@ def _clear_daily_bar_progress_sync(market: str):
         pass
 
 
-def _acquire_daily_bar_lock_sync(market: str) -> Optional[str]:
+def _acquire_daily_bar_lock_sync(market: str, task_id: Optional[str] = None) -> Optional[str]:
     """Try to acquire the per-market collection lock.
 
-    Uses SET NX with a unique owner token (UUID) so only the holder can
-    release it (CAS pattern).
+    Uses SET NX with the Celery task ID as the owner token so that:
+    1. Only the holder can release it (CAS pattern).
+    2. The admin force-unlock endpoint can revoke the running task by reading
+       the lock value.
+
+    Args:
+        market: Market code.
+        task_id: Celery task ID (self.request.id). Falls back to UUID if None.
 
     Returns:
         Owner token string if lock acquired, None if already held by another task.
     """
     try:
         r = _get_sync_redis()
-        owner = str(uuid.uuid4())
+        owner = task_id or str(uuid.uuid4())
         acquired = r.set(
             _LOCK_KEY_TEMPLATE.format(market=market),
             owner,
@@ -92,7 +98,7 @@ def _acquire_daily_bar_lock_sync(market: str) -> Optional[str]:
         return owner if acquired else None
     except Exception:
         # Redis unavailable — generate owner token and allow task to proceed
-        return str(uuid.uuid4())
+        return task_id or str(uuid.uuid4())
 
 
 def _release_daily_bar_lock_sync(market: str, owner: str):
@@ -106,6 +112,51 @@ def _release_daily_bar_lock_sync(market: str, owner: str):
         r.eval(_RELEASE_LOCK_LUA, 1, _LOCK_KEY_TEMPLATE.format(market=market), owner)
     except Exception:
         pass
+
+
+def _rebuild_daily_bars_counter_sync(market: str):
+    """Sync version of counter rebuild for use in finally blocks.
+
+    Uses psycopg2 (sync) + sync redis to update the cached counter.
+    This ensures the counter is always refreshed even if the async event
+    loop has already been torn down (e.g., after a crash in run_async_task).
+    """
+    try:
+        import psycopg2
+        from app.config import settings
+
+        # Convert asyncpg URL to psycopg2 format
+        db_url = str(settings.DATABASE_URL).replace(
+            "postgresql+asyncpg://", "postgresql://"
+        )
+        conn = psycopg2.connect(db_url)
+        try:
+            cur = conn.cursor()
+            cur.execute(
+                "SELECT COUNT(*), COUNT(DISTINCT symbol), MIN(date), MAX(date) "
+                "FROM stock_daily_bars WHERE market = %s",
+                (market,),
+            )
+            count, symbol_count, first_date, last_date = cur.fetchone()
+        finally:
+            conn.close()
+
+        counter = {
+            "count": count,
+            "symbolCount": symbol_count,
+            "firstDate": first_date.isoformat() if first_date else None,
+            "lastDate": last_date.isoformat() if last_date else None,
+        }
+
+        r = _get_sync_redis()
+        from app.api.v1.admin.knowledge_base import COUNTER_KEY_DAILY_BARS
+        r.set(COUNTER_KEY_DAILY_BARS.format(market=market), json.dumps(counter))
+        logger.info(
+            "Sync counter rebuild for market=%s: %d bars, %d symbols",
+            market, count, symbol_count,
+        )
+    except Exception as e:
+        logger.warning("Failed to rebuild counter sync for %s: %s", market, e)
 
 
 async def _rebuild_daily_bars_counter_async(market: str):
@@ -166,9 +217,9 @@ def collect_market_daily_bars(self, market: str):
     Args:
         market: Market code (us, hk, cn, metal).
     """
-    logger.info("Starting daily bar collection for market=%s", market)
+    logger.info("Starting daily bar collection for market=%s (task_id=%s)", market, self.request.id)
 
-    owner = _acquire_daily_bar_lock_sync(market)
+    owner = _acquire_daily_bar_lock_sync(market, task_id=self.request.id)
     if owner is None:
         logger.warning(
             "Daily bar collection for market=%s already running, skipping duplicate task",
@@ -226,6 +277,8 @@ def collect_market_daily_bars(self, market: str):
         )
         raise self.retry(exc=exc)
     finally:
+        # Refresh counter from DB so partial inserts are visible even on crash
+        _rebuild_daily_bars_counter_sync(market)
         _clear_daily_bar_progress_sync(market)
         _release_daily_bar_lock_sync(market, owner)
 
@@ -244,9 +297,9 @@ def rebuild_market_daily_bars(self, market: str):
     deleted before re-collection begins.  Uses the same per-market Redis lock
     as collect_market_daily_bars to prevent concurrent runs.
     """
-    logger.info("Starting daily bar REBUILD for market=%s", market)
+    logger.info("Starting daily bar REBUILD for market=%s (task_id=%s)", market, self.request.id)
 
-    owner = _acquire_daily_bar_lock_sync(market)
+    owner = _acquire_daily_bar_lock_sync(market, task_id=self.request.id)
     if owner is None:
         logger.warning(
             "Daily bar task for market=%s already running, cannot rebuild",
@@ -312,6 +365,9 @@ def rebuild_market_daily_bars(self, market: str):
         logger.error("Daily bar rebuild failed for market=%s: %s", market, exc)
         raise
     finally:
+        # Always refresh the counter so a Phase-1-zero doesn't persist on crash.
+        # This runs even if Phase 2 crashes after Phase 1 set the counter to 0.
+        _rebuild_daily_bars_counter_sync(market)
         _clear_daily_bar_progress_sync(market)
         _release_daily_bar_lock_sync(market, owner)
 

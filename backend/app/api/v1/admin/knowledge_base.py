@@ -39,6 +39,66 @@ REBUILDABLE_SOURCE_TYPES = {
 }
 RETRYABLE_SOURCE_TYPES = {"news", "report"}
 
+# Lock key pattern matching daily_bar_tasks.py
+_LOCK_KEY_TEMPLATE = "kb:daily_bars:{market}:lock"
+
+
+# ---------------------------------------------------------------------------
+# Redis lock helpers (async — check / force-release from API layer)
+# ---------------------------------------------------------------------------
+
+
+async def _check_market_lock(market: str) -> Optional[int]:
+    """Check if a market's daily bar lock is held.
+
+    Returns remaining TTL in seconds if locked, None if unlocked.
+    """
+    try:
+        from app.db.redis import get_redis
+        redis = await get_redis()
+        ttl = await redis.ttl(_LOCK_KEY_TEMPLATE.format(market=market))
+        return ttl if ttl > 0 else None
+    except Exception:
+        return None
+
+
+async def _force_release_market_lock(market: str) -> Optional[str]:
+    """Revoke the running Celery task and release the Redis lock.
+
+    The lock value stores the Celery task ID, so we can revoke the task
+    before deleting the lock to prevent duplicate collection runs.
+
+    Returns the revoked task ID if a lock was released, None otherwise.
+    """
+    try:
+        from app.db.redis import get_redis
+        redis = await get_redis()
+        key = _LOCK_KEY_TEMPLATE.format(market=market)
+
+        # Read the task ID stored as lock value
+        task_id = await redis.get(key)
+
+        # Delete the lock
+        deleted = await redis.delete(key)
+        if not deleted:
+            return None
+
+        # Also clear the progress key so UI resets
+        await redis.delete(f"kb:daily_bars:{market}:progress")
+
+        # Revoke the Celery task to prevent it from continuing
+        if task_id:
+            try:
+                from worker.celery_app import celery_app
+                celery_app.control.revoke(task_id, terminate=True, signal="SIGTERM")
+                logger.info("Revoked Celery task %s for market=%s", task_id, market)
+            except Exception as e:
+                logger.warning("Failed to revoke task %s: %s", task_id, e)
+
+        return task_id
+    except Exception:
+        return None
+
 
 # ---------------------------------------------------------------------------
 # Redis counter helpers (async — used by stats endpoint and task async code)
@@ -197,10 +257,17 @@ async def get_knowledge_base_stats(
     # ── 7. Progress from Redis (unchanged) ──
     progress = await _get_all_progress()
 
+    # ── 8. Lock status per market (so frontend can warn user) ──
+    locks: Dict[str, Any] = {}
+    for market in _MARKETS_SORTED:
+        ttl = await _check_market_lock(market)
+        locks[market] = {"locked": ttl is not None, "ttlSeconds": ttl} if ttl else None
+
     return {
         "embeddings": embeddings,
         "dailyBars": daily_bars,
         "progress": progress,
+        "locks": locks,
     }
 
 
@@ -409,6 +476,15 @@ async def collect_daily_bars(
             detail=f"Invalid market '{market}'. Must be one of: {', '.join(sorted(VALID_MARKETS))}",
         )
 
+    # Pre-check lock to give immediate feedback instead of silent no-op
+    lock_ttl = await _check_market_lock(market)
+    if lock_ttl is not None:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Market {market} has a task already running (lock TTL: {lock_ttl}s). "
+                   f"Wait for it to finish or force-unlock via the admin panel.",
+        )
+
     from worker.tasks.daily_bar_tasks import collect_market_daily_bars
     result = collect_market_daily_bars.delay(market)
 
@@ -431,18 +507,45 @@ async def collect_daily_bars(
 async def collect_all_daily_bars(
     current_user: User = Depends(require_admin),
 ) -> Dict[str, Any]:
-    """Trigger daily bar collection for all markets."""
+    """Trigger daily bar collection for all markets (chained sequentially)."""
+
+    from celery import chain as celery_chain
 
     from worker.tasks.daily_bar_tasks import collect_market_daily_bars
 
-    task_ids: Dict[str, str] = {}
+    markets_to_run: List[str] = []
+    skipped: List[str] = []
     for market in sorted(VALID_MARKETS):
-        result = collect_market_daily_bars.delay(market)
-        task_ids[market] = result.id
+        lock_ttl = await _check_market_lock(market)
+        if lock_ttl is not None:
+            skipped.append(market)
+        else:
+            markets_to_run.append(market)
+
+    if not markets_to_run:
+        raise HTTPException(
+            status_code=409,
+            detail=f"All markets are locked: {', '.join(skipped)}. "
+                   f"Wait for running tasks to finish or force-unlock.",
+        )
+
+    # Chain tasks sequentially: with dedicated concurrency=1 worker,
+    # parallel dispatch would just queue them anyway. Chain makes the
+    # order explicit and avoids lock contention between tasks.
+    task_chain = celery_chain(
+        *(collect_market_daily_bars.si(m) for m in markets_to_run)
+    )
+    result = task_chain.apply_async()
+
+    msg = f"Daily bar collection chained for {', '.join(markets_to_run)}"
+    if skipped:
+        msg += f" (skipped locked: {', '.join(skipped)})"
 
     return {
-        "message": "Daily bar collection started for all markets",
-        "taskIds": task_ids,
+        "message": msg,
+        "taskId": result.id,
+        "markets": markets_to_run,
+        "skipped": skipped,
     }
 
 
@@ -466,6 +569,15 @@ async def rebuild_daily_bars(
         raise HTTPException(
             status_code=400,
             detail=f"Invalid market '{market}'. Must be one of: {', '.join(sorted(VALID_MARKETS))}",
+        )
+
+    # Pre-check lock to give immediate feedback instead of silent no-op
+    lock_ttl = await _check_market_lock(market)
+    if lock_ttl is not None:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Market {market} has a task already running (lock TTL: {lock_ttl}s). "
+                   f"Wait for it to finish or force-unlock via the admin panel.",
         )
 
     logger.info("Admin %s requested daily bar rebuild for market=%s", current_user.email, market)
@@ -492,21 +604,78 @@ async def rebuild_daily_bars(
 async def rebuild_all_daily_bars(
     current_user: User = Depends(require_admin),
 ) -> Dict[str, Any]:
-    """Trigger a full rebuild for all markets."""
+    """Trigger a full rebuild for all markets (chained sequentially)."""
 
     logger.info("Admin %s requested daily bar rebuild for all markets", current_user.email)
 
+    from celery import chain as celery_chain
+
     from worker.tasks.daily_bar_tasks import rebuild_market_daily_bars
 
-    task_ids: Dict[str, str] = {}
+    markets_to_run: List[str] = []
+    skipped: List[str] = []
     for market in sorted(VALID_MARKETS):
-        result = rebuild_market_daily_bars.delay(market)
-        task_ids[market] = result.id
+        lock_ttl = await _check_market_lock(market)
+        if lock_ttl is not None:
+            skipped.append(market)
+        else:
+            markets_to_run.append(market)
+
+    if not markets_to_run:
+        raise HTTPException(
+            status_code=409,
+            detail=f"All markets are locked: {', '.join(skipped)}. "
+                   f"Wait for running tasks to finish or force-unlock.",
+        )
+
+    task_chain = celery_chain(
+        *(rebuild_market_daily_bars.si(m) for m in markets_to_run)
+    )
+    result = task_chain.apply_async()
+
+    msg = f"Daily bar rebuild chained for {', '.join(markets_to_run)}"
+    if skipped:
+        msg += f" (skipped locked: {', '.join(skipped)})"
 
     return {
-        "message": "Daily bar rebuild started for all markets",
-        "taskIds": task_ids,
+        "message": msg,
+        "taskId": result.id,
+        "markets": markets_to_run,
+        "skipped": skipped,
     }
+
+
+# ---------------------------------------------------------------------------
+# POST /knowledge-base/daily-bars/{market}/unlock
+# ---------------------------------------------------------------------------
+
+
+@router.post(
+    "/knowledge-base/daily-bars/{market}/unlock",
+    summary="Force-unlock a market's daily bar lock",
+    description="Remove a stale Redis lock for the specified market. Use when a previous task crashed.",
+)
+async def unlock_daily_bars(
+    market: str,
+    current_user: User = Depends(require_admin),
+) -> Dict[str, Any]:
+    """Force-release a stale per-market lock and revoke the running task."""
+
+    if market not in VALID_MARKETS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid market '{market}'. Must be one of: {', '.join(sorted(VALID_MARKETS))}",
+        )
+
+    revoked_task_id = await _force_release_market_lock(market)
+    if revoked_task_id:
+        logger.warning(
+            "Admin %s force-released daily bar lock for market=%s, revoked task=%s",
+            current_user.email, market, revoked_task_id,
+        )
+        return {"message": f"Lock released and task terminated for market={market}"}
+    else:
+        return {"message": f"No lock held for market={market}"}
 
 
 # ---------------------------------------------------------------------------

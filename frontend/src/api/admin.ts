@@ -452,8 +452,8 @@ export const adminApi = {
     return response.data
   },
 
-  collectAllDailyBars: async (): Promise<{ message: string; taskIds: Record<string, string> }> => {
-    const response = await apiClient.post<{ message: string; taskIds: Record<string, string> }>('/admin/knowledge-base/daily-bars/collect-all')
+  collectAllDailyBars: async (): Promise<{ message: string; taskId: string }> => {
+    const response = await apiClient.post<{ message: string; taskId: string }>('/admin/knowledge-base/daily-bars/collect-all')
     return response.data
   },
 
@@ -462,8 +462,13 @@ export const adminApi = {
     return response.data
   },
 
-  rebuildAllDailyBars: async (): Promise<{ message: string; taskIds: Record<string, string> }> => {
-    const response = await apiClient.post<{ message: string; taskIds: Record<string, string> }>('/admin/knowledge-base/daily-bars/rebuild-all')
+  rebuildAllDailyBars: async (): Promise<{ message: string; taskId: string }> => {
+    const response = await apiClient.post<{ message: string; taskId: string }>('/admin/knowledge-base/daily-bars/rebuild-all')
+    return response.data
+  },
+
+  unlockDailyBars: async (market: string): Promise<{ message: string }> => {
+    const response = await apiClient.post<{ message: string }>(`/admin/knowledge-base/daily-bars/${market}/unlock`)
     return response.data
   },
 }
@@ -756,6 +761,11 @@ interface KBDailyBarProgress {
   updatedAt: string
 }
 
+interface KBMarketLock {
+  locked: boolean
+  ttlSeconds: number
+}
+
 export interface KnowledgeBaseStatsResponse {
   embeddings: {
     stock_profile: KBEmbeddingStats
@@ -783,5 +793,11 @@ export interface KnowledgeBaseStatsResponse {
       hk: KBDailyBarProgress | null
       metal: KBDailyBarProgress | null
     }
+  }
+  locks?: {
+    cn: KBMarketLock | null
+    us: KBMarketLock | null
+    hk: KBMarketLock | null
+    metal: KBMarketLock | null
   }
 }

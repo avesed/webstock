@@ -434,6 +434,33 @@ def _process_finnhub_symbol(symbol_data: Dict[str, Any], market: str) -> Dict[st
     }
 
 
+def _load_existing_stocks_for_market(market: str) -> List[Dict[str, Any]]:
+    """Load stocks for a specific market from the existing msgpack file.
+
+    Used as fallback when a data source fetch fails, so we don't lose
+    an entire market's data due to a transient network error.
+    """
+    try:
+        import glob
+        import msgpack
+
+        files = glob.glob("/app/data/stock_list/*.msgpack")
+        if not files:
+            return []
+        with open(files[0], "rb") as f:
+            data = msgpack.unpack(f, raw=False)
+        existing = [s for s in data if s.get("market") == market]
+        if existing:
+            logger.info(
+                "Loaded %d existing stocks for market=%s as fallback",
+                len(existing), market,
+            )
+        return existing
+    except Exception as e:
+        logger.warning("Failed to load existing stocks for market=%s: %s", market, e)
+        return []
+
+
 def _fetch_all_markets() -> Tuple[List[Dict], List[Dict], List[Dict], List[Dict], List[Dict]]:
     """
     Fetch all markets in parallel using thread pool.
@@ -441,6 +468,9 @@ def _fetch_all_markets() -> Tuple[List[Dict], List[Dict], List[Dict], List[Dict]
     Data sources:
     - US: Finnhub (requires API key)
     - HK/SH/SZ/BJ: AKShare (free, no API key)
+
+    If any market fetch fails and returns an empty list, falls back to
+    existing data from the current msgpack file to prevent data loss.
 
     Returns:
         Tuple of (us_stocks, hk_stocks, sh_stocks, sz_stocks, bj_stocks)
@@ -463,6 +493,31 @@ def _fetch_all_markets() -> Tuple[List[Dict], List[Dict], List[Dict], List[Dict]
     sh_stocks = sh_future.result()
     sz_stocks = sz_future.result()
     bj_stocks = bj_future.result()
+
+    # Fallback: if any AKShare market returned empty (network error),
+    # preserve existing data instead of silently dropping the market.
+    fallback_pairs = [
+        (sh_stocks, "sh"),
+        (sz_stocks, "sz"),
+        (hk_stocks, "hk"),
+        (bj_stocks, "bj"),
+    ]
+    for stocks, market in fallback_pairs:
+        if not stocks:
+            existing = _load_existing_stocks_for_market(market)
+            if existing:
+                logger.warning(
+                    "Fetch returned 0 stocks for market=%s, using %d existing stocks as fallback",
+                    market, len(existing),
+                )
+                if market == "sh":
+                    sh_stocks = existing
+                elif market == "sz":
+                    sz_stocks = existing
+                elif market == "hk":
+                    hk_stocks = existing
+                elif market == "bj":
+                    bj_stocks = existing
 
     return us_stocks, hk_stocks, sh_stocks, sz_stocks, bj_stocks
 

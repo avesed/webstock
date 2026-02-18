@@ -49,7 +49,9 @@ celery_app.conf.update(
         "worker.tasks.full_content_tasks.cleanup_expired_news": {"queue": "default"},
         "worker.tasks.full_content_tasks.cleanup_pipeline_events": {"queue": "default"},
         "worker.tasks.full_content_tasks.cleanup_old_usage_records": {"queue": "default"},
-        "worker.tasks.daily_bar_tasks.collect_market_daily_bars": {"queue": "default"},
+        # Daily bar tasks: dedicated queue so they don't block main worker slots
+        "worker.tasks.daily_bar_tasks.collect_market_daily_bars": {"queue": "daily_bars"},
+        "worker.tasks.daily_bar_tasks.rebuild_market_daily_bars": {"queue": "daily_bars"},
         "worker.tasks.qlib_sync.sync_qlib_market": {"queue": "default"},
     },
 

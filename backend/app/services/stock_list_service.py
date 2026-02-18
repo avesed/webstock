@@ -542,3 +542,10 @@ async def reset_stock_list_service() -> None:
     global _stock_list_service
     StockListService.reset_instance()
     _stock_list_service = None
+
+
+def reset_stock_list_service_sync() -> None:
+    """Sync reset for Celery singleton cleanup after each task."""
+    global _stock_list_service
+    StockListService.reset_instance()
+    _stock_list_service = None
