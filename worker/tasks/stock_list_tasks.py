@@ -62,11 +62,12 @@ _finnhub_key_fetched: bool = False
 
 def _get_finnhub_api_key() -> Optional[str]:
     """
-    Get Finnhub API key from environment or user settings.
+    Get Finnhub API key from environment or database settings.
 
     Priority:
     1. Environment variable FINNHUB_API_KEY
-    2. First user setting with finnhub_api_key configured
+    2. system_settings.finnhub_api_key (admin-configured)
+    3. user_settings.finnhub_api_key (per-user override)
 
     The key is cached after first successful retrieval to avoid
     repeated database queries and async event loop issues.
@@ -87,10 +88,9 @@ def _get_finnhub_api_key() -> Optional[str]:
         _finnhub_key_fetched = True
         return api_key
 
-    # Then try user settings from database using synchronous query
+    # Then try database: system_settings first, then user_settings
     try:
-        from sqlalchemy import create_engine, select, text
-        from sqlalchemy.orm import Session
+        from sqlalchemy import create_engine, text
         from app.config import settings
         from urllib.parse import urlparse, parse_qs, urlencode, urlunparse
 
@@ -100,7 +100,6 @@ def _get_finnhub_api_key() -> Optional[str]:
         # Remove SSL parameters that psycopg2 doesn't understand
         parsed = urlparse(sync_url)
         query_params = parse_qs(parsed.query)
-        # Remove problematic parameters
         for param in ['ssl', 'sslmode']:
             query_params.pop(param, None)
         clean_query = urlencode(query_params, doseq=True)
@@ -109,10 +108,26 @@ def _get_finnhub_api_key() -> Optional[str]:
             parsed.params, clean_query, parsed.fragment
         ))
 
-        # Create a sync engine just for this query
         engine = create_engine(sync_url, pool_pre_ping=True)
 
         with engine.connect() as conn:
+            # Priority 2: system_settings (admin-configured)
+            result = conn.execute(
+                text("""
+                    SELECT finnhub_api_key FROM system_settings
+                    WHERE finnhub_api_key IS NOT NULL AND finnhub_api_key != ''
+                    LIMIT 1
+                """)
+            )
+            row = result.fetchone()
+            if row and row[0]:
+                _cached_finnhub_api_key = row[0]
+                _finnhub_key_fetched = True
+                logger.info("Using Finnhub API key from system_settings")
+                engine.dispose()
+                return _cached_finnhub_api_key
+
+            # Priority 3: user_settings (per-user)
             result = conn.execute(
                 text("""
                     SELECT finnhub_api_key FROM user_settings
@@ -124,15 +139,17 @@ def _get_finnhub_api_key() -> Optional[str]:
             if row and row[0]:
                 _cached_finnhub_api_key = row[0]
                 _finnhub_key_fetched = True
-                logger.info("Using Finnhub API key from user settings")
+                logger.info("Using Finnhub API key from user_settings")
+                engine.dispose()
                 return _cached_finnhub_api_key
 
         engine.dispose()
 
     except Exception as e:
-        logger.warning(f"Failed to get Finnhub API key from user settings: {e}")
+        logger.warning(f"Failed to get Finnhub API key from database: {e}")
 
     _finnhub_key_fetched = True  # Mark as fetched even if not found
+    logger.warning("No Finnhub API key found (env, system_settings, user_settings)")
     return None
 
 
@@ -494,15 +511,16 @@ def _fetch_all_markets() -> Tuple[List[Dict], List[Dict], List[Dict], List[Dict]
     sz_stocks = sz_future.result()
     bj_stocks = bj_future.result()
 
-    # Fallback: if any AKShare market returned empty (network error),
+    # Fallback: if any market returned empty (network error, missing API key),
     # preserve existing data instead of silently dropping the market.
-    fallback_pairs = [
-        (sh_stocks, "sh"),
-        (sz_stocks, "sz"),
-        (hk_stocks, "hk"),
-        (bj_stocks, "bj"),
-    ]
-    for stocks, market in fallback_pairs:
+    market_results = {
+        "us": us_stocks,
+        "hk": hk_stocks,
+        "sh": sh_stocks,
+        "sz": sz_stocks,
+        "bj": bj_stocks,
+    }
+    for market, stocks in market_results.items():
         if not stocks:
             existing = _load_existing_stocks_for_market(market)
             if existing:
@@ -510,16 +528,12 @@ def _fetch_all_markets() -> Tuple[List[Dict], List[Dict], List[Dict], List[Dict]
                     "Fetch returned 0 stocks for market=%s, using %d existing stocks as fallback",
                     market, len(existing),
                 )
-                if market == "sh":
-                    sh_stocks = existing
-                elif market == "sz":
-                    sz_stocks = existing
-                elif market == "hk":
-                    hk_stocks = existing
-                elif market == "bj":
-                    bj_stocks = existing
+                market_results[market] = existing
 
-    return us_stocks, hk_stocks, sh_stocks, sz_stocks, bj_stocks
+    return (
+        market_results["us"], market_results["hk"], market_results["sh"],
+        market_results["sz"], market_results["bj"],
+    )
 
 
 @celery_app.task(bind=True, max_retries=3)

@@ -4,6 +4,7 @@ import logging
 from contextlib import asynccontextmanager
 from typing import AsyncGenerator
 
+from fastapi import HTTPException
 from sqlalchemy.ext.asyncio import (
     AsyncSession,
     async_sessionmaker,
@@ -59,6 +60,11 @@ async def get_db() -> AsyncGenerator[AsyncSession, None]:
     async with AsyncSessionLocal() as session:
         try:
             yield session
+        except HTTPException:
+            # HTTPException is expected flow control (401, 403, 404, etc.)
+            # not a database error — rollback silently (session is likely clean)
+            await session.rollback()
+            raise
         except Exception as e:
             logger.warning(f"Database session rollback due to exception: {e}")
             await session.rollback()
@@ -83,6 +89,9 @@ async def get_async_session() -> AsyncGenerator[AsyncSession, None]:
     async with AsyncSessionLocal() as session:
         try:
             yield session
+        except HTTPException:
+            await session.rollback()
+            raise
         except Exception as e:
             logger.warning(f"Database session rollback due to exception: {e}")
             await session.rollback()

@@ -10,6 +10,7 @@ import json
 import logging
 import os
 import re
+import time
 from dataclasses import dataclass, asdict, field
 from datetime import datetime
 from pathlib import Path
@@ -100,6 +101,8 @@ class StockListService:
         self._loaded = False
         self._load_lock = asyncio.Lock()
         self._version: Optional[str] = None
+        self._last_version_check: float = 0.0  # monotonic timestamp
+        self._version_check_interval: float = 30.0  # seconds between disk checks
 
     @classmethod
     async def get_instance(cls, data_dir: Optional[Path] = None) -> "StockListService":
@@ -438,6 +441,59 @@ class StockListService:
         """Reload data from disk (hot reload)."""
         return await self.load(force=True)
 
+    async def check_for_updates(self, force: bool = False) -> bool:
+        """
+        Check if the on-disk version differs from the in-memory version.
+
+        Uses a time-based cooldown to avoid hitting disk on every call.
+        When a version mismatch is detected, triggers an automatic reload.
+
+        Args:
+            force: Skip the cooldown and check immediately
+
+        Returns:
+            True if data was reloaded, False otherwise
+        """
+        if not self._loaded:
+            return False
+
+        now = time.monotonic()
+        if not force and (now - self._last_version_check) < self._version_check_interval:
+            return False
+
+        self._last_version_check = now
+
+        try:
+            version_file = self.data_dir / "version.json"
+            if not version_file.exists():
+                return False
+
+            loop = asyncio.get_event_loop()
+            disk_version = await loop.run_in_executor(
+                None, self._read_disk_version, version_file
+            )
+
+            if disk_version and disk_version != self._version:
+                logger.info(
+                    "Stock list version mismatch: memory=%s, disk=%s — reloading",
+                    self._version, disk_version,
+                )
+                return await self.load(force=True)
+
+        except Exception as e:
+            logger.debug("Failed to check stock list version: %s", e)
+
+        return False
+
+    @staticmethod
+    def _read_disk_version(version_file: Path) -> Optional[str]:
+        """Read version string from version.json (synchronous, run in executor)."""
+        try:
+            data = json.loads(version_file.read_text())
+            return data.get("version")
+        except Exception:
+            return None
+
     def save(self, stocks: List[LocalStock]) -> bool:
         """
         Save stock data to msgpack file.
@@ -518,6 +574,10 @@ async def get_stock_list_service(
     """
     Get the singleton StockListService instance.
 
+    On each call, checks if the on-disk data has been updated by a Celery task
+    (using a 30s cooldown to avoid excessive disk reads). If a version mismatch
+    is detected, the service auto-reloads from disk.
+
     Args:
         data_dir: Optional custom data directory
         auto_load: Whether to auto-load data on first access
@@ -533,6 +593,9 @@ async def get_stock_list_service(
                 _stock_list_service = await StockListService.get_instance(data_dir)
                 if auto_load:
                     await _stock_list_service.load()
+    else:
+        # Check for updates from Celery tasks (cooldown-based, not every call)
+        await _stock_list_service.check_for_updates()
 
     return _stock_list_service
 

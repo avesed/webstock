@@ -391,6 +391,8 @@ async def get_knowledge_base_stats(
     try:
         from app.services.stock_list_service import get_stock_list_service
         svc = await get_stock_list_service()
+        # Force version check (skip cooldown) so admin panel always shows latest
+        await svc.check_for_updates(force=True)
         sl = svc.get_stats()
         # Get last updated from version.json (inner try for file read safety)
         sl_last_updated = None
