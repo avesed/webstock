@@ -1,7 +1,7 @@
 import { useCallback, useRef, useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useTranslation } from 'react-i18next'
-import { Database, Newspaper, FileText, BookOpen, BarChart3, Loader2, RefreshCw, AlertCircle, AlertTriangle, Unlock } from 'lucide-react'
+import { Database, Newspaper, FileText, BookOpen, BarChart3, Loader2, RefreshCw, AlertCircle, AlertTriangle, Unlock, List } from 'lucide-react'
 
 import { adminApi, type KnowledgeBaseStatsResponse } from '@/api/admin'
 import { getErrorMessage } from '@/api/client'
@@ -154,6 +154,205 @@ function EmbeddingCard({
   )
 }
 
+function StockListCard({
+  stockList,
+  actionLoading,
+  onAction,
+}: {
+  stockList: KnowledgeBaseStats['stockList'] | null | undefined
+  actionLoading: string | null
+  onAction: (key: string, action: () => Promise<unknown>) => void
+}) {
+  const { t } = useTranslation('admin')
+
+  const counts = stockList?.marketCounts
+  const cnCount = (counts?.sh ?? 0) + (counts?.sz ?? 0) + (counts?.bj ?? 0)
+
+  return (
+    <Card>
+      <CardHeader className="pb-2">
+        <CardTitle className="flex items-center gap-2 text-base">
+          <List className="h-4 w-4" />
+          {t('knowledge.stockList')}
+        </CardTitle>
+        <CardDescription className="text-xs">{t('knowledge.stockListDesc')}</CardDescription>
+      </CardHeader>
+      <CardContent>
+        <div className="space-y-3">
+          <div className="grid grid-cols-2 gap-2 text-sm">
+            <div>
+              <span className="text-muted-foreground">{t('knowledge.totalSymbols')}</span>{' '}
+              <span className="font-medium">{(stockList?.totalCount ?? 0).toLocaleString()}</span>
+            </div>
+            <div>
+              <span className="text-muted-foreground">{t('knowledge.version')}</span>{' '}
+              <span className="font-mono text-xs">{stockList?.version ?? '-'}</span>
+            </div>
+          </div>
+
+          <div className="flex flex-wrap gap-x-3 gap-y-1 text-xs text-muted-foreground">
+            <span>{td(t, 'knowledge.market_us')}: <span className="font-medium text-foreground">{(counts?.us ?? 0).toLocaleString()}</span></span>
+            <span>{td(t, 'knowledge.market_cn')}: <span className="font-medium text-foreground">{cnCount.toLocaleString()}</span></span>
+            <span>{td(t, 'knowledge.market_hk')}: <span className="font-medium text-foreground">{(counts?.hk ?? 0).toLocaleString()}</span></span>
+            <span>{td(t, 'knowledge.market_metal')}: <span className="font-medium text-foreground">{(counts?.metal ?? 0).toLocaleString()}</span></span>
+          </div>
+
+          {stockList?.lastUpdated && (
+            <div className="text-muted-foreground text-xs">
+              {t('knowledge.lastUpdated')}: {new Date(stockList.lastUpdated).toLocaleString()}
+            </div>
+          )}
+          {!stockList?.lastUpdated && !stockList?.totalCount && (
+            <div className="text-muted-foreground text-xs italic">
+              {t('knowledge.noData')}
+            </div>
+          )}
+
+          <div className="flex flex-wrap gap-2">
+            <Button
+              size="sm"
+              variant="outline"
+              disabled={actionLoading !== null}
+              onClick={() => onAction('update-stock-list', () => adminApi.updateStockList())}
+            >
+              {actionLoading === 'update-stock-list' ? (
+                <Loader2 className="h-3 w-3 animate-spin mr-1" />
+              ) : (
+                <RefreshCw className="h-3 w-3 mr-1" />
+              )}
+              {t('knowledge.update')}
+            </Button>
+          </div>
+        </div>
+      </CardContent>
+    </Card>
+  )
+}
+
+function StockProfilesCard({
+  stockProfile,
+  progress,
+  actionLoading,
+  onAction,
+}: {
+  stockProfile: KnowledgeBaseStats['embeddings']['stock_profile'] | undefined
+  progress: StockProfileProgress | null
+  actionLoading: string | null
+  onAction: (key: string, action: () => Promise<unknown>, confirmMsg?: string) => void
+}) {
+  const { t } = useTranslation('admin')
+  const profileMarkets = ['cn', 'us', 'hk'] as const
+
+  return (
+    <Card>
+      <CardHeader className="pb-2">
+        <div className="flex items-center justify-between">
+          <div>
+            <CardTitle className="flex items-center gap-2 text-base">
+              <Database className="h-4 w-4" />
+              {t('knowledge.stockProfile')}
+            </CardTitle>
+            <CardDescription className="text-xs mt-1">
+              {t('knowledge.stockProfileDesc')}
+            </CardDescription>
+          </div>
+          <div className="flex gap-2">
+            <Button
+              size="sm"
+              variant="outline"
+              disabled={actionLoading !== null}
+              onClick={() =>
+                onAction(
+                  'sync-stock_profile',
+                  () => adminApi.rebuildKnowledgeBase('stock_profile_sync'),
+                )
+              }
+            >
+              {actionLoading === 'sync-stock_profile' ? (
+                <Loader2 className="h-3 w-3 animate-spin mr-1" />
+              ) : (
+                <RefreshCw className="h-3 w-3 mr-1" />
+              )}
+              {t('knowledge.syncConcepts')}
+            </Button>
+            <Button
+              size="sm"
+              variant="destructive"
+              disabled={actionLoading !== null}
+              onClick={() =>
+                onAction(
+                  'rebuild-stock_profile',
+                  () => adminApi.rebuildKnowledgeBase('stock_profile'),
+                  td(t, 'knowledge.rebuildConfirm', { type: t('knowledge.stockProfile') }),
+                )
+              }
+            >
+              {actionLoading === 'rebuild-stock_profile' ? (
+                <Loader2 className="h-3 w-3 animate-spin mr-1" />
+              ) : null}
+              {t('knowledge.rebuild')}
+            </Button>
+          </div>
+        </div>
+      </CardHeader>
+      <CardContent>
+        <div className="grid gap-4 sm:grid-cols-3">
+          {profileMarkets.map((market) => {
+            const stats = stockProfile?.[market]
+            const isActive = progress?.phase?.includes(`_${market}`)
+            return (
+              <div key={market} className="space-y-2 rounded-md border p-3">
+                <span className="font-medium text-sm">
+                  {td(t, `knowledge.market_${market}`)}
+                </span>
+                {stats && stats.count > 0 ? (
+                  <div className="space-y-1 text-xs text-muted-foreground">
+                    <div>
+                      <span className="font-medium text-foreground">
+                        {stats.count.toLocaleString()}
+                      </span>{' '}
+                      {t('knowledge.embeddings')}
+                    </div>
+                    <div>
+                      <span className="text-muted-foreground">{t('knowledge.model')}</span>{' '}
+                      <span className="font-mono text-xs">{stats.model || '-'}</span>
+                    </div>
+                    {stats.lastUpdated && (
+                      <div>
+                        {t('knowledge.lastUpdated')}: {new Date(stats.lastUpdated).toLocaleString()}
+                      </div>
+                    )}
+                  </div>
+                ) : (
+                  <div className="text-xs text-muted-foreground italic">
+                    {t('knowledge.noData')}
+                  </div>
+                )}
+                {isActive && progress && (
+                  <ProgressBar
+                    percent={progress.percent}
+                    label={`${td(t, `knowledge.progress.${progress.phase}`)} ${progress.current}/${progress.total}`}
+                  />
+                )}
+              </div>
+            )
+          })}
+        </div>
+
+        {/* Global progress when phase doesn't match any specific market */}
+        {progress && !['cn', 'us', 'hk'].some((m) => progress.phase?.includes(`_${m}`)) && (
+          <div className="mt-4">
+            <ProgressBar
+              percent={progress.percent}
+              label={`${td(t, `knowledge.progress.${progress.phase}`)} ${progress.current}/${progress.total}`}
+            />
+          </div>
+        )}
+      </CardContent>
+    </Card>
+  )
+}
+
 function DailyBarsCard({
   dailyBars,
   progress,
@@ -224,6 +423,7 @@ function DailyBarsCard({
             const prog = progress?.[market]
             const lock = locks?.[market]
             const isLocked = lock?.locked === true
+            const isQueued = !isLocked && lock?.queued === true
             return (
               <div key={market} className="space-y-2 rounded-md border p-3">
                 <div className="flex items-center justify-between">
@@ -232,6 +432,11 @@ function DailyBarsCard({
                     {isLocked && (
                       <Badge variant="outline" className="ml-2 text-[10px] px-1.5 py-0 text-orange-600 border-orange-300">
                         {td(t, 'knowledge.locked', { ttl: Math.round((lock?.ttlSeconds ?? 0) / 60) })}
+                      </Badge>
+                    )}
+                    {isQueued && (
+                      <Badge variant="outline" className="ml-2 text-[10px] px-1.5 py-0 text-blue-600 border-blue-300">
+                        {t('knowledge.queued')}
                       </Badge>
                     )}
                   </span>
@@ -256,6 +461,8 @@ function DailyBarsCard({
                           <><Unlock className="h-3 w-3 mr-1" />{t('knowledge.unlock')}</>
                         )}
                       </Button>
+                    ) : isQueued ? (
+                      <Loader2 className="h-3 w-3 animate-spin text-blue-500" />
                     ) : (
                       <>
                         <Button
@@ -374,6 +581,18 @@ function LoadingSkeleton() {
           <Skeleton className="h-5 w-40" />
         </CardHeader>
         <CardContent>
+          <div className="grid gap-4 sm:grid-cols-3">
+            {Array.from({ length: 3 }).map((_, i) => (
+              <Skeleton key={i} className="h-24 rounded-md" />
+            ))}
+          </div>
+        </CardContent>
+      </Card>
+      <Card>
+        <CardHeader className="pb-2">
+          <Skeleton className="h-5 w-40" />
+        </CardHeader>
+        <CardContent>
           <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
             {Array.from({ length: 4 }).map((_, i) => (
               <Skeleton key={i} className="h-24 rounded-md" />
@@ -464,30 +683,6 @@ export default function KnowledgeBase() {
   const progress = stats?.progress
 
   // ── Build action lists per KB ────────────────
-
-  const stockProfileActions: ActionDef[] = [
-    {
-      key: 'rebuild-stock_profile',
-      label: t('knowledge.rebuild'),
-      fn: () =>
-        handleAction(
-          'rebuild-stock_profile',
-          () => adminApi.rebuildKnowledgeBase('stock_profile'),
-          td(t, 'knowledge.rebuildConfirm', { type: t('knowledge.stockProfile') })
-        ),
-      variant: 'outline',
-    },
-    {
-      key: 'sync-stock_profile',
-      label: t('knowledge.syncConcepts'),
-      fn: () =>
-        handleAction(
-          'sync-stock_profile',
-          () => adminApi.rebuildKnowledgeBase('stock_profile_sync'),
-        ),
-      variant: 'outline',
-    },
-  ]
 
   const newsActions: ActionDef[] = [
     ...(embeddings?.news?.failedCount
@@ -593,16 +788,10 @@ export default function KnowledgeBase() {
 
       {/* Embedding Knowledge Bases: 2x2 grid */}
       <div className="grid gap-4 md:grid-cols-2">
-        <EmbeddingCard
-          title={t('knowledge.stockProfile')}
-          description={t('knowledge.stockProfileDesc')}
-          icon={<Database className="h-4 w-4" />}
-          count={embeddings?.stock_profile?.count ?? 0}
-          lastUpdated={embeddings?.stock_profile?.lastUpdated ?? null}
-          model={embeddings?.stock_profile?.model ?? null}
-          progress={progress?.stockProfile ?? null}
-          actions={stockProfileActions}
+        <StockListCard
+          stockList={stats?.stockList}
           actionLoading={actionLoading}
+          onAction={handleAction}
         />
         <EmbeddingCard
           title={t('knowledge.news')}
@@ -640,6 +829,14 @@ export default function KnowledgeBase() {
           actionLoading={actionLoading}
         />
       </div>
+
+      {/* Stock Profiles: full-width card with per-market breakdown */}
+      <StockProfilesCard
+        stockProfile={stats?.embeddings?.stock_profile}
+        progress={progress?.stockProfile ?? null}
+        actionLoading={actionLoading}
+        onAction={handleAction}
+      />
 
       {/* Daily Bars: full-width card */}
       <DailyBarsCard

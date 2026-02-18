@@ -471,6 +471,11 @@ export const adminApi = {
     const response = await apiClient.post<{ message: string }>(`/admin/knowledge-base/daily-bars/${market}/unlock`)
     return response.data
   },
+
+  updateStockList: async (): Promise<{ message: string; taskId: string }> => {
+    const response = await apiClient.post<{ message: string; taskId: string }>('/admin/knowledge-base/stock-list/update')
+    return response.data
+  },
 }
 
 // Filter stats types
@@ -739,6 +744,19 @@ export interface NewsPipelineStats {
 
 // Knowledge Base stats response type
 
+interface KBStockProfileMarketStats {
+  count: number
+  lastUpdated: string | null
+  model: string | null
+}
+
+interface KBStockListStats {
+  totalCount: number
+  version: string | null
+  lastUpdated: string | null
+  marketCounts: Record<string, number>
+}
+
 interface KBEmbeddingStats {
   count: number
   lastUpdated: string | null
@@ -762,17 +780,24 @@ interface KBDailyBarProgress {
 }
 
 interface KBMarketLock {
-  locked: boolean
-  ttlSeconds: number
+  locked?: boolean
+  queued?: boolean
+  ttlSeconds?: number
 }
 
 export interface KnowledgeBaseStatsResponse {
   embeddings: {
-    stock_profile: KBEmbeddingStats
+    stock_profile: {
+      total: KBEmbeddingStats
+      cn: KBStockProfileMarketStats
+      us: KBStockProfileMarketStats
+      hk: KBStockProfileMarketStats
+    }
     news: KBEmbeddingStats & { failedCount: number }
     analysis: KBEmbeddingStats
     report: KBEmbeddingStats & { failedCount: number }
   }
+  stockList: KBStockListStats | null
   dailyBars: {
     cn: KBDailyBarMarketStats
     us: KBDailyBarMarketStats

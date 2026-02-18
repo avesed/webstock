@@ -359,6 +359,15 @@ async def _build_kb_async() -> Dict[str, Any]:
     # Rebuild counter BEFORE progress is cleared (in finally block)
     await _rebuild_embedding_counter_async("stock_profile")
 
+    # Rebuild per-market counters for admin dashboard
+    try:
+        from app.api.v1.admin.knowledge_base import rebuild_stock_profile_market_counters
+        from app.db.task_session import get_task_session
+        async with get_task_session() as session:
+            await rebuild_stock_profile_market_counters(session)
+    except Exception as e:
+        logger.warning("[StockProfileTask] Failed to rebuild per-market counters: %s", e)
+
     return stats
 
 
@@ -459,6 +468,15 @@ async def _sync_concepts_async() -> Dict[str, Any]:
 
     # Rebuild counter so stats endpoint reflects changes
     await _rebuild_embedding_counter_async("stock_profile")
+
+    # Rebuild per-market counters for admin dashboard
+    try:
+        from app.api.v1.admin.knowledge_base import rebuild_stock_profile_market_counters
+        from app.db.task_session import get_task_session
+        async with get_task_session() as session:
+            await rebuild_stock_profile_market_counters(session)
+    except Exception as e:
+        logger.warning("[StockProfileTask] Failed to rebuild per-market counters: %s", e)
 
     return stats
 

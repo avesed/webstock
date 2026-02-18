@@ -32,6 +32,8 @@ _MARKETS_SORTED = sorted(VALID_MARKETS)
 # Redis counter keys (no TTL — maintained by Celery tasks after batch completion)
 COUNTER_KEY_DAILY_BARS = "kb:counters:daily_bars:{market}"
 COUNTER_KEY_EMBEDDING = "kb:counters:embeddings:{source_type}"
+COUNTER_KEY_STOCK_PROFILE = "kb:counters:stock_profile:{market}"
+STOCK_PROFILE_MARKETS = ("cn", "us", "hk")
 
 CLEARABLE_SOURCE_TYPES = {"news", "analysis", "report"}
 REBUILDABLE_SOURCE_TYPES = {
@@ -60,6 +62,42 @@ async def _check_market_lock(market: str) -> Optional[int]:
         return ttl if ttl > 0 else None
     except Exception:
         return None
+
+
+_QUEUED_KEY_TEMPLATE = "kb:daily_bars:{market}:queued"
+_QUEUED_TTL = 28800  # same as lock TTL — cleared when task acquires lock
+
+
+async def _mark_market_queued(market: str) -> None:
+    """Set a Redis flag indicating this market's task is queued but not yet running."""
+    try:
+        from app.db.redis import get_redis
+        redis = await get_redis()
+        await redis.set(_QUEUED_KEY_TEMPLATE.format(market=market), "1", ex=_QUEUED_TTL)
+    except Exception:
+        pass
+
+
+async def _check_market_queued(market: str) -> bool:
+    """Check if a market has a pending queued task."""
+    try:
+        from app.db.redis import get_redis
+        redis = await get_redis()
+        return await redis.exists(_QUEUED_KEY_TEMPLATE.format(market=market)) > 0
+    except Exception:
+        return False
+
+
+async def _get_running_markets(exclude: str = "") -> List[str]:
+    """Return list of markets that currently have an active lock."""
+    running = []
+    for m in _MARKETS_SORTED:
+        if m == exclude:
+            continue
+        ttl = await _check_market_lock(m)
+        if ttl is not None:
+            running.append(m)
+    return running
 
 
 async def _force_release_market_lock(market: str) -> Optional[str]:
@@ -166,6 +204,62 @@ async def rebuild_embedding_counter(db: AsyncSession, source_type: str) -> dict:
     return counter
 
 
+async def rebuild_stock_profile_market_counters(db: AsyncSession) -> Dict[str, dict]:
+    """Query per-market stock profile embedding counts and write to Redis.
+
+    Classifies stock_profile embeddings by market using source_id (symbol) suffix:
+    .SS/.SZ = cn, .HK = hk, everything else = us.
+    """
+    rows = await db.execute(text(
+        "SELECT "
+        "  CASE "
+        "    WHEN source_id LIKE '%%.SS' OR source_id LIKE '%%.SZ' THEN 'cn' "
+        "    WHEN source_id LIKE '%%.HK' THEN 'hk' "
+        "    ELSE 'us' "
+        "  END as market, "
+        "  COUNT(*) as count, "
+        "  MAX(created_at) as last_updated "
+        "FROM document_embeddings "
+        "WHERE source_type = 'stock_profile' "
+        "GROUP BY 1"
+    ))
+
+    # Get latest model (same for all markets)
+    model_row = await db.execute(text(
+        "SELECT model FROM document_embeddings "
+        "WHERE source_type = 'stock_profile' ORDER BY created_at DESC LIMIT 1"
+    ))
+    model_result = model_row.first()
+    model = model_result.model if model_result else None
+
+    result: Dict[str, dict] = {}
+    for r in rows:
+        counter = {
+            "count": r.count,
+            "lastUpdated": r.last_updated.isoformat() if r.last_updated else None,
+            "model": model,
+        }
+        result[r.market] = counter
+        await write_counter(COUNTER_KEY_STOCK_PROFILE.format(market=r.market), counter)
+
+    # Ensure all 3 markets are present
+    for m in STOCK_PROFILE_MARKETS:
+        if m not in result:
+            result[m] = {"count": 0, "lastUpdated": None, "model": model}
+            await write_counter(COUNTER_KEY_STOCK_PROFILE.format(market=m), result[m])
+
+    # Also update the aggregate counter for backward compat
+    total_count = sum(v["count"] for v in result.values())
+    latest_updated = max(
+        (v["lastUpdated"] for v in result.values() if v["lastUpdated"]),
+        default=None,
+    )
+    aggregate = {"count": total_count, "lastUpdated": latest_updated, "model": model}
+    await write_counter(COUNTER_KEY_EMBEDDING.format(source_type="stock_profile"), aggregate)
+
+    return result
+
+
 # ---------------------------------------------------------------------------
 # GET /knowledge-base/stats
 # ---------------------------------------------------------------------------
@@ -186,7 +280,8 @@ async def get_knowledge_base_stats(
     # ── 1. Read cached counters from Redis (single MGET) ──
     daily_bars_keys = [COUNTER_KEY_DAILY_BARS.format(market=m) for m in _MARKETS_SORTED]
     sp_key = COUNTER_KEY_EMBEDDING.format(source_type="stock_profile")
-    all_keys = daily_bars_keys + [sp_key]
+    sp_market_keys = [COUNTER_KEY_STOCK_PROFILE.format(market=m) for m in STOCK_PROFILE_MARKETS]
+    all_keys = daily_bars_keys + [sp_key] + sp_market_keys
     raw_values = await _redis_mget(all_keys)
 
     # ── 2. Daily bars from Redis counters (lazy fallback per market) ──
@@ -199,12 +294,28 @@ async def get_knowledge_base_stats(
             # Counter missing (Redis restart / first deploy) — rebuild from DB
             daily_bars[market] = await rebuild_daily_bars_counter(db, market)
 
-    # ── 3. stock_profile from Redis counter ──
+    # ── 3a. stock_profile aggregate from Redis counter ──
     sp_raw = raw_values[len(daily_bars_keys)]
     if sp_raw:
         stock_profile_stats = json.loads(sp_raw)
     else:
         stock_profile_stats = await rebuild_embedding_counter(db, "stock_profile")
+
+    # ── 3b. Per-market stock profile from Redis (lazy fallback) ──
+    sp_market_offset = len(daily_bars_keys) + 1
+    sp_market_raw = raw_values[sp_market_offset : sp_market_offset + len(STOCK_PROFILE_MARKETS)]
+    sp_market_stats: Dict[str, dict] = {}
+    need_rebuild = False
+    for i, m in enumerate(STOCK_PROFILE_MARKETS):
+        raw = sp_market_raw[i]
+        if raw:
+            sp_market_stats[m] = json.loads(raw)
+        else:
+            need_rebuild = True
+            break
+
+    if need_rebuild:
+        sp_market_stats = await rebuild_stock_profile_market_counters(db)
 
     # ── 4. Lightweight SQL for news/analysis/report embeddings ──
     emb_rows = await db.execute(text(
@@ -244,7 +355,13 @@ async def get_knowledge_base_stats(
     ))).scalar() or 0
 
     # ── 6. Assemble embeddings response ──
-    embeddings: Dict[str, Any] = {"stock_profile": stock_profile_stats}
+    embeddings: Dict[str, Any] = {
+        "stock_profile": {
+            "total": stock_profile_stats,
+            **{m: sp_market_stats.get(m, {"count": 0, "lastUpdated": None, "model": None})
+               for m in STOCK_PROFILE_MARKETS},
+        }
+    }
     for src_type in ("news", "analysis", "report"):
         base = emb_stats.get(src_type, {"count": 0, "lastUpdated": None})
         base["model"] = model_map.get(src_type)
@@ -257,15 +374,46 @@ async def get_knowledge_base_stats(
     # ── 7. Progress from Redis (unchanged) ──
     progress = await _get_all_progress()
 
-    # ── 8. Lock status per market (so frontend can warn user) ──
+    # ── 8. Lock + queue status per market ──
     locks: Dict[str, Any] = {}
     for market in _MARKETS_SORTED:
         ttl = await _check_market_lock(market)
-        locks[market] = {"locked": ttl is not None, "ttlSeconds": ttl} if ttl else None
+        queued = await _check_market_queued(market)
+        if ttl:
+            locks[market] = {"locked": True, "ttlSeconds": ttl}
+        elif queued:
+            locks[market] = {"queued": True}
+        else:
+            locks[market] = None
+
+    # ── 9. Stock list stats ──
+    stock_list_stats = None
+    try:
+        from app.services.stock_list_service import get_stock_list_service
+        svc = await get_stock_list_service()
+        sl = svc.get_stats()
+        # Get last updated from version.json (inner try for file read safety)
+        sl_last_updated = None
+        try:
+            version_file = svc.data_dir / "version.json"
+            if version_file.exists():
+                vdata = json.loads(version_file.read_text())
+                sl_last_updated = vdata.get("updated_at")
+        except Exception:
+            logger.debug("Failed to read stock list version.json")
+        stock_list_stats = {
+            "totalCount": sl["stock_count"],
+            "version": sl["version"],
+            "lastUpdated": sl_last_updated,
+            "marketCounts": sl["market_counts"],
+        }
+    except Exception as e:
+        logger.warning("Failed to get stock list stats: %s", e)
 
     return {
         "embeddings": embeddings,
         "dailyBars": daily_bars,
+        "stockList": stock_list_stats,
         "progress": progress,
         "locks": locks,
     }
@@ -488,10 +636,15 @@ async def collect_daily_bars(
     from worker.tasks.daily_bar_tasks import collect_market_daily_bars
     result = collect_market_daily_bars.delay(market)
 
-    return {
-        "message": f"Daily bar collection started for market={market}",
-        "taskId": result.id,
-    }
+    running = await _get_running_markets(exclude=market)
+    msg = f"Daily bar collection started for market={market}"
+    resp: Dict[str, Any] = {"message": msg, "taskId": result.id}
+    if running:
+        await _mark_market_queued(market)
+        resp["queued"] = True
+        resp["runningMarkets"] = running
+        resp["message"] = msg + f" (queued behind: {', '.join(running)})"
+    return resp
 
 
 # ---------------------------------------------------------------------------
@@ -585,10 +738,15 @@ async def rebuild_daily_bars(
     from worker.tasks.daily_bar_tasks import rebuild_market_daily_bars
     result = rebuild_market_daily_bars.delay(market)
 
-    return {
-        "message": f"Daily bar rebuild started for market={market}",
-        "taskId": result.id,
-    }
+    running = await _get_running_markets(exclude=market)
+    msg = f"Daily bar rebuild started for market={market}"
+    resp: Dict[str, Any] = {"message": msg, "taskId": result.id}
+    if running:
+        await _mark_market_queued(market)
+        resp["queued"] = True
+        resp["runningMarkets"] = running
+        resp["message"] = msg + f" (queued behind: {', '.join(running)})"
+    return resp
 
 
 # ---------------------------------------------------------------------------
@@ -676,6 +834,26 @@ async def unlock_daily_bars(
         return {"message": f"Lock released and task terminated for market={market}"}
     else:
         return {"message": f"No lock held for market={market}"}
+
+
+# ---------------------------------------------------------------------------
+# POST /knowledge-base/stock-list/update
+# ---------------------------------------------------------------------------
+
+
+@router.post(
+    "/knowledge-base/stock-list/update",
+    summary="Update stock list",
+    description="Dispatch a Celery task to refresh the stock list from Finnhub and AKShare.",
+)
+async def trigger_stock_list_update(
+    current_user: User = Depends(require_admin),
+) -> Dict[str, Any]:
+    """Trigger stock list update task."""
+    logger.info("Admin %s triggered stock list update", current_user.email)
+    from worker.tasks.stock_list_tasks import update_stock_list
+    result = update_stock_list.delay()
+    return {"message": "Stock list update started", "taskId": result.id}
 
 
 # ---------------------------------------------------------------------------

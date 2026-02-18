@@ -95,6 +95,9 @@ def _acquire_daily_bar_lock_sync(market: str, task_id: Optional[str] = None) -> 
             nx=True,
             ex=_LOCK_TTL,
         )
+        if acquired:
+            # Clear queued flag — task is now running
+            r.delete(f"kb:daily_bars:{market}:queued")
         return owner if acquired else None
     except Exception:
         # Redis unavailable — generate owner token and allow task to proceed
