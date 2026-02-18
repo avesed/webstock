@@ -503,6 +503,10 @@
     "collect": "采集",
     "collectAll": "全部采集",
     "collectStarted": "采集任务已启动",
+    "rebuildBars": "重建",
+    "rebuildAll": "全部重建",
+    "rebuildBarsConfirm": "这将删除{{market}}所有日线数据并重新采集，耗时可能较长。确定继续？",
+    "rebuildBarsConfirmAll": "这将删除所有市场的日线数据并重新采集，耗时可能非常长。确定继续？",
     "actionSuccess": "操作成功",
     "error": "操作失败",
 

@@ -181,19 +181,38 @@ function DailyBarsCard({
               {t('knowledge.dailyBarsDesc')}
             </CardDescription>
           </div>
-          <Button
-            size="sm"
-            variant="outline"
-            disabled={actionLoading !== null}
-            onClick={() => onAction('collect-all', () => adminApi.collectAllDailyBars())}
-          >
-            {actionLoading === 'collect-all' ? (
-              <Loader2 className="h-3 w-3 animate-spin mr-1" />
-            ) : (
-              <RefreshCw className="h-3 w-3 mr-1" />
-            )}
-            {t('knowledge.collectAll')}
-          </Button>
+          <div className="flex gap-2">
+            <Button
+              size="sm"
+              variant="outline"
+              disabled={actionLoading !== null}
+              onClick={() => onAction('collect-all', () => adminApi.collectAllDailyBars())}
+            >
+              {actionLoading === 'collect-all' ? (
+                <Loader2 className="h-3 w-3 animate-spin mr-1" />
+              ) : (
+                <RefreshCw className="h-3 w-3 mr-1" />
+              )}
+              {t('knowledge.collectAll')}
+            </Button>
+            <Button
+              size="sm"
+              variant="destructive"
+              disabled={actionLoading !== null}
+              onClick={() =>
+                onAction(
+                  'rebuild-all-bars',
+                  () => adminApi.rebuildAllDailyBars(),
+                  t('knowledge.rebuildBarsConfirmAll'),
+                )
+              }
+            >
+              {actionLoading === 'rebuild-all-bars' ? (
+                <Loader2 className="h-3 w-3 animate-spin mr-1" />
+              ) : null}
+              {t('knowledge.rebuildAll')}
+            </Button>
+          </div>
         </div>
       </CardHeader>
       <CardContent>
@@ -207,21 +226,42 @@ function DailyBarsCard({
                   <span className="font-medium text-sm">
                     {td(t, `knowledge.market_${market}`)}
                   </span>
-                  <Button
-                    size="sm"
-                    variant="ghost"
-                    className="h-7 px-2 text-xs"
-                    disabled={actionLoading !== null}
-                    onClick={() =>
-                      onAction(`collect-${market}`, () => adminApi.collectDailyBars(market))
-                    }
-                  >
-                    {actionLoading === `collect-${market}` ? (
-                      <Loader2 className="h-3 w-3 animate-spin" />
-                    ) : (
-                      t('knowledge.collect')
-                    )}
-                  </Button>
+                  <div className="flex gap-1">
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      className="h-7 px-2 text-xs"
+                      disabled={actionLoading !== null}
+                      onClick={() =>
+                        onAction(`collect-${market}`, () => adminApi.collectDailyBars(market))
+                      }
+                    >
+                      {actionLoading === `collect-${market}` ? (
+                        <Loader2 className="h-3 w-3 animate-spin" />
+                      ) : (
+                        t('knowledge.collect')
+                      )}
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      className="h-7 px-2 text-xs text-destructive hover:text-destructive"
+                      disabled={actionLoading !== null}
+                      onClick={() =>
+                        onAction(
+                          `rebuild-${market}`,
+                          () => adminApi.rebuildDailyBars(market),
+                          td(t, 'knowledge.rebuildBarsConfirm', { market: td(t, `knowledge.market_${market}`) }),
+                        )
+                      }
+                    >
+                      {actionLoading === `rebuild-${market}` ? (
+                        <Loader2 className="h-3 w-3 animate-spin" />
+                      ) : (
+                        t('knowledge.rebuildBars')
+                      )}
+                    </Button>
+                  </div>
                 </div>
 
                 {stats ? (

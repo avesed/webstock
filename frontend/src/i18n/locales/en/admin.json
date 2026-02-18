@@ -503,6 +503,10 @@
     "collect": "Collect",
     "collectAll": "Collect All",
     "collectStarted": "Collection task started",
+    "rebuildBars": "Rebuild",
+    "rebuildAll": "Rebuild All",
+    "rebuildBarsConfirm": "This will delete ALL daily bars for {{market}} and re-collect from scratch. This may take a long time. Continue?",
+    "rebuildBarsConfirmAll": "This will delete ALL daily bars for every market and re-collect from scratch. This may take a very long time. Continue?",
     "actionSuccess": "Action completed successfully",
     "error": "Action failed",
 

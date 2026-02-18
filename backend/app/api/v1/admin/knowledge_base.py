@@ -3,6 +3,11 @@
 Provides stats, rebuild, retry, and clear operations for all 5 knowledge bases:
 - Embeddings: stock_profile, news, analysis, report
 - Daily bars: cn, us, hk, metal
+
+Performance: Stats endpoint uses Redis counters for expensive aggregations
+(daily_bars 8M+ rows, stock_profile embeddings) updated by Celery tasks on
+completion.  Lightweight SQL is used for smaller tables (news/analysis/report
+embeddings, failed counts).
 """
 
 import json
@@ -22,15 +27,83 @@ logger = logging.getLogger(__name__)
 router = APIRouter(tags=["Admin - Knowledge Base"])
 
 VALID_MARKETS = {"cn", "us", "hk", "metal"}
+_MARKETS_SORTED = sorted(VALID_MARKETS)
 
-# Redis cache for the slow daily-bars stats query (COUNT DISTINCT on 8M+ rows)
-_DAILY_BARS_STATS_CACHE_KEY = "kb:stats:daily_bars"
-_DAILY_BARS_STATS_TTL = 60  # seconds; data only changes when collection tasks run
+# Redis counter keys (no TTL — maintained by Celery tasks after batch completion)
+COUNTER_KEY_DAILY_BARS = "kb:counters:daily_bars:{market}"
+COUNTER_KEY_EMBEDDING = "kb:counters:embeddings:{source_type}"
+
 CLEARABLE_SOURCE_TYPES = {"news", "analysis", "report"}
 REBUILDABLE_SOURCE_TYPES = {
     "stock_profile", "stock_profile_sync", "news", "analysis", "report",
 }
 RETRYABLE_SOURCE_TYPES = {"news", "report"}
+
+
+# ---------------------------------------------------------------------------
+# Redis counter helpers (async — used by stats endpoint and task async code)
+# ---------------------------------------------------------------------------
+
+
+async def _redis_mget(keys: List[str]) -> List[Optional[str]]:
+    """Read multiple keys from Redis via MGET. Returns raw strings or None."""
+    try:
+        from app.db.redis import get_redis
+        redis = await get_redis()
+        return await redis.mget(keys)
+    except Exception as e:
+        logger.debug("Redis MGET failed: %s", e)
+        return [None] * len(keys)
+
+
+async def write_counter(key: str, data: dict) -> None:
+    """Write a counter to Redis (no TTL — persists until next task update)."""
+    try:
+        from app.db.redis import get_redis
+        redis = await get_redis()
+        await redis.set(key, json.dumps(data))
+    except Exception as e:
+        logger.debug("Redis counter write failed for %s: %s", key, e)
+
+
+async def rebuild_daily_bars_counter(db: AsyncSession, market: str) -> dict:
+    """Run per-market COUNT query and write result to Redis. Returns counter dict."""
+    row = await db.execute(text(
+        "SELECT COUNT(*) as count, COUNT(DISTINCT symbol) as symbol_count, "
+        "MIN(date) as first_date, MAX(date) as last_date "
+        "FROM stock_daily_bars WHERE market = :market"
+    ), {"market": market})
+    r = row.one()
+    counter = {
+        "count": r.count,
+        "symbolCount": r.symbol_count,
+        "firstDate": r.first_date.isoformat() if r.first_date else None,
+        "lastDate": r.last_date.isoformat() if r.last_date else None,
+    }
+    await write_counter(COUNTER_KEY_DAILY_BARS.format(market=market), counter)
+    return counter
+
+
+async def rebuild_embedding_counter(db: AsyncSession, source_type: str) -> dict:
+    """Run per-source_type COUNT query and write result to Redis. Returns counter dict."""
+    row = await db.execute(text(
+        "SELECT COUNT(*) as count, MAX(created_at) as last_updated "
+        "FROM document_embeddings WHERE source_type = :st"
+    ), {"st": source_type})
+    r = row.one()
+    # Latest model (fast — source_type index narrows scan, LIMIT 1)
+    model_row = await db.execute(text(
+        "SELECT model FROM document_embeddings "
+        "WHERE source_type = :st ORDER BY created_at DESC LIMIT 1"
+    ), {"st": source_type})
+    model_result = model_row.first()
+    counter = {
+        "count": r.count,
+        "lastUpdated": r.last_updated.isoformat() if r.last_updated else None,
+        "model": model_result.model if model_result else None,
+    }
+    await write_counter(COUNTER_KEY_EMBEDDING.format(source_type=source_type), counter)
+    return counter
 
 
 # ---------------------------------------------------------------------------
@@ -47,106 +120,81 @@ async def get_knowledge_base_stats(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(require_admin),
 ) -> Dict[str, Any]:
-    """Aggregate stats from document_embeddings, stock_daily_bars, news, reports, and Redis progress keys."""
+    """Fast stats: Redis counters for daily_bars + stock_profile,
+    lightweight SQL for news/analysis/report embeddings."""
 
-    # -- Embedding stats by source_type --
-    embedding_rows = await db.execute(text("""
-        SELECT source_type, COUNT(*) as count,
-               MAX(created_at) as last_updated,
-               (SELECT model FROM document_embeddings de2
-                WHERE de2.source_type = de.source_type
-                ORDER BY de2.created_at DESC LIMIT 1) as model
-        FROM document_embeddings de
-        GROUP BY source_type
-    """))
-    embedding_stats_raw = {
-        row.source_type: {
+    # ── 1. Read cached counters from Redis (single MGET) ──
+    daily_bars_keys = [COUNTER_KEY_DAILY_BARS.format(market=m) for m in _MARKETS_SORTED]
+    sp_key = COUNTER_KEY_EMBEDDING.format(source_type="stock_profile")
+    all_keys = daily_bars_keys + [sp_key]
+    raw_values = await _redis_mget(all_keys)
+
+    # ── 2. Daily bars from Redis counters (lazy fallback per market) ──
+    daily_bars: Dict[str, Any] = {}
+    for i, market in enumerate(_MARKETS_SORTED):
+        raw = raw_values[i]
+        if raw:
+            daily_bars[market] = json.loads(raw)
+        else:
+            # Counter missing (Redis restart / first deploy) — rebuild from DB
+            daily_bars[market] = await rebuild_daily_bars_counter(db, market)
+
+    # ── 3. stock_profile from Redis counter ──
+    sp_raw = raw_values[len(daily_bars_keys)]
+    if sp_raw:
+        stock_profile_stats = json.loads(sp_raw)
+    else:
+        stock_profile_stats = await rebuild_embedding_counter(db, "stock_profile")
+
+    # ── 4. Lightweight SQL for news/analysis/report embeddings ──
+    emb_rows = await db.execute(text(
+        "SELECT source_type, COUNT(*) as count, MAX(created_at) as last_updated "
+        "FROM document_embeddings "
+        "WHERE source_type IN ('news', 'analysis', 'report') "
+        "GROUP BY source_type"
+    ))
+    emb_stats: Dict[str, dict] = {}
+    for row in emb_rows:
+        emb_stats[row.source_type] = {
             "count": row.count,
             "lastUpdated": row.last_updated.isoformat() if row.last_updated else None,
-            "model": row.model,
         }
-        for row in embedding_rows
-    }
 
-    # -- Failed news count (embedding_failed) --
-    news_failed_row = await db.execute(
-        text("SELECT COUNT(*) as cnt FROM news WHERE content_status = 'embedding_failed'")
-    )
-    news_failed_count = news_failed_row.scalar() or 0
+    # Latest model per source_type (DISTINCT ON — one index scan per type)
+    model_rows = await db.execute(text(
+        "SELECT DISTINCT ON (source_type) source_type, model "
+        "FROM document_embeddings "
+        "WHERE source_type IN ('news', 'analysis', 'report') "
+        "ORDER BY source_type, created_at DESC"
+    ))
+    model_map = {row.source_type: row.model for row in model_rows}
 
-    # -- Failed report count (completed reports without embeddings) --
-    report_failed_row = await db.execute(text("""
-        SELECT COUNT(*) as cnt FROM reports r
-        WHERE r.status = 'completed'
-        AND NOT EXISTS (
-            SELECT 1 FROM document_embeddings de
-            WHERE de.source_type = 'report' AND de.source_id = r.id::text
-        )
-    """))
-    report_failed_count = report_failed_row.scalar() or 0
+    # ── 5. Failed counts (unchanged — already fast) ──
+    news_failed_count = (await db.execute(
+        text("SELECT COUNT(*) FROM news WHERE content_status = 'embedding_failed'")
+    )).scalar() or 0
 
-    # Build embeddings response with defaults for missing source types
-    embeddings: Dict[str, Any] = {}
-    for src_type in ("stock_profile", "news", "analysis", "report"):
-        base = embedding_stats_raw.get(src_type, {
-            "count": 0,
-            "lastUpdated": None,
-            "model": None,
-        })
+    report_failed_count = (await db.execute(text(
+        "SELECT COUNT(*) FROM reports r "
+        "WHERE r.status = 'completed' "
+        "AND NOT EXISTS ("
+        "  SELECT 1 FROM document_embeddings de "
+        "  WHERE de.source_type = 'report' AND de.source_id = r.id::text"
+        ")"
+    ))).scalar() or 0
+
+    # ── 6. Assemble embeddings response ──
+    embeddings: Dict[str, Any] = {"stock_profile": stock_profile_stats}
+    for src_type in ("news", "analysis", "report"):
+        base = emb_stats.get(src_type, {"count": 0, "lastUpdated": None})
+        base["model"] = model_map.get(src_type)
         if src_type == "news":
             base["failedCount"] = news_failed_count
         elif src_type == "report":
             base["failedCount"] = report_failed_count
         embeddings[src_type] = base
 
-    # -- Daily bar stats by market (cached: COUNT DISTINCT on 8M+ rows is 2-17s) --
-    daily_bars: Dict[str, Any] = {}
-    try:
-        from app.db.redis import get_redis
-        _redis = await get_redis()
-        _cached = await _redis.get(_DAILY_BARS_STATS_CACHE_KEY)
-        if _cached:
-            daily_bars = json.loads(_cached)
-    except Exception as _e:
-        logger.debug("Daily bars stats cache read failed: %s", _e)
-
-    if not daily_bars:
-        bar_rows = await db.execute(text("""
-            SELECT market, COUNT(*) as count,
-                   MAX(date) as last_date, MIN(date) as first_date,
-                   COUNT(DISTINCT symbol) as symbol_count
-            FROM stock_daily_bars
-            GROUP BY market
-        """))
-        for row in bar_rows:
-            daily_bars[row.market] = {
-                "count": row.count,
-                "symbolCount": row.symbol_count,
-                "firstDate": row.first_date.isoformat() if row.first_date else None,
-                "lastDate": row.last_date.isoformat() if row.last_date else None,
-            }
-        # Fill missing markets with zeros
-        for market in VALID_MARKETS:
-            if market not in daily_bars:
-                daily_bars[market] = {
-                    "count": 0,
-                    "symbolCount": 0,
-                    "firstDate": None,
-                    "lastDate": None,
-                }
-        # Store in Redis for subsequent requests
-        try:
-            from app.db.redis import get_redis
-            _redis = await get_redis()
-            await _redis.set(
-                _DAILY_BARS_STATS_CACHE_KEY,
-                json.dumps(daily_bars),
-                ex=_DAILY_BARS_STATS_TTL,
-            )
-        except Exception as _e:
-            logger.debug("Daily bars stats cache write failed: %s", _e)
-
-    # -- Progress from Redis --
+    # ── 7. Progress from Redis (unchanged) ──
     progress = await _get_all_progress()
 
     return {
@@ -394,6 +442,69 @@ async def collect_all_daily_bars(
 
     return {
         "message": "Daily bar collection started for all markets",
+        "taskIds": task_ids,
+    }
+
+
+# ---------------------------------------------------------------------------
+# POST /knowledge-base/daily-bars/{market}/rebuild
+# ---------------------------------------------------------------------------
+
+
+@router.post(
+    "/knowledge-base/daily-bars/{market}/rebuild",
+    summary="Rebuild daily bars for a market",
+    description="Delete all existing daily bars for the market, then re-collect from scratch.",
+)
+async def rebuild_daily_bars(
+    market: str,
+    current_user: User = Depends(require_admin),
+) -> Dict[str, Any]:
+    """Trigger a full rebuild (delete + re-collect) for a single market."""
+
+    if market not in VALID_MARKETS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid market '{market}'. Must be one of: {', '.join(sorted(VALID_MARKETS))}",
+        )
+
+    logger.info("Admin %s requested daily bar rebuild for market=%s", current_user.email, market)
+
+    from worker.tasks.daily_bar_tasks import rebuild_market_daily_bars
+    result = rebuild_market_daily_bars.delay(market)
+
+    return {
+        "message": f"Daily bar rebuild started for market={market}",
+        "taskId": result.id,
+    }
+
+
+# ---------------------------------------------------------------------------
+# POST /knowledge-base/daily-bars/rebuild-all
+# ---------------------------------------------------------------------------
+
+
+@router.post(
+    "/knowledge-base/daily-bars/rebuild-all",
+    summary="Rebuild daily bars for all markets",
+    description="Delete and re-collect daily OHLCV bars for all 4 markets.",
+)
+async def rebuild_all_daily_bars(
+    current_user: User = Depends(require_admin),
+) -> Dict[str, Any]:
+    """Trigger a full rebuild for all markets."""
+
+    logger.info("Admin %s requested daily bar rebuild for all markets", current_user.email)
+
+    from worker.tasks.daily_bar_tasks import rebuild_market_daily_bars
+
+    task_ids: Dict[str, str] = {}
+    for market in sorted(VALID_MARKETS):
+        result = rebuild_market_daily_bars.delay(market)
+        task_ids[market] = result.id
+
+    return {
+        "message": "Daily bar rebuild started for all markets",
         "taskIds": task_ids,
     }
 

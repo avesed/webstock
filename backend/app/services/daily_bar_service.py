@@ -188,6 +188,22 @@ class DailyBarService:
             "errors": errors,
         }
 
+    async def delete_market_bars(
+        self,
+        db: AsyncSession,
+        market: str,
+    ) -> int:
+        """Delete all daily bars for a given market. Returns the number of rows deleted."""
+        logger.warning("Deleting all daily bars for market=%s", market)
+        result = await db.execute(
+            text("DELETE FROM stock_daily_bars WHERE market = :market"),
+            {"market": market},
+        )
+        await db.commit()
+        deleted = result.rowcount
+        logger.info("Deleted %d daily bars for market=%s", deleted, market)
+        return deleted
+
     async def get_bars_batch(
         self,
         db: AsyncSession,

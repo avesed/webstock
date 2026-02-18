@@ -1,5 +1,5 @@
 import apiClient from './client'
-import { getAccessToken } from '@/lib/auth'
+import { getValidAccessToken } from '@/lib/auth'
 import type {
   AuthTokens,
   LoginCredentials,
@@ -934,10 +934,10 @@ export const chatApi = {
     onDone: () => void,
   ): AbortController => {
     const controller = new AbortController()
-    const token = getAccessToken()
 
     const run = async () => {
       try {
+        const token = await getValidAccessToken()
         const resp = await fetch(`/api/v1/chat/conversations/${conversationId}/messages/stream`, {
           method: 'POST',
           headers: {
@@ -1014,12 +1014,12 @@ export const analysisApi = {
     onDone: () => void,
   ): AbortController => {
     const controller = new AbortController()
-    const token = getAccessToken()
     // Normalize language: 'zh-CN', 'zh-TW' etc. → 'zh', others → 'en'
     const lang = language.toLowerCase().startsWith('zh') ? 'zh' : 'en'
 
     const run = async () => {
       try {
+        const token = await getValidAccessToken()
         const resp = await fetch(`/api/v1/analysis/${symbol}/stream?language=${lang}`, {
           method: 'GET',
           headers: {

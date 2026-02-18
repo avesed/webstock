@@ -456,6 +456,16 @@ export const adminApi = {
     const response = await apiClient.post<{ message: string; taskIds: Record<string, string> }>('/admin/knowledge-base/daily-bars/collect-all')
     return response.data
   },
+
+  rebuildDailyBars: async (market: string): Promise<{ message: string; taskId: string }> => {
+    const response = await apiClient.post<{ message: string; taskId: string }>(`/admin/knowledge-base/daily-bars/${market}/rebuild`)
+    return response.data
+  },
+
+  rebuildAllDailyBars: async (): Promise<{ message: string; taskIds: Record<string, string> }> => {
+    const response = await apiClient.post<{ message: string; taskIds: Record<string, string> }>('/admin/knowledge-base/daily-bars/rebuild-all')
+    return response.data
+  },
 }
 
 // Filter stats types

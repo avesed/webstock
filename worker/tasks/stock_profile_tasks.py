@@ -138,6 +138,53 @@ def sync_concept_boards(self):
 # Async implementations
 # ---------------------------------------------------------------------------
 
+async def _rebuild_embedding_counter_async(source_type: str) -> None:
+    """Query per-source_type stats from DB and write to Redis counter.
+
+    Called inside the task's async context after embedding completes.
+    The stats endpoint reads this counter instead of running GROUP BY queries.
+    """
+    try:
+        from sqlalchemy import text as sa_text
+
+        from app.api.v1.admin.knowledge_base import COUNTER_KEY_EMBEDDING
+        from app.db.redis import get_redis
+        from app.db.task_session import get_task_session
+
+        async with get_task_session() as db:
+            row = await db.execute(sa_text(
+                "SELECT COUNT(*) as count, MAX(created_at) as last_updated "
+                "FROM document_embeddings WHERE source_type = :st"
+            ), {"st": source_type})
+            r = row.one()
+            model_row = await db.execute(sa_text(
+                "SELECT model FROM document_embeddings "
+                "WHERE source_type = :st ORDER BY created_at DESC LIMIT 1"
+            ), {"st": source_type})
+            model_result = model_row.first()
+
+        counter = {
+            "count": r.count,
+            "lastUpdated": r.last_updated.isoformat() if r.last_updated else None,
+            "model": model_result.model if model_result else None,
+        }
+
+        redis = await get_redis()
+        await redis.set(
+            COUNTER_KEY_EMBEDDING.format(source_type=source_type),
+            json.dumps(counter),
+        )
+        logger.info(
+            "[StockProfileTask] Rebuilt %s embedding counter: %d embeddings",
+            source_type, r.count,
+        )
+    except Exception as e:
+        logger.warning(
+            "[StockProfileTask] Failed to rebuild %s counter: %s",
+            source_type, e,
+        )
+
+
 async def _update_kb_progress(
     phase: str, current: int, total: int, stats: Optional[Dict] = None,
 ) -> None:
@@ -308,6 +355,10 @@ async def _build_kb_async() -> Dict[str, Any]:
         stats["embedded"], stats["errors"],
         _time.monotonic() - build_t0,
     )
+
+    # Rebuild counter BEFORE progress is cleared (in finally block)
+    await _rebuild_embedding_counter_async("stock_profile")
+
     return stats
 
 
@@ -405,6 +456,10 @@ async def _sync_concepts_async() -> Dict[str, Any]:
         "[StockProfileTask] Concept sync done: %d updated, %d embedded, %d errors",
         len(codes_to_update), embedded_count, error_count,
     )
+
+    # Rebuild counter so stats endpoint reflects changes
+    await _rebuild_embedding_counter_async("stock_profile")
+
     return stats
 
 
