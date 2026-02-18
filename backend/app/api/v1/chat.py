@@ -50,9 +50,11 @@ async def apply_user_ai_config(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> None:
-    """Load AI settings using SettingsService and set them in the request context.
+    """Load user-specific AI settings and set them in the request context.
 
-    Priority: user settings (if permitted) > system settings > env variables.
+    Only includes api_key/base_url when the user has personal overrides.
+    System defaults for api_key/base_url flow through provider FK resolution
+    (via get_chat_model_config) to avoid overriding properly resolved config.
     """
     from app.services.settings_service import get_settings_service
 
@@ -60,11 +62,32 @@ async def apply_user_ai_config(
         settings_service = get_settings_service()
         ai_config = await settings_service.get_user_ai_config(db, current_user.id)
 
-        # Set resolved config in context for OpenAI client to use
+        # Only pass api_key/base_url when user has their own custom key.
+        # Otherwise leave them as None so the gateway uses the provider FK
+        # config from get_chat_model_config() instead of legacy flat columns.
+        user_api_key: str | None = None
+        user_base_url: str | None = None
+
+        can_customize = await settings_service.user_can_customize_api(
+            db, current_user.id
+        )
+        if can_customize:
+            from app.models.user_settings import UserSettings
+            result = await db.execute(
+                select(UserSettings).where(
+                    UserSettings.user_id == current_user.id
+                )
+            )
+            us = result.scalar_one_or_none()
+            if us and us.openai_api_key:
+                # User has their own API key — include it as override
+                user_api_key = ai_config.api_key
+                user_base_url = ai_config.base_url
+
         current_user_ai_config.set(
             UserAIConfig(
-                api_key=ai_config.api_key,
-                base_url=ai_config.base_url,
+                api_key=user_api_key,
+                base_url=user_base_url,
                 model=ai_config.model,
                 max_tokens=ai_config.max_tokens,
                 temperature=ai_config.temperature,

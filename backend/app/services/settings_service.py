@@ -344,20 +344,46 @@ class SettingsService:
                     provider_id, purpose,
                 )
 
-        # Fallback to legacy flat columns
-        logger.debug(
-            "Resolving %s via legacy flat columns (no provider_id set)",
-            purpose,
-        )
-
-        # Detect provider type from model name
-        from app.core.llm.config import detect_provider, ProviderType
-
+        # Fallback: try to find an enabled provider whose models list
+        # contains the target model name.  This handles the case where
+        # the admin set the model via the legacy LLM config section
+        # (which only writes openai_model) without setting the FK.
         if not model_name:
             raise ValueError(
                 f"No model configured for '{purpose}'. "
                 f"Please configure it in Admin Settings."
             )
+
+        from sqlalchemy.dialects.postgresql import JSONB as _JSONB
+
+        result = await db.execute(
+            select(LlmProvider).where(
+                LlmProvider.is_enabled == True,
+                LlmProvider.models.cast(_JSONB).contains([model_name]),
+            )
+        )
+        matched_provider = result.scalars().first()
+        if matched_provider:
+            logger.info(
+                "Auto-resolved %s: model '%s' found in provider '%s' "
+                "(provider_id FK was not set)",
+                purpose, model_name, matched_provider.name,
+            )
+            return ResolvedModelConfig(
+                model=model_name,
+                provider_type=matched_provider.provider_type,
+                api_key=matched_provider.api_key,
+                base_url=matched_provider.base_url,
+            )
+
+        # Final fallback: legacy flat columns
+        logger.debug(
+            "Resolving %s via legacy flat columns (no provider_id set, "
+            "model '%s' not found in any provider)",
+            purpose, model_name,
+        )
+
+        from app.core.llm.config import detect_provider, ProviderType
 
         provider_type = detect_provider(model_name)
 
