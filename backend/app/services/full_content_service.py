@@ -823,6 +823,7 @@ class FullContentService:
             ContentSource.TRAFILATURA: TrafilaturaProvider(),
             ContentSource.POLYGON: PolygonProvider(api_key=polygon_api_key),
         }
+        self._system_keys_loaded = False
 
         # Optional providers - only add if configured
         if tavily_api_key:
@@ -834,6 +835,36 @@ class FullContentService:
                 service_url=playwright_service_url
             )
             logger.info("Playwright provider initialized (url=%s)", playwright_service_url)
+
+    async def _ensure_system_keys(self) -> None:
+        """Lazy-load API keys from system_settings on first async call.
+
+        Fills in providers that were missing at init time because the keys
+        were stored in the DB rather than in environment variables.
+        """
+        if self._system_keys_loaded:
+            return
+        self._system_keys_loaded = True
+
+        try:
+            from app.services.settings_service import get_system_api_key
+
+            # Polygon — replace provider if current one has no key
+            polygon_provider = self.providers.get(ContentSource.POLYGON)
+            if isinstance(polygon_provider, PolygonProvider) and not polygon_provider.api_key:
+                key = await get_system_api_key("polygon_api_key")
+                if key:
+                    self.providers[ContentSource.POLYGON] = PolygonProvider(api_key=key)
+                    logger.info("Polygon provider updated with system_settings key")
+
+            # Tavily — add provider if not yet present
+            if ContentSource.TAVILY not in self.providers:
+                key = await get_system_api_key("tavily_api_key")
+                if key:
+                    self.providers[ContentSource.TAVILY] = TavilyProvider(api_key=key)
+                    logger.info("Tavily provider initialized from system_settings")
+        except Exception as e:
+            logger.warning("Failed to load API keys from system_settings: %s", e)
 
     def is_blocked_domain(self, url: str) -> bool:
         """
@@ -888,6 +919,8 @@ class FullContentService:
         Returns:
             FetchResult with content or error
         """
+        await self._ensure_system_keys()
+
         # Check blocked domains first
         if self.is_blocked_domain(url):
             logger.info("Blocked domain detected: %s", url)
@@ -946,6 +979,8 @@ class FullContentService:
         Returns:
             FetchResult from best successful provider
         """
+        await self._ensure_system_keys()
+
         # Check blocked domains first
         if self.is_blocked_domain(url):
             logger.info("Blocked domain detected (fallback path): %s", url)

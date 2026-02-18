@@ -112,12 +112,16 @@ async def get_exchange_rates(use_fallback: bool = True) -> Dict[str, Decimal]:
         logger.warning(f"Failed to read exchange rates from cache: {e}")
 
     # Fetch from Finnhub
-    if not settings.FINNHUB_API_KEY:
+    finnhub_key = settings.FINNHUB_API_KEY
+    if not finnhub_key:
+        from app.services.settings_service import get_system_api_key
+        finnhub_key = await get_system_api_key("finnhub_api_key")
+    if not finnhub_key:
         logger.warning("FINNHUB_API_KEY not configured, using fallback rates")
         return FALLBACK_RATES if use_fallback else {}
 
     try:
-        url = f"https://finnhub.io/api/v1/forex/rates?base=USD&token={settings.FINNHUB_API_KEY}"
+        url = f"https://finnhub.io/api/v1/forex/rates?base=USD&token={finnhub_key}"
 
         async with httpx.AsyncClient(timeout=10.0) as client:
             response = await client.get(url)

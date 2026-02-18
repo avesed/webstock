@@ -1,8 +1,9 @@
 """Unified settings service with priority resolution."""
 
 import logging
+import time
 from dataclasses import dataclass
-from typing import Optional
+from typing import Dict, Optional
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -13,6 +14,57 @@ from app.models.system_settings import SystemSettings
 from app.models.user_settings import UserSettings
 
 logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# Cached API-key resolver (no DB session required)
+# ---------------------------------------------------------------------------
+_SYSTEM_KEY_CACHE: Dict[str, Optional[str]] = {}
+_SYSTEM_KEY_CACHE_TIME: float = 0
+_SYSTEM_KEY_CACHE_TTL = 300  # 5 minutes
+
+_SUPPORTED_API_KEYS = (
+    "finnhub_api_key",
+    "polygon_api_key",
+    "tavily_api_key",
+)
+
+
+async def get_system_api_key(key_name: str) -> Optional[str]:
+    """Return an API key stored in ``system_settings`` (id=1).
+
+    Uses an in-memory cache (5-min TTL) so that repeated calls within a
+    request or Celery task don't hit the DB on every invocation.
+
+    Supported *key_name* values: ``finnhub_api_key``, ``polygon_api_key``,
+    ``tavily_api_key``.
+    """
+    global _SYSTEM_KEY_CACHE, _SYSTEM_KEY_CACHE_TIME
+
+    now = time.monotonic()
+    if (now - _SYSTEM_KEY_CACHE_TIME) < _SYSTEM_KEY_CACHE_TTL and key_name in _SYSTEM_KEY_CACHE:
+        return _SYSTEM_KEY_CACHE[key_name]
+
+    try:
+        from app.db.database import get_async_session
+
+        async with get_async_session() as session:
+            result = await session.execute(
+                select(SystemSettings).where(SystemSettings.id == 1)
+            )
+            row = result.scalar_one_or_none()
+            if row:
+                _SYSTEM_KEY_CACHE = {
+                    k: getattr(row, k, None) for k in _SUPPORTED_API_KEYS
+                }
+                _SYSTEM_KEY_CACHE_TIME = now
+                val = _SYSTEM_KEY_CACHE.get(key_name)
+                if val:
+                    logger.debug("Resolved %s from system_settings", key_name)
+                return val
+    except Exception as e:
+        logger.warning("Failed to fetch '%s' from system_settings: %s", key_name, e)
+
+    return None
 
 
 @dataclass

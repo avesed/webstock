@@ -317,6 +317,9 @@ class FinnhubProvider:
         """
         api_key_to_use = api_key or settings.FINNHUB_API_KEY
         if not api_key_to_use:
+            from app.services.settings_service import get_system_api_key
+            api_key_to_use = await get_system_api_key("finnhub_api_key")
+        if not api_key_to_use:
             logger.warning("FINNHUB_API_KEY not configured, skipping Finnhub news")
             return []
 
@@ -400,6 +403,9 @@ class FinnhubProvider:
             List of NewsArticle objects
         """
         api_key_to_use = api_key or settings.FINNHUB_API_KEY
+        if not api_key_to_use:
+            from app.services.settings_service import get_system_api_key
+            api_key_to_use = await get_system_api_key("finnhub_api_key")
         if not api_key_to_use:
             logger.warning("FINNHUB_API_KEY not configured, skipping Finnhub news")
             return []
