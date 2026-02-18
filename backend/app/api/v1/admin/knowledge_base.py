@@ -22,6 +22,10 @@ logger = logging.getLogger(__name__)
 router = APIRouter(tags=["Admin - Knowledge Base"])
 
 VALID_MARKETS = {"cn", "us", "hk", "metal"}
+
+# Redis cache for the slow daily-bars stats query (COUNT DISTINCT on 8M+ rows)
+_DAILY_BARS_STATS_CACHE_KEY = "kb:stats:daily_bars"
+_DAILY_BARS_STATS_TTL = 60  # seconds; data only changes when collection tasks run
 CLEARABLE_SOURCE_TYPES = {"news", "analysis", "report"}
 REBUILDABLE_SOURCE_TYPES = {
     "stock_profile", "stock_profile_sync", "news", "analysis", "report",
@@ -95,31 +99,52 @@ async def get_knowledge_base_stats(
             base["failedCount"] = report_failed_count
         embeddings[src_type] = base
 
-    # -- Daily bar stats by market --
-    bar_rows = await db.execute(text("""
-        SELECT market, COUNT(*) as count,
-               MAX(date) as last_date, MIN(date) as first_date,
-               COUNT(DISTINCT symbol) as symbol_count
-        FROM stock_daily_bars
-        GROUP BY market
-    """))
+    # -- Daily bar stats by market (cached: COUNT DISTINCT on 8M+ rows is 2-17s) --
     daily_bars: Dict[str, Any] = {}
-    for row in bar_rows:
-        daily_bars[row.market] = {
-            "count": row.count,
-            "symbolCount": row.symbol_count,
-            "firstDate": row.first_date.isoformat() if row.first_date else None,
-            "lastDate": row.last_date.isoformat() if row.last_date else None,
-        }
-    # Fill missing markets with zeros
-    for market in VALID_MARKETS:
-        if market not in daily_bars:
-            daily_bars[market] = {
-                "count": 0,
-                "symbolCount": 0,
-                "firstDate": None,
-                "lastDate": None,
+    try:
+        from app.db.redis import get_redis
+        _redis = await get_redis()
+        _cached = await _redis.get(_DAILY_BARS_STATS_CACHE_KEY)
+        if _cached:
+            daily_bars = json.loads(_cached)
+    except Exception as _e:
+        logger.debug("Daily bars stats cache read failed: %s", _e)
+
+    if not daily_bars:
+        bar_rows = await db.execute(text("""
+            SELECT market, COUNT(*) as count,
+                   MAX(date) as last_date, MIN(date) as first_date,
+                   COUNT(DISTINCT symbol) as symbol_count
+            FROM stock_daily_bars
+            GROUP BY market
+        """))
+        for row in bar_rows:
+            daily_bars[row.market] = {
+                "count": row.count,
+                "symbolCount": row.symbol_count,
+                "firstDate": row.first_date.isoformat() if row.first_date else None,
+                "lastDate": row.last_date.isoformat() if row.last_date else None,
             }
+        # Fill missing markets with zeros
+        for market in VALID_MARKETS:
+            if market not in daily_bars:
+                daily_bars[market] = {
+                    "count": 0,
+                    "symbolCount": 0,
+                    "firstDate": None,
+                    "lastDate": None,
+                }
+        # Store in Redis for subsequent requests
+        try:
+            from app.db.redis import get_redis
+            _redis = await get_redis()
+            await _redis.set(
+                _DAILY_BARS_STATS_CACHE_KEY,
+                json.dumps(daily_bars),
+                ex=_DAILY_BARS_STATS_TTL,
+            )
+        except Exception as _e:
+            logger.debug("Daily bars stats cache write failed: %s", _e)
 
     # -- Progress from Redis --
     progress = await _get_all_progress()

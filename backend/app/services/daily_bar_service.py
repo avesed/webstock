@@ -1,11 +1,14 @@
 """Service for collecting and querying daily OHLCV bars in PostgreSQL.
 
-Provides incremental collection from CanonicalCacheService and efficient
-batch queries returning columnar format for DataFrame construction.
+CN market uses akshare direct path (ak.stock_zh_a_hist, dedicated thread pool).
+US/HK/Metal use yfinance batch download (50 symbols/call, 5 concurrent batches).
+Bars are stored via INSERT ON CONFLICT DO NOTHING upsert with periodic commits.
 """
 
 import asyncio
 import logging
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from datetime import date, timedelta
 from decimal import Decimal
 from typing import Any, Optional
@@ -13,8 +16,7 @@ from typing import Any, Optional
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.services.canonical_cache_service import get_canonical_cache_service
-from app.services.stock_types import Market, detect_market
+from app.services.stock_types import Market, detect_market, normalize_symbol
 
 logger = logging.getLogger(__name__)
 
@@ -31,9 +33,31 @@ _MARKET_DATA_SOURCE: dict[str, str] = {
 _CN_MARKETS = {Market.SH.value, Market.SZ.value}
 
 INSERT_CHUNK_SIZE = 500
-MAX_CONCURRENT_FETCHES = 10
+# CN direct path: conservative concurrency to avoid Eastmoney rate limiting
+_CN_MAX_CONCURRENT = 12
+_CN_FETCH_TIMEOUT = 60  # seconds per symbol
+# yfinance batch path for US/HK/Metal markets
+_YF_BATCH_SIZE = 50           # symbols per yfinance.download() call
+_YF_MAX_CONCURRENT_BATCHES = 5  # simultaneous batch downloads
 # Commit every N symbols during upsert to bound transaction size
 _UPSERT_COMMIT_INTERVAL = 50
+
+# yfinance.shared._DFS is a global dict not safe for concurrent use across threads.
+# Serialize all yf.download() calls with this lock to prevent RuntimeError.
+_yf_download_lock = threading.Lock()
+
+# Dedicated thread pool for bulk CN daily bar collection (not shared with real-time path)
+_cn_bulk_executor: Optional[ThreadPoolExecutor] = None
+_cn_bulk_executor_lock = asyncio.Lock()
+
+
+async def _get_cn_bulk_executor() -> ThreadPoolExecutor:
+    global _cn_bulk_executor
+    if _cn_bulk_executor is None:
+        async with _cn_bulk_executor_lock:
+            if _cn_bulk_executor is None:
+                _cn_bulk_executor = ThreadPoolExecutor(max_workers=_CN_MAX_CONCURRENT)
+    return _cn_bulk_executor
 
 
 def _resolve_db_market(market_enum: Market) -> str:
@@ -81,94 +105,77 @@ class DailyBarService:
         # 1. Query latest dates per symbol already in DB
         latest_dates = await self._get_latest_dates_for_symbols(db, symbols)
 
-        # 2. Fetch bars concurrently with semaphore
-        cache_svc = await get_canonical_cache_service()
-        semaphore = asyncio.Semaphore(MAX_CONCURRENT_FETCHES)
+        # 2. Fetch bars from provider and upsert to DB
+        # CN: download all first (concurrent akshare), then upsert — CN tasks
+        #     run well within the time limit (~1706 symbols * 1 req = minutes).
+        # US/HK/Metal: download + upsert per batch so partial progress survives
+        #     a task timeout/restart (12K+ US symbols need several hours for
+        #     the initial bootstrap; inline commits let the next run resume).
         errors: list[str] = []
-        all_bars: list[tuple[str, str, list[dict]]] = []  # (symbol, data_source, bars)
-        completed = 0
-
-        async def fetch_one(symbol: str) -> None:
-            nonlocal completed
-            async with semaphore:
-                try:
-                    bars = await self._fetch_symbol_bars(
-                        cache_svc, symbol, latest_dates.get(symbol),
-                    )
-                    if bars:
-                        detected_market = detect_market(symbol)
-                        data_source = _MARKET_DATA_SOURCE.get(
-                            detected_market.value, "yfinance"
-                        )
-                        all_bars.append((symbol, data_source, bars))
-                    elif bars is not None:
-                        # Empty list -- up to date
-                        pass
-                    else:
-                        logger.warning(
-                            "No data returned for %s (market=%s)", symbol, market,
-                        )
-                except Exception as exc:
-                    msg = f"{symbol}: {exc}"
-                    errors.append(msg)
-                    logger.error("Failed to fetch bars for %s: %s", symbol, exc)
-                finally:
-                    completed += 1
-                    if completed % 200 == 0 or completed == len(symbols):
-                        logger.info(
-                            "Fetch progress: %d/%d completed (%d with data, %d errors)",
-                            completed, len(symbols), len(all_bars), len(errors),
-                        )
-                    if on_progress and (completed % 50 == 0 or completed == len(symbols)):
-                        try:
-                            await on_progress(completed, len(symbols), len(all_bars), len(errors))
-                        except Exception:
-                            pass  # Non-critical
-
-        tasks = []
-        for i, symbol in enumerate(symbols):
-            tasks.append(fetch_one(symbol))
-            if (i + 1) % 100 == 0:
-                logger.info("Scheduled fetch for %d/%d symbols", i + 1, len(symbols))
-
-        await asyncio.gather(*tasks)
-
-        # 3. Batch upsert into DB with periodic commits
         total_inserted = 0
-        symbols_since_commit = 0
-        for symbol, data_source, bars in all_bars:
-            try:
-                count = await self._batch_upsert(db, symbol, market, data_source, bars)
-                total_inserted += count
-            except Exception as exc:
-                msg = f"{symbol}: upsert error - {exc}"
-                errors.append(msg)
-                logger.error("Upsert failed for %s: %s", symbol, exc)
 
-            symbols_since_commit += 1
-            if symbols_since_commit >= _UPSERT_COMMIT_INTERVAL:
+        if market == "cn":
+            all_bars: list[tuple[str, str, list[dict]]] = []
+            completed = 0
+            executor = await _get_cn_bulk_executor()
+            semaphore = asyncio.Semaphore(_CN_MAX_CONCURRENT)
+
+            async def fetch_one(symbol: str) -> None:
+                nonlocal completed
+                async with semaphore:
+                    try:
+                        bars = await self._fetch_cn_bars_direct(
+                            symbol, latest_dates.get(symbol), executor,
+                        )
+                        if bars:
+                            all_bars.append((symbol, "akshare", bars))
+                        elif bars is None:
+                            logger.warning(
+                                "No data returned for %s (market=cn)", symbol,
+                            )
+                    except Exception as exc:
+                        errors.append(f"{symbol}: {exc}")
+                        logger.error("Failed to fetch CN bars for %s: %s", symbol, exc)
+                    finally:
+                        completed += 1
+                        if completed % 200 == 0 or completed == len(symbols):
+                            logger.info(
+                                "Fetch progress: %d/%d completed (%d with data, %d errors)",
+                                completed, len(symbols), len(all_bars), len(errors),
+                            )
+                        if on_progress and (completed % 50 == 0 or completed == len(symbols)):
+                            try:
+                                await on_progress(completed, len(symbols), len(all_bars), len(errors))
+                            except Exception:
+                                pass
+
+            tasks = [fetch_one(symbol) for symbol in symbols]
+            await asyncio.gather(*tasks)
+
+            # Upsert all CN bars with periodic commits
+            symbols_since_commit = 0
+            for symbol, data_source, bars in all_bars:
                 try:
-                    await db.commit()
+                    count = await self._batch_upsert(db, symbol, market, data_source, bars)
+                    total_inserted += count
                 except Exception as exc:
-                    logger.error(
-                        "Failed to commit daily bars batch: market=%s, "
-                        "symbols_in_batch=%d: %s",
-                        market, symbols_since_commit, exc,
-                    )
-                    raise
-                symbols_since_commit = 0
-
-        # Final commit for remaining symbols
-        if symbols_since_commit > 0:
-            try:
+                    errors.append(f"{symbol}: upsert error - {exc}")
+                    logger.error("Upsert failed for %s: %s", symbol, exc)
+                symbols_since_commit += 1
+                if symbols_since_commit >= _UPSERT_COMMIT_INTERVAL:
+                    await db.commit()
+                    symbols_since_commit = 0
+            if symbols_since_commit > 0:
                 await db.commit()
-            except Exception as exc:
-                logger.error(
-                    "Failed to commit final daily bars: market=%s, "
-                    "pending_symbols=%d, total_inserted=%d: %s",
-                    market, symbols_since_commit, total_inserted, exc,
-                )
-                raise
+
+        else:
+            # US / HK / Metal: download + upsert per batch (inline).
+            # Each 50-symbol batch is committed immediately so that partial
+            # progress persists if the task is killed by the time limit.
+            total_inserted, yf_errors = await self._collect_yf_batches(
+                db, market, symbols, latest_dates, on_progress,
+            )
+            errors.extend(yf_errors)
 
         logger.info(
             "Daily bar collection complete: market=%s, symbols=%d, new_bars=%d, errors=%d",
@@ -302,65 +309,273 @@ class DailyBarService:
         )
         return {row[0]: row[1] for row in result.fetchall()}
 
-    async def _fetch_symbol_bars(
+    async def _fetch_cn_bars_direct(
         self,
-        cache_svc: Any,
         symbol: str,
-        last_date: date | None,
+        last_date: Optional[date],
+        executor: ThreadPoolExecutor,
     ) -> Optional[list[dict]]:
-        """Fetch daily bars from CanonicalCacheService for one symbol.
+        """Fetch CN daily bars directly from akshare, bypassing CanonicalCacheService.
 
-        If last_date is None, fetches full history. Otherwise fetches
-        incrementally from last_date + 1 day.
+        Uses ak.stock_zh_a_hist (Eastmoney) with a dedicated thread pool.
+        Returns list of bar dicts with keys: date, open, high, low, close, volume.
+        Returns None on fetch failure, empty list if already up to date.
         """
         detected_market = detect_market(symbol)
+        code = normalize_symbol(symbol, detected_market)
         today = date.today()
 
         if last_date is None:
-            # Full history fetch
-            logger.debug("Fetching full history for %s", symbol)
-            bars = await cache_svc.get_history(
-                symbol=symbol,
-                interval="1d",
-                period_days=99999,
-                market=detected_market,
-            )
+            start_str = "19900101"
         else:
             start = last_date + timedelta(days=1)
-            if start > today:
+            if start >= today:
                 return []  # Already up to date
-            delta_days = (today - start).days + 1
-            logger.debug(
-                "Fetching bars for %s: last_date=%s, period_days=%d",
-                symbol, last_date, delta_days,
-            )
-            bars = await cache_svc.get_history(
-                symbol=symbol,
-                interval="1d",
-                period_days=delta_days,
-                market=detected_market,
-                start=str(start),
-                end=str(today),
+            start_str = start.strftime("%Y%m%d")
+
+        end_str = today.strftime("%Y%m%d")
+
+        def fetch() -> Any:
+            import akshare as ak
+            return ak.stock_zh_a_hist(
+                symbol=code,
+                period="daily",
+                start_date=start_str,
+                end_date=end_str,
+                adjust="qfq",
             )
 
-        if not bars:
-            return bars  # None or empty list
+        loop = asyncio.get_running_loop()
+        try:
+            df = await asyncio.wait_for(
+                loop.run_in_executor(executor, fetch),
+                timeout=_CN_FETCH_TIMEOUT,
+            )
+        except asyncio.TimeoutError:
+            logger.warning("Timeout fetching CN bars for %s (code=%s)", symbol, code)
+            return None
 
-        # Filter out bars with dates on or before last_date (safety dedup)
+        if df is None or df.empty:
+            return []
+
+        bars: list[dict] = []
+        for _, row in df.iterrows():
+            date_val = row.get("日期")
+            if date_val is None:
+                continue
+            bars.append({
+                "date": str(date_val)[:10],
+                "open": float(row.get("开盘") or 0),
+                "high": float(row.get("最高") or 0),
+                "low": float(row.get("最低") or 0),
+                "close": float(row.get("收盘") or 0),
+                "volume": int(row.get("成交量") or 0),
+            })
+
+        # Safety dedup: drop bars on or before last_date
         if last_date is not None:
-            filtered = []
-            for bar in bars:
-                bar_date = _parse_bar_date(bar.get("date", ""))
-                if bar_date is not None and bar_date > last_date:
-                    filtered.append(bar)
-            if len(bars) != len(filtered):
-                logger.debug(
-                    "Filtered %d -> %d bars for %s (dedup before %s)",
-                    len(bars), len(filtered), symbol, last_date,
-                )
-            return filtered
+            last_str = str(last_date)
+            bars = [b for b in bars if b["date"] > last_str]
 
         return bars
+
+    async def _collect_yf_batches(
+        self,
+        db: AsyncSession,
+        market: str,
+        symbols: list[str],
+        latest_dates: dict[str, date],
+        on_progress: Any,
+    ) -> tuple[int, list[str]]:
+        """Download yfinance batches and upsert each batch immediately to DB.
+
+        Committing after each 50-symbol batch means partial progress survives
+        a Celery task timeout: the next run's _get_latest_dates_for_symbols()
+        will skip already-inserted symbols via the incremental path.
+
+        Returns (total_inserted, errors).
+        """
+        from collections import defaultdict
+
+        today = date.today()
+        total_inserted = 0
+        errors: list[str] = []
+
+        # Group symbols by the start_date they need.
+        date_groups: dict[Optional[str], list[tuple[str, Optional[date]]]] = defaultdict(list)
+        up_to_date_count = 0
+
+        for sym in symbols:
+            last_date = latest_dates.get(sym)
+            if last_date is None:
+                date_groups[None].append((sym, None))
+            else:
+                start = last_date + timedelta(days=1)
+                if start >= today:
+                    up_to_date_count += 1
+                    continue
+                date_groups[start.strftime("%Y-%m-%d")].append((sym, last_date))
+
+        if up_to_date_count:
+            logger.info("Skipped %d already-up-to-date symbols", up_to_date_count)
+
+        # Build flat list of (start_str, batch) chunks
+        batches: list[tuple[Optional[str], list[tuple[str, Optional[date]]]]] = []
+        for start_key, group in date_groups.items():
+            for i in range(0, len(group), _YF_BATCH_SIZE):
+                batches.append((start_key, group[i : i + _YF_BATCH_SIZE]))
+
+        total_symbols = len(symbols) - up_to_date_count
+        logger.info(
+            "yfinance batch download: %d batches, %d date groups, %d symbols to fetch",
+            len(batches), len(date_groups), total_symbols,
+        )
+
+        semaphore = asyncio.Semaphore(_YF_MAX_CONCURRENT_BATCHES)
+        batches_done = 0
+        symbols_done = up_to_date_count
+        symbols_with_data = 0
+
+        async def run_batch(
+            start_str: Optional[str],
+            batch: list[tuple[str, Optional[date]]],
+        ) -> None:
+            nonlocal batches_done, symbols_done, symbols_with_data, total_inserted
+            async with semaphore:
+                try:
+                    batch_bars, batch_errs = await self._fetch_yf_batch(start_str, batch)
+                    errors.extend(batch_errs)
+
+                    # Upsert this batch immediately and commit so progress
+                    # persists even if the task is killed later.
+                    for symbol, data_source, bars in batch_bars:
+                        try:
+                            count = await self._batch_upsert(
+                                db, symbol, market, data_source, bars,
+                            )
+                            total_inserted += count
+                        except Exception as exc:
+                            errors.append(f"{symbol}: upsert error - {exc}")
+                            logger.error("Upsert failed for %s: %s", symbol, exc)
+
+                    if batch_bars:
+                        await db.commit()
+                        symbols_with_data += len(batch_bars)
+
+                except Exception as exc:
+                    logger.error(
+                        "Batch download failed (start=%s, size=%d): %s",
+                        start_str, len(batch), exc,
+                    )
+                    errors.extend(f"{sym}: batch error - {exc}" for sym, _ in batch)
+                finally:
+                    batches_done += 1
+                    symbols_done += len(batch)
+                    if batches_done % 20 == 0 or batches_done == len(batches):
+                        logger.info(
+                            "Batch progress: %d/%d batches done, %d/%d symbols, "
+                            "%d inserted, %d errors",
+                            batches_done, len(batches), symbols_done, len(symbols),
+                            total_inserted, len(errors),
+                        )
+                    if on_progress and (symbols_done % 500 == 0 or batches_done == len(batches)):
+                        try:
+                            await on_progress(
+                                symbols_done, len(symbols), symbols_with_data, len(errors),
+                            )
+                        except Exception:
+                            pass
+
+        await asyncio.gather(*[run_batch(s, b) for s, b in batches])
+        return total_inserted, errors
+
+    async def _fetch_yf_batch(
+        self,
+        start_str: Optional[str],
+        symbols_with_last_dates: list[tuple[str, Optional[date]]],
+    ) -> tuple[list[tuple[str, str, list[dict]]], list[str]]:
+        """Download a batch of symbols from yfinance in a single call.
+
+        Returns (bars_list, errors) where bars_list items are (symbol, data_source, bars).
+        Symbols absent from the response (delisted, invalid) are silently skipped.
+        """
+        import pandas as pd
+        import yfinance as yf
+
+        symbols = [sym for sym, _ in symbols_with_last_dates]
+        last_dates_map = {sym: ld for sym, ld in symbols_with_last_dates}
+
+        # Use a safe far-past date for full-history downloads
+        actual_start = start_str if start_str is not None else "1970-01-01"
+
+        def download() -> Any:
+            # yfinance.shared._DFS is a global, non-thread-safe accumulator.
+            # Serialize downloads to prevent concurrent thread corruption.
+            with _yf_download_lock:
+                return yf.download(
+                    symbols,
+                    start=actual_start,
+                    auto_adjust=True,
+                    progress=False,
+                )
+
+        loop = asyncio.get_running_loop()
+        df = await loop.run_in_executor(None, download)
+
+        if df is None or df.empty:
+            logger.warning(
+                "Empty batch response: %d symbols, start=%s", len(symbols), actual_start,
+            )
+            return [], []
+
+        is_multi = isinstance(df.columns, pd.MultiIndex)
+        results: list[tuple[str, str, list[dict]]] = []
+        errors: list[str] = []
+
+        for sym in symbols:
+            try:
+                if is_multi:
+                    sym_df = df[
+                        [("Open", sym), ("High", sym), ("Low", sym), ("Close", sym), ("Volume", sym)]
+                    ].copy()
+                    sym_df.columns = ["open", "high", "low", "close", "volume"]
+                else:
+                    # Single-symbol fallback (flat columns)
+                    sym_df = df[["Open", "High", "Low", "Close", "Volume"]].copy()
+                    sym_df.columns = ["open", "high", "low", "close", "volume"]
+
+                # Drop rows with missing or zero close price
+                sym_df = sym_df.dropna(subset=["close"])
+                sym_df = sym_df[sym_df["close"] > 0]
+
+                # Dedup: only keep bars strictly after last_date
+                last_date = last_dates_map.get(sym)
+                if last_date is not None:
+                    sym_df = sym_df[sym_df.index.date > last_date]
+
+                bars = [
+                    {
+                        "date": str(idx.date()),
+                        "open": float(row["open"]),
+                        "high": float(row["high"]),
+                        "low": float(row["low"]),
+                        "close": float(row["close"]),
+                        "volume": int(row["volume"]),
+                    }
+                    for idx, row in sym_df.iterrows()
+                ]
+
+                if bars:
+                    results.append((sym, "yfinance", bars))
+
+            except KeyError:
+                # Symbol not present in batch response (delisted / invalid)
+                logger.debug("Symbol %s absent from batch download response", sym)
+            except Exception as exc:
+                errors.append(f"{sym}: {exc}")
+                logger.warning("Failed to extract bars for %s from batch: %s", sym, exc)
+
+        return results, errors
 
     async def _batch_upsert(
         self,

@@ -5,7 +5,6 @@ qlib-service -> main backend) and are secured via a shared token
 in the X-Internal-Token header rather than JWT user authentication.
 """
 
-import asyncio
 import hmac
 import logging
 from datetime import date
@@ -90,41 +89,7 @@ class HistoryBatchResponse(CamelModel):
     errors: list[str] = []
 
 
-# ---------------------------------------------------------------------------
-# Symbol fetchers (synchronous, run via asyncio.to_thread)
-# ---------------------------------------------------------------------------
 
-
-def _fetch_sp500_symbols() -> list[str]:
-    """Fetch S&P 500 symbols from Wikipedia. Returns list or raises."""
-    import pandas as pd
-
-    tables = pd.read_html(
-        "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies"
-    )
-    df = tables[0]
-    symbols = df["Symbol"].tolist()
-    # Wikipedia uses "." in tickers like BRK.B; yfinance uses "-"
-    return [s.replace(".", "-") for s in symbols]
-
-
-def _fetch_cn_symbols() -> list[str]:
-    """Fetch A-share symbols from akshare and convert to WebStock format."""
-    import akshare as ak
-
-    df = ak.stock_zh_a_spot_em()
-    if df is None or df.empty:
-        raise ValueError("akshare returned empty A-share data")
-
-    codes = df["代码"].astype(str).tolist()
-    symbols = []
-    for code in codes:
-        code = code.strip()
-        if code.startswith(("6", "9")):
-            symbols.append(f"{code}.SS")
-        else:
-            symbols.append(f"{code}.SZ")
-    return symbols
 
 
 # ---------------------------------------------------------------------------
@@ -237,16 +202,22 @@ async def get_history_batch(
 
 
 async def _get_us_symbols() -> list[str]:
-    """Get US symbols from Wikipedia S&P 500 list with static fallback."""
+    """Get US symbols from the local stock list index."""
     try:
-        symbols = await asyncio.to_thread(_fetch_sp500_symbols)
-        logger.info("Fetched %d S&P 500 symbols from Wikipedia", len(symbols))
-        return symbols
+        from app.services.stock_list_service import get_stock_list_service
+
+        svc = await get_stock_list_service()
+        # Exclude OTC (OOTC) — poor data coverage, not useful for quant analysis
+        _US_MAJOR_EXCHANGES = {"XNAS", "XNYS", "ARCX", "BATS", "XASE"}
+        symbols = [s.symbol for s in svc.stocks
+                   if s.market == "us" and s.exchange in _US_MAJOR_EXCHANGES]
+        if symbols:
+            logger.info("Fetched %d US symbols from local stock list", len(symbols))
+            return symbols
+        logger.warning("Local stock list returned 0 US symbols, using fallback")
     except Exception as exc:
-        logger.warning(
-            "Failed to fetch S&P 500 symbols, using fallback: %s", exc
-        )
-        return list(_US_FALLBACK_SYMBOLS)
+        logger.warning("Failed to load US symbols from stock list: %s", exc)
+    return list(_US_FALLBACK_SYMBOLS)
 
 
 async def _get_hk_symbols() -> list[str]:
@@ -261,13 +232,16 @@ async def _get_hk_symbols() -> list[str]:
 
 
 async def _get_cn_symbols() -> list[str]:
-    """Get CN symbols from akshare with static fallback."""
+    """Get CN symbols from the local stock list index."""
     try:
-        symbols = await asyncio.to_thread(_fetch_cn_symbols)
-        logger.info("Fetched %d A-share symbols from akshare", len(symbols))
-        return symbols
+        from app.services.stock_list_service import get_stock_list_service
+
+        svc = await get_stock_list_service()
+        symbols = [s.symbol for s in svc.stocks if s.market in ("sh", "sz")]
+        if symbols:
+            logger.info("Fetched %d CN symbols from local stock list", len(symbols))
+            return symbols
+        logger.warning("Local stock list returned 0 CN symbols, using fallback")
     except Exception as exc:
-        logger.warning(
-            "Failed to fetch A-share symbols, using fallback: %s", exc
-        )
-        return list(_CN_FALLBACK_SYMBOLS)
+        logger.warning("Failed to load CN symbols from stock list: %s", exc)
+    return list(_CN_FALLBACK_SYMBOLS)
