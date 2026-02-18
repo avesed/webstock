@@ -272,6 +272,29 @@ for i in $(seq 1 30); do
     sleep 1
 done
 
+# ============ Clean orphan Redis locks ============
+# On container restart, any daily-bar locks in Redis are orphans — the Celery
+# workers that held them died with the old container.  Clean them up before
+# starting new workers so tasks are not blocked for hours.
+python3 -c "
+import redis, os
+try:
+    r = redis.from_url(os.environ.get('REDIS_URL', 'redis://localhost:6379/0'), decode_responses=True)
+    markets = ('cn', 'us', 'hk', 'metal')
+    cleaned = []
+    for m in markets:
+        for suffix in ('lock', 'progress', 'queued'):
+            key = f'kb:daily_bars:{m}:{suffix}'
+            if r.delete(key):
+                cleaned.append(key)
+    if cleaned:
+        print(f'  -> Cleaned {len(cleaned)} orphan key(s): {cleaned}')
+    else:
+        print('  -> No orphan daily-bar locks found')
+except Exception as e:
+    print(f'  -> WARNING: Could not clean orphan locks: {e}')
+"
+
 # ============ Wait for PostgreSQL ============
 echo "[3/5] Waiting for PostgreSQL..."
 
