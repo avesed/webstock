@@ -128,7 +128,7 @@ class NewsStorageService:
 
             # Return relative path
             relative_path = str(file_path.relative_to(self.base_path))
-            logger.info(
+            logger.debug(
                 "Saved news content: news_id=%s, symbol=%s, path=%s",
                 news_id, symbol, relative_path
             )

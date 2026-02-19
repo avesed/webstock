@@ -154,7 +154,7 @@ def _rebuild_daily_bars_counter_sync(market: str):
         r = _get_sync_redis()
         from app.api.v1.admin.knowledge_base import COUNTER_KEY_DAILY_BARS
         r.set(COUNTER_KEY_DAILY_BARS.format(market=market), json.dumps(counter))
-        logger.info(
+        logger.debug(
             "Sync counter rebuild for market=%s: %d bars, %d symbols",
             market, count, symbol_count,
         )
@@ -196,7 +196,7 @@ async def _rebuild_daily_bars_counter_async(market: str):
             COUNTER_KEY_DAILY_BARS.format(market=market),
             json.dumps(counter),
         )
-        logger.info(
+        logger.debug(
             "Rebuilt daily bars counter for market=%s: %d bars, %d symbols",
             market, r.count, r.symbol_count,
         )
@@ -220,7 +220,7 @@ def collect_market_daily_bars(self, market: str):
     Args:
         market: Market code (us, hk, cn, metal).
     """
-    logger.info("Starting daily bar collection for market=%s (task_id=%s)", market, self.request.id)
+    logger.info("日线数据：开始采集%s市场", market)
 
     owner = _acquire_daily_bar_lock_sync(market, task_id=self.request.id)
     if owner is None:
@@ -239,7 +239,7 @@ def collect_market_daily_bars(self, market: str):
             logger.warning("No symbols found for market=%s, skipping", market)
             return {"symbol_count": 0, "new_bars": 0, "errors": ["No symbols"]}
 
-        logger.info("Resolved %d symbols for market=%s", len(symbols), market)
+        logger.debug("Resolved %d symbols for market=%s", len(symbols), market)
         _update_daily_bar_progress_sync(market, 0, len(symbols), 0)
 
         async def _on_progress(completed: int, total: int, with_data: int, errors: int):
@@ -258,7 +258,7 @@ def collect_market_daily_bars(self, market: str):
     try:
         result = run_async_task(_collect)
         logger.info(
-            "Daily bar collection result for market=%s: symbols=%d, new_bars=%d, errors=%d",
+            "日线数据：%s市场完成 %d只股票 新增%d条 %d错误",
             market,
             result.get("symbol_count", 0),
             result.get("new_bars", 0),
@@ -271,11 +271,11 @@ def collect_market_daily_bars(self, market: str):
             from worker.tasks.qlib_sync import sync_qlib_market
 
             sync_qlib_market.delay(market)
-            logger.info("Triggered Qlib sync for market=%s", market)
+            logger.debug("Triggered Qlib sync for market=%s", market)
 
         return result
     except Exception as exc:
-        logger.error(
+        logger.exception(
             "Daily bar collection failed for market=%s: %s", market, exc
         )
         raise self.retry(exc=exc)
@@ -300,7 +300,7 @@ def rebuild_market_daily_bars(self, market: str):
     deleted before re-collection begins.  Uses the same per-market Redis lock
     as collect_market_daily_bars to prevent concurrent runs.
     """
-    logger.info("Starting daily bar REBUILD for market=%s (task_id=%s)", market, self.request.id)
+    logger.info("日线重建：开始%s市场", market)
 
     owner = _acquire_daily_bar_lock_sync(market, task_id=self.request.id)
     if owner is None:
@@ -319,7 +319,7 @@ def rebuild_market_daily_bars(self, market: str):
         # Phase 1: Delete existing bars
         async with get_task_session() as db:
             deleted = await service.delete_market_bars(db, market)
-            logger.info("Rebuild phase 1 complete: deleted %d bars for market=%s", deleted, market)
+            logger.debug("Rebuild phase 1 complete: deleted %d bars for market=%s", deleted, market)
 
         # Write zero counter so UI immediately reflects the deletion
         await _rebuild_daily_bars_counter_async(market)
@@ -330,7 +330,7 @@ def rebuild_market_daily_bars(self, market: str):
             logger.warning("No symbols found for market=%s, skipping rebuild", market)
             return {"symbol_count": 0, "new_bars": 0, "deleted": deleted, "errors": ["No symbols"]}
 
-        logger.info("Rebuild phase 2: collecting %d symbols for market=%s", len(symbols), market)
+        logger.debug("Rebuild phase 2: collecting %d symbols for market=%s", len(symbols), market)
         _update_daily_bar_progress_sync(market, 0, len(symbols), 0)
 
         async def _on_progress(completed: int, total: int, with_data: int, errors: int):
@@ -349,7 +349,7 @@ def rebuild_market_daily_bars(self, market: str):
     try:
         result = run_async_task(_rebuild)
         logger.info(
-            "Daily bar rebuild result for market=%s: deleted=%d, symbols=%d, new_bars=%d, errors=%d",
+            "日线重建：%s市场完成 删除%d 股票%d 新增%d 错误%d",
             market,
             result.get("deleted", 0),
             result.get("symbol_count", 0),
@@ -361,11 +361,11 @@ def rebuild_market_daily_bars(self, market: str):
             from worker.tasks.qlib_sync import sync_qlib_market
 
             sync_qlib_market.delay(market)
-            logger.info("Triggered Qlib sync for market=%s after rebuild", market)
+            logger.debug("Triggered Qlib sync for market=%s after rebuild", market)
 
         return result
     except Exception as exc:
-        logger.error("Daily bar rebuild failed for market=%s: %s", market, exc)
+        logger.exception("Daily bar rebuild failed for market=%s: %s", market, exc)
         raise
     finally:
         # Always refresh the counter so a Phase-1-zero doesn't persist on crash.

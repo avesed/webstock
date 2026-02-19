@@ -95,7 +95,7 @@ async def _monitor_rss_feeds_async() -> Dict[str, Any]:
     from app.models.news import News, FilterStatus
     from app.models.rss_feed import RssFeed
 
-    logger.info("Starting RSS monitor task")
+    logger.info("RSS监控：开始")
     await _update_rss_progress("init", "Initializing RSS monitor...", 0)
 
     stats = {
@@ -141,7 +141,7 @@ async def _monitor_rss_feeds_async() -> Dict[str, Any]:
             await db.commit()
 
             if stats["feeds_polled"] == 0:
-                logger.info("RSS monitor: no feeds due for polling")
+                logger.debug("RSS monitor: no feeds due for polling")
                 await _finish_rss_progress(stats)
                 return stats
 
@@ -161,7 +161,7 @@ async def _monitor_rss_feeds_async() -> Dict[str, Any]:
                 stats["total_new"] += feed_result.get("new_count", 0)
 
             if not all_new_articles:
-                logger.info("RSS monitor: no new articles to process")
+                logger.debug("RSS monitor: no new articles to process")
                 await _finish_rss_progress(stats)
                 return stats
 
@@ -235,7 +235,7 @@ async def _monitor_rss_feeds_async() -> Dict[str, Any]:
             elif not enable_pipeline:
                 # Pipeline OFF: articles already saved with basic metadata.
                 # No scoring, no dispatch. Clear the list so no dispatch happens.
-                logger.info(
+                logger.debug(
                     "RSS monitor: pipeline OFF, %d articles saved with basic metadata only",
                     len(all_new_articles),
                 )
@@ -295,7 +295,7 @@ async def _monitor_rss_feeds_async() -> Dict[str, Any]:
                     for i in range(0, len(batch), BATCH_CHUNK_SIZE):
                         chunk = batch[i:i + BATCH_CHUNK_SIZE]
                         batch_fetch_content.delay(chunk)
-                        logger.info(
+                        logger.debug(
                             "Dispatched batch_fetch_content: chunk %d/%d (%d articles)",
                             i // BATCH_CHUNK_SIZE + 1,
                             (len(batch) + BATCH_CHUNK_SIZE - 1) // BATCH_CHUNK_SIZE,
@@ -311,18 +311,12 @@ async def _monitor_rss_feeds_async() -> Dict[str, Any]:
         await _finish_rss_progress(stats)
 
     logger.info(
-        "RSS monitor completed: feeds=%d, new=%d, dispatched=%d, "
-        "discard=%d, lightweight=%d, full=%d, critical=%d, errors=%d, "
-        "pipeline=%s",
+        "RSS监控完成：源=%d 新增=%d 派发=%d 丢弃=%d 错误=%d",
         stats["feeds_polled"],
         stats["total_new"],
         stats["standard_dispatched"],
         stats["layer1_discard"],
-        stats["layer1_lightweight"],
-        stats["layer1_full_analysis"],
-        stats["layer1_critical"],
         stats["errors"],
-        stats["llm_pipeline_enabled"],
     )
 
     return stats

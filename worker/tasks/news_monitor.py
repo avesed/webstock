@@ -134,7 +134,8 @@ async def _monitor_news_async() -> Dict[str, Any]:
     from app.services.news_service import NewsArticle
     from app.services.settings_service import SettingsService
 
-    logger.info("Starting news monitor task")
+    t0 = time.monotonic()
+    logger.info("新闻监控：开始")
     await _update_progress("init", "Initializing news monitor...", 0)
 
     stats = {
@@ -190,7 +191,7 @@ async def _monitor_news_async() -> Dict[str, Any]:
                         if results:
                             for item in results:
                                 articles.append(_dict_to_news_article(item))
-                        logger.info(f"Layer 1: Finnhub [{cat}] fetched {len(results or [])} articles")
+                        logger.debug(f"Layer 1: Finnhub [{cat}] fetched {len(results or [])} articles")
                         return articles
                     except Exception as e:
                         logger.warning(f"Layer 1: Finnhub [{cat}] fetch failed: {e}")
@@ -213,7 +214,7 @@ async def _monitor_news_async() -> Dict[str, Any]:
                         for item in akshare_results:
                             akshare_articles.append(_dict_to_news_article(item))
                     stats["global_akshare"] = len(akshare_articles)
-                    logger.info(f"Layer 1: AKShare fetched {len(akshare_articles)} articles")
+                    logger.debug(f"Layer 1: AKShare fetched {len(akshare_articles)} articles")
                 except Exception as e:
                     logger.warning(f"Layer 1: AKShare fetch failed: {e}")
 
@@ -237,9 +238,8 @@ async def _monitor_news_async() -> Dict[str, Any]:
                         seen_urls.add(a.url)
 
                 logger.info(
-                    f"Layer 1: {len(global_articles)} fetched (Finnhub={stats['global_finnhub']}, "
-                    f"AKShare={stats['global_akshare']}), "
-                    f"{len(existing_urls)} already in DB, {len(new_articles)} new"
+                    "新闻监控：获取%d篇 去重后新增%d篇",
+                    len(global_articles), len(new_articles),
                 )
 
                 if enable_pipeline:
@@ -371,8 +371,7 @@ async def _monitor_news_async() -> Dict[str, Any]:
                             )
 
                     logger.info(
-                        "Layer 1 (pipeline ON): discard=%d, lightweight=%d, "
-                        "full_analysis=%d, critical=%d",
+                        "新闻监控L1：丢弃=%d 轻量=%d 深度=%d 关键=%d",
                         stats["layer1_discard"],
                         stats["layer1_lightweight"],
                         stats["layer1_full_analysis"],
@@ -400,7 +399,7 @@ async def _monitor_news_async() -> Dict[str, Any]:
                         db.add(news)
                         stats["articles_stored"] += 1
 
-                    logger.info(
+                    logger.debug(
                         "Layer 1 (pipeline OFF): stored=%d articles with basic metadata",
                         stats["articles_stored"],
                     )
@@ -415,8 +414,6 @@ async def _monitor_news_async() -> Dict[str, Any]:
                 query = select(WatchlistItem.symbol).distinct()
                 result = await db.execute(query)
                 watchlist_symbols = [row[0] for row in result.fetchall()]
-
-                import asyncio
 
                 # Pass 1: Collect all watchlist articles via data-service
                 watchlist_collected = []  # (symbol, article_data)
@@ -434,7 +431,7 @@ async def _monitor_news_async() -> Dict[str, Any]:
                         stats["watchlist_fetched"] += len(raw)
                         await asyncio.sleep(0.3)  # Rate limiting
                     except Exception as e:
-                        logger.warning(f"Error fetching watchlist news for {symbol}: {e}")
+                        logger.debug(f"Error fetching watchlist news for {symbol}: {e}")
                         continue
 
                 # Pass 2: Batch dedup against DB (single query)
@@ -588,12 +585,9 @@ async def _monitor_news_async() -> Dict[str, Any]:
                         )
 
                 logger.info(
-                    "Watchlist: fetched=%d, collected=%d, dupes=%d, new=%d, scored=%d",
+                    "新闻监控自选：获取%d 新增%d",
                     stats["watchlist_fetched"],
-                    len(watchlist_collected),
-                    len(existing_wl_urls),
                     len(new_watchlist),
-                    wl_scoring_count,
                 )
 
             except Exception as e:
@@ -609,7 +603,7 @@ async def _monitor_news_async() -> Dict[str, Any]:
                 await db.refresh(news_obj)  # Ensure ID is loaded
                 if news_obj.id:
                     analyze_important_news.delay(str(news_obj.id))
-                    logger.info(
+                    logger.debug(
                         "Queued AI analysis for important article: %s (score=%.1f)",
                         title_preview,
                         importance,
@@ -667,14 +661,14 @@ async def _monitor_news_async() -> Dict[str, Any]:
                     for i in range(0, len(batch), BATCH_CHUNK_SIZE):
                         chunk = batch[i:i + BATCH_CHUNK_SIZE]
                         batch_fetch_content.delay(chunk)
-                        logger.info(
+                        logger.debug(
                             "Dispatched batch_fetch_content: chunk %d/%d (%d articles)",
                             i // BATCH_CHUNK_SIZE + 1,
                             (len(batch) + BATCH_CHUNK_SIZE - 1) // BATCH_CHUNK_SIZE,
                             len(chunk),
                         )
             elif not enable_pipeline:
-                logger.info("Pipeline OFF: skipping batch fetch dispatch for %d articles", len(all_new_articles))
+                logger.debug("Pipeline OFF: skipping batch fetch dispatch for %d articles", len(all_new_articles))
 
             # Check news alerts
             alerts_triggered = await _check_news_alerts(db, stats["articles_stored"])
@@ -688,21 +682,10 @@ async def _monitor_news_async() -> Dict[str, Any]:
         await _finish_progress(stats)
 
     logger.info(
-        "News monitor completed: "
-        "global=%d (finnhub=%d, akshare=%d), "
-        "watchlist=%d, stored=%d, alerts=%d, "
-        "pipeline=%s, discard=%d, lightweight=%d, full=%d, critical=%d",
-        stats["global_fetched"],
-        stats["global_finnhub"],
-        stats["global_akshare"],
-        stats["watchlist_fetched"],
+        "新闻监控完成：入库%d 告警%d 耗时%.0f秒",
         stats["articles_stored"],
         stats["alerts_triggered"],
-        stats["llm_pipeline_enabled"],
-        stats["layer1_discard"],
-        stats["layer1_lightweight"],
-        stats["layer1_full_analysis"],
-        stats["layer1_critical"],
+        time.monotonic() - t0,
     )
 
     return stats
@@ -761,7 +744,7 @@ async def _check_news_alerts(db, new_article_count: int) -> int:
                         break  # Only trigger once per alert-news pair
 
     except Exception as e:
-        logger.error(f"Error checking news alerts: {e}")
+        logger.exception("Error checking news alerts: %s", e)
 
     return alerts_triggered
 

@@ -186,10 +186,10 @@ def build_stock_knowledge_base(self):
         logger.info("[StockProfileTask] Build already in progress, skipping")
         return {"skipped": True, "reason": "already_running"}
 
-    logger.info("[StockProfileTask] Starting full knowledge base build")
+    logger.info("知识库：开始全量构建")
     try:
         result = run_async_task(_build_kb_async)
-        logger.info("[StockProfileTask] Build complete: %s", result)
+        logger.info("知识库：全量构建完成 %s", result)
         return result
     except Exception as e:
         logger.exception("[StockProfileTask] Build failed: %s", e)
@@ -218,10 +218,10 @@ def sync_concept_boards(self):
         logger.info("[StockProfileTask] Concept sync already in progress, skipping")
         return {"skipped": True, "reason": "already_running"}
 
-    logger.info("[StockProfileTask] Starting daily concept board sync")
+    logger.info("知识库：开始概念同步")
     try:
         result = run_async_task(_sync_concepts_async)
-        logger.info("[StockProfileTask] Concept sync complete: %s", result)
+        logger.info("知识库：概念同步完成 %s", result)
         return result
     except Exception as e:
         logger.exception("[StockProfileTask] Concept sync failed: %s", e)
@@ -274,10 +274,10 @@ def collect_market_profiles(self, market: str):
             logger.warning("[StockProfileTask] market=%s already locked, skipping", market)
         return {"skipped": True, "reason": "already_running"}
 
-    logger.info("[StockProfileTask] Starting per-market collection: market=%s", market)
+    logger.info("知识库：开始采集%s市场档案", market)
     try:
         result = run_async_task(lambda: _collect_market_async(market))
-        logger.info("[StockProfileTask] market=%s complete: %s", market, result)
+        logger.info("知识库：%s市场完成 %s", market, result)
         return result
     except Exception as e:
         logger.exception("[StockProfileTask] market=%s failed: %s", market, e)
@@ -327,7 +327,7 @@ async def _rebuild_embedding_counter_async(source_type: str) -> None:
             COUNTER_KEY_EMBEDDING.format(source_type=source_type),
             json.dumps(counter),
         )
-        logger.info(
+        logger.debug(
             "[StockProfileTask] Rebuilt %s embedding counter: %d embeddings",
             source_type, r.count,
         )
@@ -397,7 +397,7 @@ async def _build_kb_async() -> Dict[str, Any]:
         stats["cn"] = len(profiles)
         collect_s = _time.monotonic() - t0
         logger.info(
-            "[StockProfileTask] CN collected: %d profiles in %.0fs, starting embed",
+            "知识库：CN采集完成 %d个档案 %.0f秒",
             len(profiles), collect_s,
         )
         if not profiles:
@@ -413,8 +413,8 @@ async def _build_kb_async() -> Dict[str, Any]:
             progress_callback=_cn_progress,
         )
         logger.info(
-            "[StockProfileTask] CN embed done: %d embedded, %d errors in %.0fs total",
-            emb, err, _time.monotonic() - t0,
+            "知识库：CN嵌入完成 %d成功 %d失败",
+            emb, err,
         )
         return emb, err, profiles
 
@@ -428,7 +428,7 @@ async def _build_kb_async() -> Dict[str, Any]:
         us_profiles = await svc.collect_us_profiles()
         stats["us"] = len(us_profiles)
         logger.info(
-            "[StockProfileTask] US collected: %d profiles in %.0fs, starting embed",
+            "知识库：US采集完成 %d个档案 %.0f秒",
             len(us_profiles), _time.monotonic() - t0,
         )
 
@@ -452,7 +452,7 @@ async def _build_kb_async() -> Dict[str, Any]:
         hk_profiles = await svc.collect_hk_profiles()
         stats["hk"] = len(hk_profiles)
         logger.info(
-            "[StockProfileTask] HK collected: %d profiles in %.0fs, starting embed",
+            "知识库：HK采集完成 %d个档案 %.0f秒",
             len(hk_profiles), _time.monotonic() - t0_hk,
         )
 
@@ -477,8 +477,8 @@ async def _build_kb_async() -> Dict[str, Any]:
             total_err += us_err
 
         logger.info(
-            "[StockProfileTask] yfinance pipeline done: US+HK %d embedded, %d errors in %.0fs",
-            total_emb, total_err, _time.monotonic() - t0,
+            "知识库：US+HK嵌入完成 %d成功 %d失败",
+            total_emb, total_err,
         )
         return total_emb, total_err
 
@@ -502,9 +502,8 @@ async def _build_kb_async() -> Dict[str, Any]:
 
     total = stats["cn"] + stats["us"] + stats["hk"]
     logger.info(
-        "[StockProfileTask] Full build done: %d total (CN=%d, US=%d, HK=%d), "
-        "%d embedded, %d errors, %.0fs elapsed",
-        total, stats["cn"], stats["us"], stats["hk"],
+        "知识库：全量完成 CN=%d US=%d HK=%d 嵌入=%d 错误=%d %.0f秒",
+        stats["cn"], stats["us"], stats["hk"],
         stats["embedded"], stats["errors"],
         _time.monotonic() - build_t0,
     )
@@ -539,7 +538,7 @@ async def _collect_market_async(market: str) -> Dict[str, Any]:
 
     # Phase 1: Collect
     _update_market_progress_sync(market, "collecting", 0, 1)
-    logger.info("[StockProfileTask] Collecting profiles for market=%s", market)
+    logger.info("知识库：开始采集%s市场档案", market)
 
     if market == "cn":
         profiles = await svc.collect_cn_profiles()
@@ -551,7 +550,7 @@ async def _collect_market_async(market: str) -> Dict[str, Any]:
     stats["collected"] = len(profiles)
     collect_s = _time.monotonic() - t0
     logger.info(
-        "[StockProfileTask] market=%s collected %d profiles in %.0fs",
+        "知识库：%s采集完成 %d个档案 %.0f秒",
         market, len(profiles), collect_s,
     )
 
@@ -598,7 +597,7 @@ async def _collect_market_async(market: str) -> Dict[str, Any]:
 
     elapsed = _time.monotonic() - t0
     logger.info(
-        "[StockProfileTask] market=%s done: %d collected, %d embedded, %d errors in %.0fs",
+        "知识库：%s完成 采集%d 嵌入%d 错误%d %.0f秒",
         market, stats["collected"], stats["embedded"], stats["errors"], elapsed,
     )
     return stats
@@ -643,7 +642,7 @@ async def _sync_concepts_async() -> Dict[str, Any]:
         await _save_concept_cache(current_mapping)
         return stats
 
-    logger.info(
+    logger.debug(
         "[StockProfileTask] Concept changes: %d changed, %d new stocks to re-embed",
         len(changed_codes), len(new_codes),
     )
@@ -695,7 +694,7 @@ async def _sync_concepts_async() -> Dict[str, Any]:
     await _save_concept_cache(current_mapping)
 
     logger.info(
-        "[StockProfileTask] Concept sync done: %d updated, %d embedded, %d errors",
+        "知识库：概念同步完成 %d更新 %d嵌入 %d错误",
         len(codes_to_update), embedded_count, error_count,
     )
 
@@ -800,7 +799,7 @@ async def _batch_embed_profiles(
             await db.commit()
 
         if (i // EMBED_BATCH_SIZE) % 10 == 0 and i > 0:
-            logger.info(
+            logger.debug(
                 "[StockProfileTask] %sEmbedded %d/%d profiles so far",
                 tag, embedded_count, len(profiles),
             )
@@ -841,7 +840,7 @@ async def _save_concept_cache(mapping: Dict[str, List[str]]) -> None:
             json.dumps(mapping, ensure_ascii=False),
             ex=86400 * 14,
         )
-        logger.info(
+        logger.debug(
             "[StockProfileTask] Saved concept cache: %d stocks", len(mapping)
         )
     except Exception as e:

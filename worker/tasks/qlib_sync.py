@@ -27,19 +27,19 @@ def sync_qlib_market(self, market: str):
     Args:
         market: Market code (us, hk, cn, metal).
     """
-    logger.info("Triggering Qlib sync for market=%s", market)
+    logger.info("Qlib同步：开始%s市场", market)
 
     async def _sync():
         from app.services.qlib_client import get_qlib_client
 
         client = await get_qlib_client()
-        logger.info("Calling qlib-service sync_market: market=%s, update_only=True", market)
+        logger.debug("Calling qlib-service sync_market: market=%s, update_only=True", market)
         return await client.sync_market(market=market, update_only=True)
 
     try:
         result = run_async_task(_sync)
         logger.info(
-            "Qlib sync result for market=%s: symbols=%d, errors=%d, duration=%.1fs",
+            "Qlib同步：%s市场完成 %d股票 %d错误 %.1f秒",
             market,
             result.get("symbol_count", 0) if isinstance(result, dict) else 0,
             len(result.get("errors", [])) if isinstance(result, dict) else 0,
@@ -47,5 +47,5 @@ def sync_qlib_market(self, market: str):
         )
         return result
     except Exception as exc:
-        logger.error("Qlib sync failed for market=%s: %s", market, exc)
+        logger.exception("Qlib sync failed for market=%s: %s", market, exc)
         raise self.retry(exc=exc)

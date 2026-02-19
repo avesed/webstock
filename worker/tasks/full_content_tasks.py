@@ -96,7 +96,7 @@ async def _process_news_article_async(
     from app.agents.langgraph.workflows.news_pipeline import run_news_pipeline
 
     # No more Phase 2 DB lookup -- processing_path comes from Layer 1 scoring
-    logger.info(
+    logger.debug(
         "Layer 3 starting: news_id=%s, file_path=%s, path=%s, score=%d",
         news_id, file_path, processing_path, content_score,
     )
@@ -125,7 +125,7 @@ async def _process_news_article_async(
         "error": final_state.get("error"),
     }
 
-    logger.info(
+    logger.debug(
         "Layer 3 completed: news_id=%s, status=%s, filter=%s, chunks=%d",
         news_id, result["status"], result["filter_decision"], result["chunks_stored"],
     )
@@ -172,10 +172,7 @@ async def _batch_fetch_content_async(articles: List[Dict[str, Any]]) -> Dict[str
             await asyncio.sleep(FETCH_DELAY)
             return result
 
-    logger.info(
-        "Starting batch fetch for %d articles (semaphore=3, delay=%.1fs)",
-        len(articles), FETCH_DELAY,
-    )
+    logger.info("内容抓取：开始%d篇", len(articles))
 
     results = await asyncio.gather(
         *[fetch_one(a) for a in articles],
@@ -228,8 +225,8 @@ async def _batch_fetch_content_async(articles: List[Dict[str, Any]]) -> Dict[str
             failed_count += 1
 
     logger.info(
-        "Batch fetch completed: total=%d, success=%d, failed=%d, dispatched=%d",
-        len(articles), success_count, failed_count, dispatched_count,
+        "内容抓取完成：成功=%d 失败=%d 已派发=%d",
+        success_count, failed_count, dispatched_count,
     )
 
     return {
@@ -385,7 +382,7 @@ async def _fetch_single_article(article: Dict[str, Any]) -> Dict[str, Any]:
                             with open(full_file_path, "w", encoding="utf-8") as f:
                                 json.dump(stored_content, f, ensure_ascii=False, indent=2, default=str)
 
-                            logger.info(
+                            logger.debug(
                                 "batch_fetch: cleaned news_id=%s, cleaned_len=%d, "
                                 "insights_len=%d, has_visual=%s",
                                 news_id,
@@ -450,7 +447,7 @@ async def _fetch_single_article(article: Dict[str, Any]) -> Dict[str, Any]:
 
             await db.commit()
 
-            logger.info(
+            logger.debug(
                 "batch_fetch: fetched news_id=%s, %d words, status=%s, cleaned=%s",
                 news_id, data.get("word_count", 0), news.content_status,
                 cleaning_result is not None,
@@ -505,11 +502,7 @@ async def _cleanup_expired_news_async() -> Dict[str, Any]:
     retention_days = settings.NEWS_RETENTION_DAYS_DEFAULT
     cutoff_date = datetime.now(timezone.utc) - timedelta(days=retention_days)
 
-    logger.info(
-        "Starting expired news cleanup: retention=%d days, cutoff=%s",
-        retention_days,
-        cutoff_date.isoformat(),
-    )
+    logger.info("新闻清理：保留%d天", retention_days)
 
     storage_service = get_news_storage_service()
     index_service = get_index_service()
@@ -538,7 +531,7 @@ async def _cleanup_expired_news_async() -> Dict[str, Any]:
         news_result = await db.execute(news_query)
         expired_news = news_result.scalars().all()
 
-        logger.info("Found %d expired news articles to clean up", len(expired_news))
+        logger.debug("Found %d expired news articles to clean up", len(expired_news))
 
         for news in expired_news:
             try:
@@ -577,11 +570,10 @@ async def _cleanup_expired_news_async() -> Dict[str, Any]:
         logger.error("Error cleaning up orphan files: %s", e)
 
     logger.info(
-        "Expired news cleanup completed: files=%d, embeddings=%d, news=%d, errors=%d",
+        "新闻清理完成：文件=%d 嵌入=%d 更新=%d",
         stats["files_deleted"],
         stats["embeddings_deleted"],
         stats["news_updated"],
-        stats["errors"],
     )
 
     return stats
@@ -605,7 +597,7 @@ async def _cleanup_pipeline_events_async() -> Dict[str, Any]:
         deleted = await PipelineTraceService.cleanup_old_events(db, retention_days=7)
         await db.commit()
 
-    logger.info("Pipeline events cleanup: deleted %d old events", deleted)
+    logger.info("事件清理完成：删除%d条", deleted)
     return {"deleted": deleted}
 
 
@@ -627,5 +619,5 @@ async def _cleanup_old_usage_records_async() -> Dict[str, Any]:
         deleted = await LlmCostService.cleanup_old_records(db, retention_days=90)
         await db.commit()
 
-    logger.info("LLM usage records cleanup: deleted %d old records", deleted)
+    logger.info("用量清理完成：删除%d条", deleted)
     return {"deleted": deleted}

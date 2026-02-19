@@ -219,7 +219,7 @@ def retry_failed_news_embeddings(self):
             embed_news_article.delay(news_id, content, row.symbol)
             dispatched += 1
 
-        logger.info("[RetryFailedNews] Dispatched %d embedding tasks", dispatched)
+        logger.info("嵌入重试：news 派发%d个任务", dispatched)
         return {"dispatched": dispatched}
 
     try:
@@ -290,10 +290,7 @@ def retry_failed_report_embeddings(self):
                     report_id, e,
                 )
 
-        logger.info(
-            "[RetryFailedReports] Dispatched %d embedding tasks, skipped %d",
-            dispatched, skipped,
-        )
+        logger.info("嵌入重试：report 派发%d个任务", dispatched)
         return {"dispatched": dispatched, "skipped": skipped}
 
     try:
@@ -332,7 +329,7 @@ def rebuild_news_embeddings(self):
             ))
             deleted = result.rowcount
             await db.commit()
-            logger.info("[RebuildNewsEmbeddings] Deleted %d existing news embeddings", deleted)
+            logger.info("嵌入重建：news 删除%d条", deleted)
 
         async with get_task_session() as db:
             rows = await db.execute(text(
@@ -357,7 +354,7 @@ def rebuild_news_embeddings(self):
             embed_news_article.delay(news_id, content, row.symbol)
             dispatched += 1
 
-        logger.info("[RebuildNewsEmbeddings] Dispatched %d embedding tasks", dispatched)
+        logger.info("嵌入重建：news 派发%d个任务", dispatched)
         return {"deleted": deleted, "dispatched": dispatched}
 
     try:
@@ -397,7 +394,7 @@ def rebuild_report_embeddings(self):
             ))
             deleted = result.rowcount
             await db.commit()
-            logger.info("[RebuildReportEmbeddings] Deleted %d existing report embeddings", deleted)
+            logger.info("嵌入重建：report 删除%d条", deleted)
 
         async with get_task_session() as db:
             rows = await db.execute(text(
@@ -431,10 +428,7 @@ def rebuild_report_embeddings(self):
                     report_id, e,
                 )
 
-        logger.info(
-            "[RebuildReportEmbeddings] Dispatched %d embedding tasks, skipped %d",
-            dispatched, skipped,
-        )
+        logger.info("嵌入重建：report 派发%d个任务", dispatched)
         return {"deleted": deleted, "dispatched": dispatched, "skipped": skipped}
 
     try:
@@ -482,7 +476,7 @@ async def _embed_document_async(
 
     # Chunk the text into embedding-sized pieces
     chunks = index_service.chunk_text(content)
-    logger.info(
+    logger.debug(
         "Chunked %s/%s into %d chunks (total %d chars)",
         source_type,
         source_id,
@@ -585,7 +579,7 @@ async def _embed_document_async(
             failed_count,
         )
     else:
-        logger.info(
+        logger.debug(
             "Embedded %s/%s: %d/%d chunks stored",
             source_type,
             source_id,

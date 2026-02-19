@@ -49,7 +49,7 @@ async def _cleanup_backtests_async() -> Dict[str, Any]:
 
     from app.models.qlib_backtest import QlibBacktest, BacktestStatus
 
-    logger.info("Starting backtest cleanup task")
+    logger.debug("Starting backtest cleanup task")
 
     cutoff_date = datetime.now(timezone.utc) - timedelta(days=BACKTEST_RETENTION_DAYS)
 
@@ -70,10 +70,10 @@ async def _cleanup_backtests_async() -> Dict[str, Any]:
 
             deleted_count = result.rowcount
 
-            logger.info(
-                "Cleaned up %d old backtests (retention: %d days, cutoff: %s)",
-                deleted_count, BACKTEST_RETENTION_DAYS, cutoff_date.isoformat(),
-            )
+            if deleted_count > 0:
+                logger.info("回测清理：删除%d条过期回测", deleted_count)
+            else:
+                logger.debug("Backtest cleanup: 0 deleted")
 
             return {
                 "deleted_count": deleted_count,

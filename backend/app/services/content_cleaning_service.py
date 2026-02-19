@@ -227,7 +227,7 @@ class ContentCleaningService:
 
         model_name = model_config.model or "gpt-4o-mini"
 
-        logger.info(
+        logger.debug(
             "[ContentCleaning] Starting LLM call for %s, model=%s, "
             "text_len=%d, images=%d",
             url_short, model_name, len(full_text), image_count,
@@ -295,7 +295,7 @@ class ContentCleaningService:
                     f"out={response.usage.completion_tokens})"
                 )
 
-            logger.info(
+            logger.debug(
                 "[ContentCleaning] Completed for %s: model=%s, "
                 "cleaned_len=%d, insights_len=%d, has_visual=%s, "
                 "llm=%.0fms, total=%.0fms%s",

@@ -17,7 +17,7 @@ cat > /etc/nginx/nginx.conf << 'NGINXEOF'
 user www-data;
 worker_processes auto;
 pid /run/nginx.pid;
-error_log /app/logs/nginx-error.log warn;
+error_log /dev/stderr warn;
 
 events {
     worker_connections 1024;
@@ -33,7 +33,7 @@ http {
                     '$status $body_bytes_sent "$http_referer" '
                     '"$http_user_agent" rt=$request_time';
 
-    access_log /app/logs/nginx-access.log main;
+    access_log /dev/stdout main;
 
     sendfile on;
     tcp_nopush on;

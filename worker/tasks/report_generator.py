@@ -46,7 +46,7 @@ async def _check_scheduled_reports_async() -> Dict[str, Any]:
     from app.models.report import ReportFormat
     from app.services.report_service import ReportGenerator, ReportService
 
-    logger.info("Checking for scheduled reports")
+    logger.debug("Checking for scheduled reports")
 
     stats = {
         "schedules_checked": 0,
@@ -64,10 +64,10 @@ async def _check_scheduled_reports_async() -> Dict[str, Any]:
             stats["schedules_checked"] = len(due_schedules)
 
             if not due_schedules:
-                logger.info("No scheduled reports due")
+                logger.debug("No scheduled reports due")
                 return stats
 
-            logger.info(f"Found {len(due_schedules)} due schedules")
+            logger.debug("Found %d due schedules", len(due_schedules))
 
             for schedule in due_schedules:
                 try:
@@ -103,7 +103,7 @@ async def _check_scheduled_reports_async() -> Dict[str, Any]:
 
                     stats["reports_created"] += 1
                     logger.info(
-                        f"Created report {report.id} for schedule {schedule.id}"
+                        "报告：已生成 用户=%s", report.user_id,
                     )
 
                 except Exception as e:
@@ -112,9 +112,9 @@ async def _check_scheduled_reports_async() -> Dict[str, Any]:
                     )
                     stats["errors"] += 1
 
-            logger.info(
-                f"Scheduled reports check completed: "
-                f"{stats['reports_created']} reports created"
+            logger.debug(
+                "Scheduled reports check completed: %d reports created",
+                stats['reports_created'],
             )
 
     except Exception as e:
@@ -161,7 +161,7 @@ async def _generate_report_async(report_id: str) -> Dict[str, Any]:
     from app.services.report_service import ReportGenerator, ReportService
     from sqlalchemy import select
 
-    logger.info(f"Starting report generation for {report_id}")
+    logger.debug("Starting report generation for %s", report_id)
 
     try:
         async with get_task_session() as db:
@@ -248,9 +248,9 @@ async def _generate_report_async(report_id: str) -> Dict[str, Any]:
                 include_news=include_news,
             )
 
-            logger.info(
-                f"Report {report_id} generation completed "
-                f"(status: {report.status})"
+            logger.debug(
+                "Report %s generation completed (status: %s)",
+                report_id, report.status,
             )
 
             # Dispatch embedding for RAG search
@@ -360,7 +360,7 @@ async def _cleanup_old_reports_async() -> Dict[str, Any]:
     from app.services.report_service import ReportService
     from sqlalchemy import select, func
 
-    logger.info("Starting report cleanup task")
+    logger.debug("Starting report cleanup task")
 
     total_deleted = 0
 
@@ -386,7 +386,10 @@ async def _cleanup_old_reports_async() -> Dict[str, Any]:
                         f"Error cleaning up reports for user {user_id}: {e}"
                     )
 
-            logger.info(f"Report cleanup completed: {total_deleted} reports deleted")
+            if total_deleted > 0:
+                logger.info("报告清理：删除%d条过期报告", total_deleted)
+            else:
+                logger.debug("Report cleanup: 0 deleted")
 
             return {
                 "users_processed": len(user_ids),

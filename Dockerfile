@@ -99,7 +99,7 @@ EXPOSE 80 443
 HEALTHCHECK --interval=30s --timeout=10s --start-period=30s --retries=3 \
     CMD curl -f http://127.0.0.1/api/v1/health || exit 1
 
-VOLUME ["/app/data", "/app/logs"]
+VOLUME ["/app/data"]
 
 ENTRYPOINT ["/usr/bin/dumb-init", "--", "/app/entrypoint.sh"]
 CMD ["supervisord", "-n", "-c", "/etc/supervisor/supervisord.conf"]

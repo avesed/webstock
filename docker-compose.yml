@@ -234,7 +234,6 @@ services:
       - DATA_SERVICE_URL=http://data-service:8003
     volumes:
       - app_data:/app/data
-      - app_logs:/app/logs
       - ./nginx/ssl:/etc/nginx/ssl:ro
     depends_on:
       postgres:
@@ -368,8 +367,6 @@ volumes:
   redis_data:
     driver: local
   app_data:
-    driver: local
-  app_logs:
     driver: local
   qlib_data:
     driver: local

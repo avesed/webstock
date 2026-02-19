@@ -29,7 +29,7 @@ def update_stock_list(self):
     Scheduled to run daily at 5:30 AM UTC.
     """
     try:
-        logger.info("Starting stock list update task")
+        logger.info("股票列表：开始更新")
         start_time = datetime.utcnow()
 
         # Run async data-service call
@@ -39,7 +39,15 @@ def update_stock_list(self):
         elapsed = (datetime.utcnow() - start_time).total_seconds()
         if result:
             result["elapsed_seconds"] = elapsed
-            logger.info(f"Stock list update completed: {result}")
+            by_market = result.get("by_market", {})
+            logger.info(
+                "股票列表：更新完成 共%d只 US=%d CN=%d HK=%d 耗时%.0f秒",
+                result.get("total_stocks", 0),
+                by_market.get("us", 0),
+                sum(by_market.get(m, 0) for m in ("sh", "sz", "bj")),
+                by_market.get("hk", 0),
+                elapsed,
+            )
         else:
             logger.warning("Stock list update returned no result")
             result = {"status": "no_data", "elapsed_seconds": elapsed}
@@ -122,7 +130,7 @@ def _get_precious_metals() -> List[Dict[str, Any]]:
             "pinyin_initial": pinyin_initial,
         })
 
-    logger.info(f"Got {len(metals)} precious metals")
+    logger.debug(f"Got {len(metals)} precious metals")
     return metals
 
 
@@ -163,7 +171,7 @@ def _notify_reload():
         redis_url = os.environ.get("REDIS_URL", "redis://localhost:6379/0")
         r = redis.Redis.from_url(redis_url)
         r.publish("stock_list_reload", "reload")
-        logger.info("Published stock list reload notification")
+        logger.debug("Published stock list reload notification")
     except Exception as e:
         logger.warning(f"Failed to publish reload notification: {e}")
 

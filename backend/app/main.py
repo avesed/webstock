@@ -1,6 +1,8 @@
 """FastAPI application entry point."""
 
 import logging
+import os
+import sys
 from contextlib import asynccontextmanager
 from typing import AsyncGenerator
 
@@ -16,6 +18,17 @@ from app.services.data_aggregator import cleanup_data_aggregator
 from app.services.data_service_client import close_data_service_client
 from app.services.qlib_client import close_qlib_client
 from app.services.stock_service import cleanup_stock_service
+
+_TAG = os.environ.get("LOG_TAG", "web")
+logging.basicConfig(
+    level=logging.INFO,
+    format=f"%(asctime)s [{_TAG}] %(levelname).1s %(message)s",
+    datefmt="%H:%M:%S",
+    stream=sys.stdout,
+    force=True,
+)
+for _name in ("httpx", "httpcore", "urllib3", "asyncio", "watchfiles", "multipart"):
+    logging.getLogger(_name).setLevel(logging.WARNING)
 
 logger = logging.getLogger(__name__)
 

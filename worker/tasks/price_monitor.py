@@ -141,7 +141,7 @@ async def _monitor_prices_async() -> Dict[str, Any]:
     )
     from app.services.stock_service import get_stock_service
 
-    logger.info("Starting price monitor task")
+    logger.debug("Starting price monitor task")
 
     stats = {
         "symbols_checked": 0,
@@ -156,7 +156,7 @@ async def _monitor_prices_async() -> Dict[str, Any]:
             symbols = await get_all_active_alert_symbols(db)
 
             if not symbols:
-                logger.info("No active alerts to monitor")
+                logger.debug("No active alerts to monitor")
                 return stats
 
             # Group symbols by market and filter by trading hours
@@ -170,14 +170,14 @@ async def _monitor_prices_async() -> Dict[str, Any]:
                         stats["skipped_markets"].append(market)
 
             if not symbols_to_check:
-                logger.info(
-                    f"No symbols to check during current trading hours. "
-                    f"Skipped markets: {stats['skipped_markets']}"
+                logger.debug(
+                    "No symbols to check during current trading hours. "
+                    "Skipped markets: %s", stats['skipped_markets'],
                 )
                 return stats
 
             stats["symbols_checked"] = len(symbols_to_check)
-            logger.info(f"Checking prices for {len(symbols_to_check)} symbols")
+            logger.debug("Checking prices for %d symbols", len(symbols_to_check))
 
             # Batch fetch prices
             stock_service = await get_stock_service()
@@ -194,16 +194,16 @@ async def _monitor_prices_async() -> Dict[str, Any]:
                 logger.warning("No valid prices received")
                 return stats
 
-            logger.info(f"Got prices for {len(valid_prices)} symbols")
+            logger.debug("Got prices for %d symbols", len(valid_prices))
 
             # Check alerts and trigger matching ones
             triggered_count = await check_and_trigger_alerts(db, valid_prices)
             stats["alerts_triggered"] = triggered_count
 
-            logger.info(
-                f"Price monitor completed: {stats['symbols_checked']} symbols, "
-                f"{triggered_count} alerts triggered"
-            )
+            if triggered_count > 0:
+                logger.info("价格监控：%d个告警触发", triggered_count)
+            elif stats["symbols_checked"] > 0:
+                logger.info("价格监控：%d只正常 无告警触发", stats["symbols_checked"])
 
     except Exception as e:
         logger.exception(f"Error in price monitor: {e}")
@@ -241,7 +241,7 @@ async def _cleanup_alerts_async() -> Dict[str, Any]:
 
     from app.models.alert import PriceAlert
 
-    logger.info("Starting alert cleanup task")
+    logger.debug("Starting alert cleanup task")
 
     cutoff_date = datetime.now(timezone.utc) - timedelta(days=30)
 
@@ -257,7 +257,10 @@ async def _cleanup_alerts_async() -> Dict[str, Any]:
 
             deleted_count = result.rowcount
 
-            logger.info(f"Cleaned up {deleted_count} old triggered alerts")
+            if deleted_count > 0:
+                logger.info("价格清理：删除%d条过期告警", deleted_count)
+            else:
+                logger.debug("Alert cleanup: 0 deleted")
 
             return {
                 "deleted_count": deleted_count,
@@ -298,7 +301,7 @@ async def _cleanup_subscriptions_async() -> Dict[str, Any]:
 
     from app.models.alert import PushSubscription
 
-    logger.info("Starting subscription cleanup task")
+    logger.debug("Starting subscription cleanup task")
 
     cutoff_date = datetime.now(timezone.utc) - timedelta(days=90)
 
@@ -314,7 +317,10 @@ async def _cleanup_subscriptions_async() -> Dict[str, Any]:
 
             deleted_count = result.rowcount
 
-            logger.info(f"Cleaned up {deleted_count} inactive subscriptions")
+            if deleted_count > 0:
+                logger.info("订阅清理：删除%d条失效订阅", deleted_count)
+            else:
+                logger.debug("Subscription cleanup: 0 deleted")
 
             return {
                 "deleted_count": deleted_count,

@@ -2,10 +2,11 @@
 
 import logging
 import os
+import sys
 
 from celery import Celery
 from celery.schedules import crontab
-from celery.signals import worker_ready
+from celery.signals import after_setup_logger, after_setup_task_logger, worker_ready
 
 logger = logging.getLogger(__name__)
 
@@ -238,6 +239,33 @@ def _check_stock_knowledge_base(sender, **kwargs):
 
     except Exception as e:
         logger.warning("[KBCheck] Startup check failed (non-fatal): %s", e)
+
+
+@after_setup_logger.connect
+def _configure_celery_logger(logger, loglevel, **kwargs):
+    """Override Celery's default log format for Docker stdout."""
+    from worker.log_config import LOG_FORMAT, LOG_DATEFMT
+    for h in logger.handlers[:]:
+        logger.removeHandler(h)
+    handler = logging.StreamHandler(sys.stdout)
+    handler.setFormatter(logging.Formatter(LOG_FORMAT, datefmt=LOG_DATEFMT))
+    logger.addHandler(handler)
+    logger.setLevel(loglevel)
+    # Suppress noisy third-party loggers
+    for name in ("httpx", "httpcore", "urllib3", "asyncio", "watchfiles", "multipart", "openai._base_client"):
+        logging.getLogger(name).setLevel(logging.WARNING)
+
+
+@after_setup_task_logger.connect
+def _configure_task_logger(logger, loglevel, **kwargs):
+    """Override Celery's task logger format for Docker stdout."""
+    from worker.log_config import LOG_FORMAT, LOG_DATEFMT
+    for h in logger.handlers[:]:
+        logger.removeHandler(h)
+    handler = logging.StreamHandler(sys.stdout)
+    handler.setFormatter(logging.Formatter(LOG_FORMAT, datefmt=LOG_DATEFMT))
+    logger.addHandler(handler)
+    logger.setLevel(loglevel)
 
 
 if __name__ == "__main__":
