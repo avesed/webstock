@@ -1,5 +1,6 @@
 import { useState, useCallback, useRef, useEffect } from 'react'
-import DOMPurify from 'dompurify'
+import ReactMarkdown from 'react-markdown'
+import remarkGfm from 'remark-gfm'
 import type { LucideIcon } from 'lucide-react'
 import {
   Brain,
@@ -12,6 +13,7 @@ import {
   RefreshCw,
   CheckCircle2,
 } from 'lucide-react'
+import { useQueryClient } from '@tanstack/react-query'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { cn } from '@/lib/utils'
@@ -68,6 +70,16 @@ interface SSEEvent {
   timestamp?: number
 }
 
+interface CachedAnalysisResult {
+  agentResults: AgentResult[]
+  synthesisContent: string
+  clarificationRound: number
+  agentStatuses: Record<string, { status: AgentStatus['status']; latencyMs?: number }>
+  completedAt: number
+}
+
+const CACHE_TTL_MS = 30 * 60 * 1000 // 30 minutes
+
 type StreamStatus = 'idle' | 'connecting' | 'analyzing' | 'synthesizing' | 'complete' | 'error'
 
 const VALID_AGENTS = new Set(['fundamental', 'technical', 'sentiment', 'news'])
@@ -81,6 +93,9 @@ const createInitialAgentStatus = (): Record<string, AgentStatus> => ({
 
 export default function AnalysisPanel({ symbol, className }: AnalysisPanelProps) {
   const { locale } = useLocale()
+  const queryClient = useQueryClient()
+  // Align garbage collection with our cache TTL so results survive page navigation
+  queryClient.setQueryDefaults(['analysis-result'], { gcTime: CACHE_TTL_MS })
   const [status, setStatus] = useState<StreamStatus>('idle')
   const [error, setError] = useState<string | null>(null)
   const [progress, setProgress] = useState<string>('')
@@ -89,6 +104,12 @@ export default function AnalysisPanel({ symbol, className }: AnalysisPanelProps)
   const [clarificationRound, setClarificationRound] = useState<number>(0)
   const [agentResults, setAgentResults] = useState<AgentResult[]>([])
   const abortControllerRef = useRef<AbortController | null>(null)
+
+  // Refs to mirror state for use in SSE callback and cache writes
+  const agentResultsRef = useRef<AgentResult[]>([])
+  const synthesisContentRef = useRef('')
+  const clarificationRoundRef = useRef(0)
+  const agentsRef = useRef<Record<string, AgentStatus>>(createInitialAgentStatus())
 
   // Clean up on unmount
   useEffect(() => {
@@ -99,20 +120,57 @@ export default function AnalysisPanel({ symbol, className }: AnalysisPanelProps)
     }
   }, [])
 
-  // Reset state when symbol changes
+  // Restore from cache or reset state when symbol changes
   useEffect(() => {
     if (abortControllerRef.current) {
       abortControllerRef.current.abort()
       abortControllerRef.current = null
     }
-    setStatus('idle')
-    setError(null)
-    setProgress('')
-    setAgents(createInitialAgentStatus())
-    setSynthesisContent('')
-    setClarificationRound(0)
-    setAgentResults([])
-  }, [symbol])
+
+    // Check for cached result (try-catch guards against corrupted cache shape)
+    let restored = false
+    try {
+      const cached = queryClient.getQueryData<CachedAnalysisResult>(['analysis-result', symbol])
+      if (cached && Date.now() - cached.completedAt < CACHE_TTL_MS) {
+        // Restore from cache
+        setAgentResults(cached.agentResults)
+        agentResultsRef.current = cached.agentResults
+        setSynthesisContent(cached.synthesisContent)
+        synthesisContentRef.current = cached.synthesisContent
+        setClarificationRound(cached.clarificationRound)
+        clarificationRoundRef.current = cached.clarificationRound
+        // Reconstruct agents with icons from cached statuses
+        const restoredAgents = createInitialAgentStatus()
+        for (const [key, cachedAgent] of Object.entries(cached.agentStatuses)) {
+          if (restoredAgents[key]) {
+            restoredAgents[key] = { ...restoredAgents[key], ...cachedAgent }
+          }
+        }
+        setAgents(restoredAgents)
+        agentsRef.current = restoredAgents
+        setStatus('complete')
+        setError(null)
+        setProgress('')
+        restored = true
+      }
+    } catch {
+      queryClient.removeQueries({ queryKey: ['analysis-result', symbol] })
+    }
+    if (!restored) {
+      // Reset to defaults
+      setStatus('idle')
+      setError(null)
+      setProgress('')
+      setAgents(createInitialAgentStatus())
+      setSynthesisContent('')
+      setClarificationRound(0)
+      setAgentResults([])
+      agentResultsRef.current = []
+      synthesisContentRef.current = ''
+      clarificationRoundRef.current = 0
+      agentsRef.current = createInitialAgentStatus()
+    }
+  }, [symbol, queryClient])
 
   const handleSSEEvent = useCallback((event: SSEEvent) => {
     switch (event.type) {
@@ -146,7 +204,9 @@ export default function AnalysisPanel({ symbol, className }: AnalysisPanelProps)
               icon: current.icon,
               status: 'running',
             }
-            return { ...prev, [agentKey]: updated }
+            const next = { ...prev, [agentKey]: updated }
+            agentsRef.current = next
+            return next
           })
         }
         break
@@ -165,19 +225,25 @@ export default function AnalysisPanel({ symbol, className }: AnalysisPanelProps)
             if (typeof event.latency_ms === 'number') {
               updated.latencyMs = event.latency_ms
             }
-            return { ...prev, [agentKey]: updated }
+            const next = { ...prev, [agentKey]: updated }
+            agentsRef.current = next
+            return next
           })
 
           // Save intermediate results for progressive display
           if (event.success && event.summary) {
-            setAgentResults((prev) => [
-              ...prev.filter((r) => r.agent !== event.agent),
-              {
-                agent: event.agent!,
-                summary: event.summary!,
-                keyInsights: event.key_insights ?? [],
-              },
-            ])
+            setAgentResults((prev) => {
+              const next = [
+                ...prev.filter((r) => r.agent !== event.agent),
+                {
+                  agent: event.agent!,
+                  summary: event.summary!,
+                  keyInsights: event.key_insights ?? [],
+                },
+              ]
+              agentResultsRef.current = next
+              return next
+            })
           }
         }
         break
@@ -201,12 +267,20 @@ export default function AnalysisPanel({ symbol, className }: AnalysisPanelProps)
 
       case 'synthesis_chunk':
         if (event.content) {
-          setSynthesisContent((prev) => prev + event.content)
+          setSynthesisContent((prev) => {
+            const next = prev + event.content
+            synthesisContentRef.current = next
+            return next
+          })
         }
         break
 
       case 'clarification_needed':
-        setClarificationRound((prev) => prev + 1)
+        setClarificationRound((prev) => {
+          const next = prev + 1
+          clarificationRoundRef.current = next
+          return next
+        })
         setProgress('Clarifying analysis...')
         break
 
@@ -218,14 +292,34 @@ export default function AnalysisPanel({ symbol, className }: AnalysisPanelProps)
         setProgress('Clarification complete, refining synthesis...')
         break
 
-      case 'complete':
+      case 'complete': {
         setStatus('complete')
         setProgress('')
         // Use final synthesis_output if provided
+        let finalSynthesis = synthesisContentRef.current
         if (event.synthesis_output) {
-          setSynthesisContent(event.synthesis_output)
+          finalSynthesis = event.synthesis_output
+          setSynthesisContent(finalSynthesis)
+          synthesisContentRef.current = finalSynthesis
         }
+        // Write to React Query cache
+        const agentStatuses: Record<string, { status: AgentStatus['status']; latencyMs?: number }> = {}
+        for (const [key, agent] of Object.entries(agentsRef.current)) {
+          const entry: { status: AgentStatus['status']; latencyMs?: number } = { status: agent.status }
+          if (agent.latencyMs !== undefined) {
+            entry.latencyMs = agent.latencyMs
+          }
+          agentStatuses[key] = entry
+        }
+        queryClient.setQueryData<CachedAnalysisResult>(['analysis-result', symbol], {
+          agentResults: agentResultsRef.current,
+          synthesisContent: finalSynthesis,
+          clarificationRound: clarificationRoundRef.current,
+          agentStatuses,
+          completedAt: Date.now(),
+        })
         break
+      }
 
       case 'timeout':
         setError('Analysis timeout. Please try again.')
@@ -237,13 +331,16 @@ export default function AnalysisPanel({ symbol, className }: AnalysisPanelProps)
         setStatus('error')
         break
     }
-  }, [])
+  }, [queryClient, symbol])
 
   const startAnalysis = useCallback(async () => {
     // Cancel any existing stream
     if (abortControllerRef.current) {
       abortControllerRef.current.abort()
     }
+
+    // Clear cached result for this symbol
+    queryClient.removeQueries({ queryKey: ['analysis-result', symbol] })
 
     // Reset state
     setStatus('connecting')
@@ -253,6 +350,12 @@ export default function AnalysisPanel({ symbol, className }: AnalysisPanelProps)
     setSynthesisContent('')
     setClarificationRound(0)
     setAgentResults([])
+
+    // Reset refs
+    agentResultsRef.current = []
+    synthesisContentRef.current = ''
+    clarificationRoundRef.current = 0
+    agentsRef.current = createInitialAgentStatus()
 
     const abortController = new AbortController()
     abortControllerRef.current = abortController
@@ -320,7 +423,7 @@ export default function AnalysisPanel({ symbol, className }: AnalysisPanelProps)
       setStatus('error')
       setError(err instanceof Error ? err.message : 'Analysis failed')
     }
-  }, [symbol, locale, handleSSEEvent])
+  }, [symbol, locale, handleSSEEvent, queryClient])
 
   const cancelAnalysis = useCallback(() => {
     if (abortControllerRef.current) {
@@ -443,56 +546,9 @@ export default function AnalysisPanel({ symbol, className }: AnalysisPanelProps)
     return (
       <div className="space-y-4">
         <div className="prose prose-sm dark:prose-invert max-w-none">
-          {displayContent.split('\n').map((line, index) => {
-            if (!line.trim()) return <br key={index} />
-
-            // Handle headers
-            if (line.startsWith('###')) {
-              return (
-                <h4 key={index} className="text-base font-semibold mt-4 mb-2">
-                  {line.replace(/^###\s*/, '')}
-                </h4>
-              )
-            }
-            if (line.startsWith('##')) {
-              return (
-                <h3 key={index} className="text-lg font-semibold mt-4 mb-2">
-                  {line.replace(/^##\s*/, '')}
-                </h3>
-              )
-            }
-            if (line.startsWith('#')) {
-              return (
-                <h2 key={index} className="text-xl font-bold mt-4 mb-2">
-                  {line.replace(/^#\s*/, '')}
-                </h2>
-              )
-            }
-
-            // Handle bullet points
-            if (line.startsWith('- ') || line.startsWith('* ')) {
-              return (
-                <li key={index} className="ml-4">
-                  {line.replace(/^[-*]\s*/, '')}
-                </li>
-              )
-            }
-
-            // Handle bold text with XSS sanitization
-            const formattedLine = line.replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
-            const sanitizedLine = DOMPurify.sanitize(formattedLine, {
-              ALLOWED_TAGS: ['strong', 'em', 'b', 'i'],
-              ALLOWED_ATTR: [],
-            })
-
-            return (
-              <p
-                key={index}
-                className="leading-relaxed"
-                dangerouslySetInnerHTML={{ __html: sanitizedLine }}
-              />
-            )
-          })}
+          <ReactMarkdown remarkPlugins={[remarkGfm]}>
+            {displayContent}
+          </ReactMarkdown>
         </div>
         {(status === 'analyzing' || status === 'synthesizing') && (
           <div className="flex items-center gap-2 text-muted-foreground">

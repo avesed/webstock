@@ -73,9 +73,27 @@ export default function CompactNewsList({ newsData, isLoading }: CompactNewsList
                 </span>
               )}
 
-              <span className="text-sm truncate flex-1">
-                {decodeHtmlEntities(article.title)}
-              </span>
+              <div className="flex-1 min-w-0">
+                <span className="text-sm truncate block">
+                  {decodeHtmlEntities(article.title)}
+                </span>
+                {article.investmentSummary && (
+                  <span className="text-[11px] text-muted-foreground truncate block">
+                    {article.investmentSummary}
+                  </span>
+                )}
+              </div>
+
+              {article.contentScore != null && (
+                <span className={cn(
+                  'text-[10px] font-semibold tabular-nums px-1 rounded shrink-0 hidden lg:inline',
+                  article.contentScore >= 195 ? 'text-green-600 dark:text-green-400' :
+                  article.contentScore >= 105 ? 'text-yellow-600 dark:text-yellow-400' :
+                  'text-muted-foreground',
+                )}>
+                  {article.contentScore}
+                </span>
+              )}
 
               <span className="text-[10px] text-muted-foreground shrink-0 tabular-nums">
                 {article.publishedAt
@@ -83,12 +101,23 @@ export default function CompactNewsList({ newsData, isLoading }: CompactNewsList
                   : '--'}
               </span>
 
-              <span
-                className={cn(
-                  'w-1.5 h-1.5 rounded-full shrink-0',
-                  getSentimentDotColor(article.sentiment)
-                )}
-              />
+              {article.sentimentTag ? (
+                <span className={cn(
+                  'text-[10px] font-medium px-1.5 py-0.5 rounded shrink-0',
+                  article.sentimentTag === 'bullish' && 'bg-green-500/10 text-green-600 dark:text-green-400',
+                  article.sentimentTag === 'bearish' && 'bg-red-500/10 text-red-600 dark:text-red-400',
+                  article.sentimentTag === 'neutral' && 'bg-gray-500/10 text-gray-500',
+                )}>
+                  {t(`compactNews.sentiment.${article.sentimentTag}`, article.sentimentTag)}
+                </span>
+              ) : (
+                <span
+                  className={cn(
+                    'w-1.5 h-1.5 rounded-full shrink-0',
+                    getSentimentDotColor(article.sentiment)
+                  )}
+                />
+              )}
             </button>
           ))}
         </div>

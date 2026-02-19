@@ -6,7 +6,7 @@ import { SecondaryTabsList, SecondaryTabsTrigger } from '@/components/ui/nested-
 import { AITabExtension } from './AITabExtension'
 import type { AISubTab } from '@/hooks/useTabNavigation'
 
-// Lazy load AnalysisPanel for code splitting (it has heavy dependencies like dompurify)
+// Lazy load AnalysisPanel for code splitting (it pulls in react-markdown + remark-gfm)
 const AnalysisPanel = lazy(() => import('@/components/analysis/AnalysisPanel'))
 
 interface AITabProps {

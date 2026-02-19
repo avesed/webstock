@@ -366,7 +366,12 @@
   },
   "compactNews": {
     "title": "Headlines",
-    "viewAll": "More"
+    "viewAll": "More",
+    "sentiment": {
+      "bullish": "Bull",
+      "bearish": "Bear",
+      "neutral": "Flat"
+    }
   },
   "watchlistSnapshot": {
     "title": "Watchlist",

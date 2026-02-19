@@ -366,7 +366,12 @@
   },
   "compactNews": {
     "title": "快讯",
-    "viewAll": "更多"
+    "viewAll": "更多",
+    "sentiment": {
+      "bullish": "看涨",
+      "bearish": "看跌",
+      "neutral": "中性"
+    }
   },
   "watchlistSnapshot": {
     "title": "自选股",

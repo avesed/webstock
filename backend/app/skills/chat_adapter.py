@@ -40,6 +40,8 @@ CHAT_SKILL_NAMES = [
     "qlib_evaluate_expression",
     "qlib_create_backtest",
     "optimize_portfolio",
+    "get_analyst_ratings",
+    "get_market_context",
 ]
 
 # Friendly display labels for tool calls (used by SSE events)
@@ -57,6 +59,8 @@ TOOL_LABELS = {
     "qlib_evaluate_expression": "计算量化表达式",
     "qlib_create_backtest": "创建量化回测",
     "optimize_portfolio": "优化投资组合",
+    "get_analyst_ratings": "获取分析师评级",
+    "get_market_context": "获取市场概况",
 }
 
 # Skills that need user_id and db injection
