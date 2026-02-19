@@ -71,10 +71,10 @@ class GetNorthboundHoldingSkill(BaseSkill):
         # Extract the bare 6-digit stock code for akshare
         stock_code = symbol.split(".")[0]
 
-        from app.services.providers import get_provider_router
+        from app.services.data_service_client import get_data_service_client
 
-        router = await get_provider_router()
-        result = await router.akshare.get_northbound_holding(stock_code, days=days)
+        client = await get_data_service_client()
+        result = await client.get_northbound_holding(stock_code, days=days)
 
         if not result:
             return SkillResult(

@@ -76,6 +76,42 @@ def monitor_news(self):
         raise self.retry(exc=e, countdown=60 * (2 ** self.request.retries))
 
 
+def _dict_to_news_article(d: Dict[str, Any]):
+    """Convert a dict from data-service to a NewsArticle-like object.
+
+    The rest of the monitor code accesses .url, .title, .summary, .source,
+    .published_at, .symbol, .market attributes on news articles.
+    """
+    from app.services.news_service import NewsArticle
+    import hashlib
+
+    url = d.get("url", "")
+    published_at_raw = d.get("publishedAt") or d.get("published_at")
+    if isinstance(published_at_raw, str):
+        try:
+            published_at = datetime.fromisoformat(
+                published_at_raw.replace("Z", "+00:00")
+            )
+        except (ValueError, TypeError):
+            published_at = datetime.now(timezone.utc)
+    elif isinstance(published_at_raw, datetime):
+        published_at = published_at_raw
+    else:
+        published_at = datetime.now(timezone.utc)
+
+    return NewsArticle(
+        id=d.get("id") or hashlib.md5(url.encode()).hexdigest()[:16],
+        symbol=d.get("symbol", ""),
+        title=d.get("title", ""),
+        summary=d.get("summary"),
+        source=d.get("source", "unknown"),
+        url=url,
+        published_at=published_at,
+        market=d.get("market", "US"),
+        sentiment_score=d.get("sentimentScore") or d.get("sentiment_score"),
+    )
+
+
 async def _monitor_news_async() -> Dict[str, Any]:
     """
     Async implementation of news monitoring.
@@ -92,12 +128,11 @@ async def _monitor_news_async() -> Dict[str, Any]:
     """
     from sqlalchemy import select
 
-    from app.config import settings as app_settings
     from app.models.watchlist import WatchlistItem
     from app.models.news import News, NewsAlert, FilterStatus
+    from app.services.data_service_client import get_data_service_client
     from app.services.news_service import (
-        FinnhubProvider,
-        AKShareProvider,
+        NewsArticle,
         get_news_service,
     )
     from app.services.settings_service import SettingsService
@@ -124,10 +159,9 @@ async def _monitor_news_async() -> Dict[str, Any]:
 
     try:
         async with get_task_session() as db:
-            # Get Finnhub API key from system settings
+            # Get system settings for pipeline configuration
             settings_service = SettingsService()
             system_settings = await settings_service.get_system_settings(db)
-            finnhub_api_key = system_settings.finnhub_api_key or app_settings.FINNHUB_API_KEY
 
             # Track seen URLs to avoid duplicates
             seen_urls: set = set()
@@ -142,18 +176,19 @@ async def _monitor_news_async() -> Dict[str, Any]:
             stats["llm_pipeline_enabled"] = enable_pipeline
 
             try:
-                # --- Fetch from both sources ---
-                # Source 1: Finnhub news (all categories) -- always use get_general_news
+                # --- Fetch from both sources via data-service ---
+                data_client = await get_data_service_client()
+
+                # Source 1: Finnhub news (all categories)
                 finnhub_articles = []
                 finnhub_categories = ["general", "forex", "crypto", "merger"]
                 for cat in finnhub_categories:
                     try:
-                        cat_articles = await FinnhubProvider.get_general_news(
-                            category=cat,
-                            api_key=finnhub_api_key,
-                        )
-                        finnhub_articles.extend(cat_articles)
-                        logger.info(f"Layer 1: Finnhub [{cat}] fetched {len(cat_articles)} articles")
+                        cat_results = await data_client.get_general_news(category=cat)
+                        if cat_results:
+                            for item in cat_results:
+                                finnhub_articles.append(_dict_to_news_article(item))
+                        logger.info(f"Layer 1: Finnhub [{cat}] fetched {len(cat_results or [])} articles")
                     except Exception as e:
                         logger.warning(f"Layer 1: Finnhub [{cat}] fetch failed: {e}")
                 stats["global_finnhub"] = len(finnhub_articles)
@@ -163,7 +198,10 @@ async def _monitor_news_async() -> Dict[str, Any]:
                 # Source 2: AKShare trending
                 akshare_articles = []
                 try:
-                    akshare_articles = await AKShareProvider.get_trending_news_cn()
+                    akshare_results = await data_client.get_trending_cn_news()
+                    if akshare_results:
+                        for item in akshare_results:
+                            akshare_articles.append(_dict_to_news_article(item))
                     stats["global_akshare"] = len(akshare_articles)
                     logger.info(f"Layer 1: AKShare fetched {len(akshare_articles)} articles")
                 except Exception as e:

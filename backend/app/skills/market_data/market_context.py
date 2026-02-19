@@ -26,10 +26,10 @@ class GetMarketContextSkill(BaseSkill):
         )
 
     async def execute(self, **kwargs: Any) -> SkillResult:
-        from app.services.providers import get_provider_router
+        from app.services.data_service_client import get_data_service_client
 
-        router = await get_provider_router()
-        result = await router.get_market_context()
+        client = await get_data_service_client()
+        result = await client.get_market_context()
 
         if not result:
             return SkillResult(

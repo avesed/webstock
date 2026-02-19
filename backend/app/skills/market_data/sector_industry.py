@@ -63,17 +63,10 @@ class GetSectorIndustrySkill(BaseSkill):
         symbol = _normalize_symbol(kwargs.get("symbol"))
         market = kwargs.get("market", "US")
 
-        from app.services.providers import get_provider_router
+        from app.services.data_service_client import get_data_service_client
 
-        router = await get_provider_router()
-
-        if market in ("CN", "A"):
-            # China A-share: use akshare provider with bare stock code
-            stock_code = symbol.split(".")[0]
-            result = await router.akshare.get_stock_industry_cn(stock_code)
-        else:
-            # US, HK, or other: use yfinance provider
-            result = await router.yfinance.get_sector_industry(symbol)
+        client = await get_data_service_client()
+        result = await client.get_sector_industry(symbol, market=market)
 
         if not result:
             return SkillResult(

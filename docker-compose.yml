@@ -1,6 +1,6 @@
 
 # =============================================================================
-# WebStock Docker Compose - 6 Services: PostgreSQL + Redis + RSSHub + App + Qlib + Playwright
+# WebStock Docker Compose - 7 Services: PostgreSQL + Redis + RSSHub + Data Service + App + Qlib + Playwright
 # =============================================================================
 
 services:
@@ -150,6 +150,50 @@ services:
         max-file: "3"
 
   # ===========================================================================
+  # Data Service (external data provider microservice)
+  # ===========================================================================
+  data-service:
+    build:
+      context: ./data-service
+      dockerfile: Dockerfile
+    container_name: webstock-data
+    depends_on:
+      redis:
+        condition: service_healthy
+    networks:
+      - webstock-network
+    environment:
+      - REDIS_URL=redis://redis:6379/5
+      - INTERNAL_API_TOKEN=${INTERNAL_API_TOKEN:-}
+      - FINNHUB_API_KEY=${FINNHUB_API_KEY:-}
+      - TUSHARE_TOKEN=${TUSHARE_TOKEN:-}
+      - TIINGO_API_KEY=${TIINGO_API_KEY:-}
+      - TAVILY_API_KEY=${TAVILY_API_KEY:-}
+      - POLYGON_API_KEY=${POLYGON_API_KEY:-}
+      - PLAYWRIGHT_SERVICE_URL=${PLAYWRIGHT_SERVICE_URL:-http://playwright-service:8002}
+      - LOG_LEVEL=${DATA_SERVICE_LOG_LEVEL:-info}
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://127.0.0.1:8003/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          cpus: "2"
+          memory: 4G
+        reservations:
+          cpus: "0.5"
+          memory: 1G
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "50m"
+        max-file: "5"
+
+  # ===========================================================================
   # App (Backend + Frontend + Worker + Beat + Nginx)
   # ===========================================================================
   app:
@@ -184,6 +228,7 @@ services:
       - TAVILY_API_KEY=${TAVILY_API_KEY:-}
       - PLAYWRIGHT_SERVICE_URL=${PLAYWRIGHT_SERVICE_URL:-}
       - INTERNAL_API_TOKEN=${INTERNAL_API_TOKEN:-}
+      - DATA_SERVICE_URL=http://data-service:8003
     volumes:
       - app_data:/app/data
       - app_logs:/app/logs
@@ -192,6 +237,8 @@ services:
       postgres:
         condition: service_healthy
       redis:
+        condition: service_healthy
+      data-service:
         condition: service_healthy
     restart: unless-stopped
     networks:

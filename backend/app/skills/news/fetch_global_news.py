@@ -59,9 +59,8 @@ class FetchGlobalNewsSkill(BaseSkill):
         )
 
     async def execute(self, **kwargs: Any) -> SkillResult:
-        from app.services.news_service import AKShareProvider, FinnhubProvider
+        from app.services.data_service_client import get_data_service_client
 
-        finnhub_api_key = kwargs.get("finnhub_api_key")
         categories = kwargs.get("categories") or ["general", "forex", "crypto", "merger"]
         include_akshare = kwargs.get("include_akshare", True)
 
@@ -70,18 +69,15 @@ class FetchGlobalNewsSkill(BaseSkill):
         finnhub_count = 0
         akshare_count = 0
 
+        client = await get_data_service_client()
+
         # Fetch from Finnhub across all requested categories
         for cat in categories:
             try:
-                cat_articles = await FinnhubProvider.get_general_news(
-                    category=cat, api_key=finnhub_api_key
-                )
-                serialized = [
-                    a.to_dict() if hasattr(a, "to_dict") else a
-                    for a in cat_articles
-                ]
-                articles.extend(serialized)
-                finnhub_count += len(serialized)
+                cat_articles = await client.get_general_news(category=cat)
+                if cat_articles:
+                    articles.extend(cat_articles)
+                    finnhub_count += len(cat_articles)
             except Exception as e:
                 logger.warning("FetchGlobalNewsSkill Finnhub [%s] error: %s", cat, e)
                 errors.append(f"Finnhub [{cat}]: {e}")
@@ -89,13 +85,10 @@ class FetchGlobalNewsSkill(BaseSkill):
         # Fetch from AKShare trending news
         if include_akshare:
             try:
-                akshare_articles = await AKShareProvider.get_trending_news_cn()
-                serialized = [
-                    a.to_dict() if hasattr(a, "to_dict") else a
-                    for a in akshare_articles
-                ]
-                articles.extend(serialized)
-                akshare_count += len(serialized)
+                akshare_articles = await client.get_trending_cn_news()
+                if akshare_articles:
+                    articles.extend(akshare_articles)
+                    akshare_count += len(akshare_articles)
             except Exception as e:
                 logger.warning("FetchGlobalNewsSkill AKShare error: %s", e)
                 errors.append(f"AKShare: {e}")

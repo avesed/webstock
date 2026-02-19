@@ -68,20 +68,12 @@ class StockService:
 
     def __init__(self, aggregator: Optional[DataAggregator] = None):
         self._aggregator = aggregator
-        self._router = None
 
     async def _get_aggregator(self) -> DataAggregator:
         """Get data aggregator, initialize if needed."""
         if self._aggregator is None:
             self._aggregator = await get_data_aggregator()
         return self._aggregator
-
-    async def _get_router(self):
-        """Get provider router, initialize if needed."""
-        if self._router is None:
-            from app.services.providers import get_provider_router
-            self._router = await get_provider_router()
-        return self._router
 
     async def get_quote(
         self,
@@ -100,11 +92,11 @@ class StockService:
         """
         market = detect_market(symbol)
         aggregator = await self._get_aggregator()
-        router = await self._get_router()
 
         async def fetch_quote() -> Optional[Dict[str, Any]]:
-            quote = await router.get_quote(symbol, market)
-            return quote.to_dict() if quote else None
+            from app.services.data_service_client import get_data_service_client
+            client = await get_data_service_client()
+            return await client.get_quote(symbol, market=market.value)
 
         return await aggregator.get_data(
             symbol=symbol,
@@ -198,7 +190,6 @@ class StockService:
         """
         market = detect_market(symbol)
         aggregator = await self._get_aggregator()
-        router = await self._get_router()
 
         async def fetch_info() -> Optional[Dict[str, Any]]:
             # Handle precious metals with static metadata
@@ -224,8 +215,9 @@ class StockService:
                     }
                 return None
 
-            info = await router.get_info(symbol, market)
-            return info.to_dict() if info else None
+            from app.services.data_service_client import get_data_service_client
+            client = await get_data_service_client()
+            return await client.get_info(symbol, market=market.value)
 
         return await aggregator.get_data(
             symbol=symbol,
@@ -258,11 +250,11 @@ class StockService:
             return None
 
         aggregator = await self._get_aggregator()
-        router = await self._get_router()
 
         async def fetch_financials() -> Optional[Dict[str, Any]]:
-            financials = await router.get_financials(symbol, market)
-            return financials.to_dict() if financials else None
+            from app.services.data_service_client import get_data_service_client
+            client = await get_data_service_client()
+            return await client.get_financials(symbol, market=market.value)
 
         return await aggregator.get_data(
             symbol=symbol,
@@ -293,16 +285,21 @@ class StockService:
             markets = [Market.US, Market.HK, Market.SH, Market.SZ, Market.METAL]
 
         aggregator = await self._get_aggregator()
-        router = await self._get_router()
 
         # Use cache for search results
         cache_key = hashlib.md5(f"{query}:{','.join(m.value for m in markets)}".encode()).hexdigest()[:12]
 
         async def fetch_search() -> List[Dict[str, Any]]:
-            results = await router.search(query, markets)
-            # Filter by requested markets
-            filtered = [r for r in results if r.market in markets]
-            return [r.to_dict() for r in filtered[:50]]
+            from app.services.data_service_client import get_data_service_client
+            client = await get_data_service_client()
+            market_str = ",".join(m.value for m in markets)
+            results = await client.search(query, markets=market_str)
+            if not results:
+                return []
+            # Filter by requested markets and limit to 50
+            market_values = {m.value for m in markets}
+            filtered = [r for r in results if r.get("market") in market_values]
+            return filtered[:50]
 
         return await aggregator.get_data(
             symbol=cache_key,

@@ -506,17 +506,16 @@ class CanonicalCacheService:
         resolution: TierResolution,
         market: Market,
     ) -> Optional[List[dict]]:
-        """Fetch bars from the ProviderRouter for the canonical tier.
+        """Fetch bars from the data-service for the canonical tier.
 
         Layer 2 tiers use start/end dates computed from max_days.
         Layer 3 (archive) uses period="max" to get all available daily data.
         """
-        from app.services.providers import get_provider_router
+        from app.services.data_service_client import get_data_service_client
 
-        router = await get_provider_router()
+        client = await get_data_service_client()
 
-        interval_enum = _INTERVAL_ENUM_MAP.get(resolution.tier_interval)
-        if interval_enum is None:
+        if resolution.tier_interval not in _INTERVAL_ENUM_MAP:
             logger.error(
                 "Cannot map interval='%s' to enum", resolution.tier_interval,
             )
@@ -528,8 +527,9 @@ class CanonicalCacheService:
                 "Fetching archive data for %s: tier=%s, period=max, market=%s",
                 symbol, resolution.tier_interval, market.value,
             )
-            history = await router.get_history(
-                symbol, HistoryPeriod.MAX, interval_enum, market,
+            result = await client.get_history(
+                symbol, period="max", interval=resolution.tier_interval,
+                market=market.value,
             )
         else:
             # Layer 2: use start/end dates derived from the tier's max_days
@@ -540,36 +540,36 @@ class CanonicalCacheService:
                 "Fetching canonical data for %s: tier=%s, start=%s, end=%s, market=%s",
                 symbol, resolution.tier_interval, start_date, end_date, market.value,
             )
-            history = await router.get_history(
+            result = await client.get_history(
                 symbol,
-                HistoryPeriod.ONE_YEAR,  # placeholder, ignored when start/end provided
-                interval_enum,
-                market,
+                period="1y",  # placeholder, ignored when start/end provided
+                interval=resolution.tier_interval,
+                market=market.value,
                 start=start_date,
                 end=end_date,
             )
 
-        if history is None or not history.bars:
+        if result is None:
+            return None
+
+        raw_bars = result.get("bars", [])
+        if not raw_bars:
             return None
 
         bars = [
             {
-                "date": (
-                    b.date.isoformat()
-                    if hasattr(b.date, "isoformat")
-                    else str(b.date)
-                ),
-                "open": round(float(b.open), 4),
-                "high": round(float(b.high), 4),
-                "low": round(float(b.low), 4),
-                "close": round(float(b.close), 4),
-                "volume": int(b.volume),
+                "date": str(b.get("date", "")),
+                "open": round(float(b.get("open", 0)), 4),
+                "high": round(float(b.get("high", 0)), 4),
+                "low": round(float(b.get("low", 0)), 4),
+                "close": round(float(b.get("close", 0)), 4),
+                "volume": int(b.get("volume", 0)) if b.get("volume") is not None else 0,
             }
-            for b in history.bars
+            for b in raw_bars
         ]
         logger.info(
-            "Fetched %d bars for %s (tier=%s, source=%s)",
-            len(bars), symbol, resolution.tier_interval, history.source.value,
+            "Fetched %d bars for %s (tier=%s, source=data-service)",
+            len(bars), symbol, resolution.tier_interval,
         )
         return bars
 

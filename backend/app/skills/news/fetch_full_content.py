@@ -85,10 +85,7 @@ class FetchFullContentSkill(BaseSkill):
         )
 
     async def execute(self, **kwargs: Any) -> SkillResult:
-        from app.services.full_content_service import (
-            ContentSource,
-            get_full_content_service,
-        )
+        from app.services.data_service_client import get_data_service_client
         from app.services.news_storage_service import get_news_storage_service
 
         url = kwargs.get("url")
@@ -96,7 +93,6 @@ class FetchFullContentSkill(BaseSkill):
         symbol = kwargs.get("symbol")
         market = kwargs.get("market", "US")
         content_source_str = kwargs.get("content_source", "trafilatura")
-        polygon_api_key = kwargs.get("polygon_api_key")
         published_at_str = kwargs.get("published_at")
 
         # Validate required parameters
@@ -126,33 +122,17 @@ class FetchFullContentSkill(BaseSkill):
             except (ValueError, TypeError):
                 published_at = None
 
-        # Determine content source enum
-        if content_source_str == "polygon":
-            primary_source = ContentSource.POLYGON
-        elif content_source_str == "tavily":
-            primary_source = ContentSource.TAVILY
-        elif content_source_str == "playwright":
-            primary_source = ContentSource.PLAYWRIGHT
-        else:
-            primary_source = ContentSource.TRAFILATURA
-
         # Detect expected language from market
         language = "zh" if market in ("SH", "SZ") else "en"
 
-        # Fetch content with fallback (uses singleton with all configured providers)
-        service = get_full_content_service()
+        # Fetch content via data-service
+        client = await get_data_service_client()
+        result = await client.fetch_content(url, language=language)
 
-        fetch_result = await service.fetch_with_fallback(
-            url=url,
-            primary_source=primary_source,
-            language=language,
-            polygon_api_key=polygon_api_key,
-        )
-
-        if not fetch_result.success or not fetch_result.full_text:
+        if not result or not result.get("full_text"):
             return SkillResult(
                 success=False,
-                error=fetch_result.error or "No content fetched",
+                error=result.get("error") if result else "No content fetched",
                 metadata={
                     "url": url,
                     "news_id": news_id_str,
@@ -160,21 +140,30 @@ class FetchFullContentSkill(BaseSkill):
                 },
             )
 
+        # Extract fields from data-service response
+        full_text = result.get("full_text", "")
+        word_count = result.get("word_count", 0)
+        result_language = result.get("language") or language
+        extraction_method = result.get("extraction_method")
+        images_raw = result.get("images", [])
+        top_image = images_raw[0] if images_raw else None
+        author = result.get("author")
+
         # Save content to file storage
         storage_service = get_news_storage_service()
         content_data = {
             "url": url,
             "title": kwargs.get("title", ""),
-            "full_text": fetch_result.full_text,
-            "authors": fetch_result.authors,
-            "keywords": fetch_result.keywords,
-            "top_image": fetch_result.top_image,
-            "images": fetch_result.images,  # List of {"url", "base64", "mime"} or None
-            "language": fetch_result.language or language,
-            "word_count": fetch_result.word_count,
-            "is_partial": fetch_result.is_partial,
+            "full_text": full_text,
+            "authors": [author] if author else [],
+            "keywords": [],
+            "top_image": top_image,
+            "images": [{"url": img} for img in images_raw] if images_raw else [],
+            "language": result_language,
+            "word_count": word_count,
+            "is_partial": False,
             "fetched_at": datetime.now(timezone.utc).isoformat(),
-            "metadata": fetch_result.metadata,
+            "metadata": {"extraction_method": extraction_method},
         }
 
         try:
@@ -191,25 +180,25 @@ class FetchFullContentSkill(BaseSkill):
                 metadata={
                     "url": url,
                     "news_id": news_id_str,
-                    "word_count": fetch_result.word_count,
+                    "word_count": word_count,
                 },
             )
 
         return SkillResult(
             success=True,
             data={
-                "full_text": fetch_result.full_text,
-                "word_count": fetch_result.word_count,
-                "language": fetch_result.language or language,
-                "is_partial": fetch_result.is_partial,
+                "full_text": full_text,
+                "word_count": word_count,
+                "language": result_language,
+                "is_partial": False,
                 "file_path": file_path,
-                "authors": fetch_result.authors,
-                "keywords": fetch_result.keywords,
+                "authors": [author] if author else [],
+                "keywords": [],
             },
             metadata={
                 "url": url,
                 "news_id": news_id_str,
                 "symbol": symbol,
-                "source": str(fetch_result.source) if fetch_result.source else content_source_str,
+                "source": extraction_method or content_source_str,
             },
         )

@@ -126,6 +126,9 @@ class Settings(BaseSettings):
     # Empty string disables the internal API (503 for all requests)
     INTERNAL_API_TOKEN: str = ""
 
+    # Data Service (external data provider microservice)
+    DATA_SERVICE_URL: str = "http://data-service:8003"
+
     # Qlib Service
     QLIB_SERVICE_URL: str = "http://qlib-service:8001"
 

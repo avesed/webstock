@@ -1,14 +1,12 @@
 """
 Hang Seng Index constituent stocks service.
 
-Provides HSI constituent list with two-layer fallback:
-  1. akshare API (ak.index_stock_cons or ak.stock_hk_spot_em)
-  2. Static hardcoded list (~82 constituents as of late 2025)
-
-Results are cached in Redis for 24 hours.
+Provides HSI constituent list with fallback:
+  1. Redis cache (24h TTL)
+  2. data-service API (akshare-based, via DataServiceClient)
+  3. Static hardcoded list (~82 constituents as of late 2025)
 """
 
-import asyncio
 import json
 import logging
 from typing import Optional
@@ -42,114 +40,13 @@ _STATIC_HSI = [
 ]
 
 
-def _normalize_hk_symbol(code: str) -> str:
-    """Normalize a raw HK stock code to WebStock format (e.g. '0700.HK').
-
-    Handles codes like '00700', '0700', '700', '09988', '9988'.
-    - 5-digit codes (e.g. '09988'): keep as-is, add .HK suffix.
-    - 4-digit or shorter: zero-pad to 4 digits, add .HK suffix.
-    """
-    code = code.strip()
-    # Remove any existing .HK suffix for uniform processing
-    if code.upper().endswith(".HK"):
-        code = code[:-3]
-
-    # Strip leading zeros then re-pad based on length
-    digits = code.lstrip("0") or "0"
-
-    if len(digits) >= 5:
-        # 5-digit stock code (e.g. 09988 -> keep as 9988 won't work;
-        # the original had 5 digits, so keep the original digit count)
-        return f"{digits}.HK"
-    else:
-        # Pad to 4 digits
-        return f"{digits.zfill(4)}.HK"
-
-
-def _fetch_via_index_cons() -> Optional[list[str]]:
-    """Try fetching HSI constituents via ak.index_stock_cons('HSI').
-
-    Returns a list of normalized symbols, or None on failure.
-    """
-    import akshare as ak
-
-    df = ak.index_stock_cons("HSI")
-    if df is None or df.empty:
-        return None
-
-    # The column name varies across akshare versions
-    code_col = None
-    for candidate in ("品种代码", "constituent_code", "code", "成分券代码"):
-        if candidate in df.columns:
-            code_col = candidate
-            break
-
-    if code_col is None:
-        if df.columns.empty:
-            logger.warning("index_stock_cons returned DataFrame with no columns")
-            return None
-        # Fall back to the first column if none of the known names match
-        code_col = df.columns[0]
-        logger.info(
-            "HSI index_stock_cons: using first column '%s' as code column "
-            "(available columns: %s)",
-            code_col,
-            list(df.columns),
-        )
-
-    symbols = []
-    for raw_code in df[code_col].astype(str):
-        sym = _normalize_hk_symbol(raw_code)
-        symbols.append(sym)
-
-    return sorted(set(symbols)) if symbols else None
-
-
-def _fetch_via_hk_spot() -> Optional[list[str]]:
-    """Fallback: try ak.stock_hk_spot_em() and return all HK stock codes.
-
-    This returns ALL HK stocks, not just HSI constituents, so it is a
-    last-resort data source. Returns None on failure.
-    """
-    import akshare as ak
-
-    df = ak.stock_hk_spot_em()
-    if df is None or df.empty:
-        return None
-
-    # stock_hk_spot_em uses Chinese column names: "代码" for code
-    code_col = None
-    for candidate in ("代码", "code", "symbol"):
-        if candidate in df.columns:
-            code_col = candidate
-            break
-
-    if code_col is None:
-        logger.warning(
-            "HSI stock_hk_spot_em: cannot find code column "
-            "(available columns: %s)",
-            list(df.columns),
-        )
-        return None
-
-    # This endpoint returns all HK stocks; we cannot filter to HSI only,
-    # so this fallback is of limited value. Return None to let the static
-    # list take over instead.
-    logger.warning(
-        "HSI stock_hk_spot_em returned %d stocks but cannot filter to HSI "
-        "constituents; skipping this fallback",
-        len(df),
-    )
-    return None
-
-
 class HSIConstituentService:
     """Service for fetching Hang Seng Index constituent stocks."""
 
     async def get_constituents(self) -> list[str]:
         """Get HSI constituent symbols in WebStock format (e.g. 0700.HK).
 
-        Tries: Redis cache -> akshare API -> static fallback.
+        Tries: Redis cache -> data-service API -> static fallback.
         Always returns a non-empty list.
         """
         # Layer 0: Redis cache
@@ -157,8 +54,8 @@ class HSIConstituentService:
         if cached is not None:
             return cached
 
-        # Layer 1: akshare API
-        symbols = await self._fetch_from_akshare()
+        # Layer 1: data-service API
+        symbols = await self._fetch_from_data_service()
         if symbols:
             await self._save_to_cache(symbols)
             return symbols
@@ -198,32 +95,21 @@ class HSIConstituentService:
         except Exception as e:
             logger.warning("Failed to cache HSI constituents: %s", e)
 
-    async def _fetch_from_akshare(self) -> Optional[list[str]]:
-        """Fetch HSI constituents from akshare with fallback strategies."""
-        # Strategy 1: index_stock_cons("HSI")
+    async def _fetch_from_data_service(self) -> Optional[list[str]]:
+        """Fetch HSI constituents from data-service."""
         try:
-            symbols = await asyncio.to_thread(_fetch_via_index_cons)
-            if symbols:
+            from app.services.data_service_client import get_data_service_client
+            client = await get_data_service_client()
+            result = await client.get_hsi_constituents()
+            if result and isinstance(result.get("symbols"), list):
+                symbols = result["symbols"]
                 logger.info(
-                    "Fetched %d HSI constituents via index_stock_cons",
+                    "Fetched %d HSI constituents from data-service",
                     len(symbols),
                 )
                 return symbols
         except Exception as e:
-            logger.warning("akshare index_stock_cons('HSI') failed: %s", e)
-
-        # Strategy 2: stock_hk_spot_em (returns all HK stocks)
-        try:
-            symbols = await asyncio.to_thread(_fetch_via_hk_spot)
-            if symbols:
-                logger.info(
-                    "Fetched %d HSI constituents via stock_hk_spot_em",
-                    len(symbols),
-                )
-                return symbols
-        except Exception as e:
-            logger.warning("akshare stock_hk_spot_em() failed: %s", e)
-
+            logger.warning("data-service HSI constituents failed: %s", e)
         return None
 
 

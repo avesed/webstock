@@ -37,7 +37,7 @@ from app.services.canonical_cache_service import (
     get_canonical_cache_service,
     resample_bars,
 )
-from app.services.providers import get_provider_router
+from app.services.data_service_client import get_data_service_client
 from app.services.stock_service import (
     HistoryInterval as ServiceInterval,
     HistoryPeriod as ServicePeriod,
@@ -746,14 +746,14 @@ async def get_latest_bars(
     )
     end_str = datetime.now(tz=timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
 
-    # Fetch from provider at canonical precision
-    router = await get_provider_router()
+    # Fetch from data-service at canonical precision
+    client = await get_data_service_client()
     try:
-        history = await router.get_history(
+        result = await client.get_history(
             symbol,
-            ServicePeriod.ONE_DAY,
-            ServiceInterval(canonical_interval),
-            market,
+            period="1d",
+            interval=canonical_interval,
+            market=market.value,
             start=start_str,
             end=end_str,
         )
@@ -761,21 +761,19 @@ async def get_latest_bars(
         logger.error("Error fetching latest bars for %s: %s", symbol, e)
         return {"symbol": symbol, "interval": interval.value, "bars": []}
 
-    if not history or not history.bars:
+    if not result or not result.get("bars"):
         return {"symbol": symbol, "interval": interval.value, "bars": []}
 
     raw_bars = [
         {
-            "date": (
-                b.date.isoformat() if hasattr(b.date, "isoformat") else str(b.date)
-            ),
-            "open": round(float(b.open), 4),
-            "high": round(float(b.high), 4),
-            "low": round(float(b.low), 4),
-            "close": round(float(b.close), 4),
-            "volume": int(b.volume),
+            "date": str(b.get("date", "")),
+            "open": round(float(b.get("open", 0)), 4),
+            "high": round(float(b.get("high", 0)), 4),
+            "low": round(float(b.get("low", 0)), 4),
+            "close": round(float(b.get("close", 0)), 4),
+            "volume": int(b.get("volume", 0)) if b.get("volume") is not None else 0,
         }
-        for b in history.bars
+        for b in result.get("bars", [])
     ]
 
     # Fire-and-forget: write back to Layer 2 disk cache

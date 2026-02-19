@@ -47,10 +47,10 @@ class GetAnalystRatingsSkill(BaseSkill):
     async def execute(self, **kwargs: Any) -> SkillResult:
         symbol = _normalize_symbol(kwargs.get("symbol"))
 
-        from app.services.providers import get_provider_router
+        from app.services.data_service_client import get_data_service_client
 
-        router = await get_provider_router()
-        result = await router.yfinance.get_analyst_ratings(symbol)
+        client = await get_data_service_client()
+        result = await client.get_analyst_ratings(symbol)
 
         if not result:
             return SkillResult(

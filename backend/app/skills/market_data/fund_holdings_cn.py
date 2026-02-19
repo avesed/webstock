@@ -53,10 +53,10 @@ class GetFundHoldingsCnSkill(BaseSkill):
         # Extract the bare 6-digit stock code for akshare
         stock_code = symbol.split(".")[0]
 
-        from app.services.providers import get_provider_router
+        from app.services.data_service_client import get_data_service_client
 
-        router = await get_provider_router()
-        result = await router.akshare.get_fund_holdings_cn(stock_code)
+        client = await get_data_service_client()
+        result = await client.get_fund_holdings(stock_code)
 
         if not result:
             return SkillResult(

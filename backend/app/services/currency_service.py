@@ -10,9 +10,6 @@ from decimal import Decimal, ROUND_HALF_UP
 from enum import Enum
 from typing import Dict, Optional
 
-import httpx
-
-from app.config import settings
 from app.db.redis import get_redis
 
 logger = logging.getLogger(__name__)
@@ -111,46 +108,29 @@ async def get_exchange_rates(use_fallback: bool = True) -> Dict[str, Decimal]:
     except Exception as e:
         logger.warning(f"Failed to read exchange rates from cache: {e}")
 
-    # Fetch from Finnhub
-    finnhub_key = settings.FINNHUB_API_KEY
-    if not finnhub_key:
-        from app.services.settings_service import get_system_api_key
-        finnhub_key = await get_system_api_key("finnhub_api_key")
-    if not finnhub_key:
-        logger.warning("FINNHUB_API_KEY not configured, using fallback rates")
-        return FALLBACK_RATES if use_fallback else {}
-
+    # Fetch from data-service (which calls Finnhub Forex API)
     try:
-        url = f"https://finnhub.io/api/v1/forex/rates?base=USD&token={finnhub_key}"
+        from app.services.data_service_client import get_data_service_client
+        client = await get_data_service_client()
+        result = await client.get_forex_rates()
 
-        async with httpx.AsyncClient(timeout=10.0) as client:
-            response = await client.get(url)
-            response.raise_for_status()
-            data = response.json()
+        if result and isinstance(result.get("rates"), dict):
+            rates = result["rates"]
+            if rates:
+                logger.info(f"Fetched exchange rates from data-service: {len(rates)} currencies")
 
-        rates = data.get("quote", {})
+                # Cache the rates
+                try:
+                    await redis_client.setex(CACHE_KEY, CACHE_TTL, json.dumps(rates))
+                    logger.debug(f"Cached exchange rates for {CACHE_TTL} seconds")
+                except Exception as e:
+                    logger.warning(f"Failed to cache exchange rates: {e}")
 
-        if not rates:
-            logger.warning("Empty rates response from Finnhub")
-            return FALLBACK_RATES if use_fallback else {}
+                return {k: Decimal(str(v)) for k, v in rates.items()}
 
-        logger.info(f"Fetched exchange rates from Finnhub: {len(rates)} currencies")
-
-        # Cache the rates
-        try:
-            await redis_client.setex(CACHE_KEY, CACHE_TTL, json.dumps(rates))
-            logger.debug(f"Cached exchange rates for {CACHE_TTL} seconds")
-        except Exception as e:
-            logger.warning(f"Failed to cache exchange rates: {e}")
-
-        return {k: Decimal(str(v)) for k, v in rates.items()}
-
-    except httpx.HTTPStatusError as e:
-        logger.error(f"Finnhub API error: {e.response.status_code} - {e.response.text}")
-    except httpx.RequestError as e:
-        logger.error(f"Finnhub request error: {e}")
+        logger.warning("Empty rates response from data-service")
     except Exception as e:
-        logger.error(f"Failed to fetch exchange rates: {e}")
+        logger.error(f"Failed to fetch exchange rates from data-service: {e}")
 
     # Return fallback rates on failure
     if use_fallback:

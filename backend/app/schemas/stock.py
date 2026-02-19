@@ -55,15 +55,15 @@ class StockQuoteResponse(CamelModel):
     price: float
     change: float
     change_percent: float
-    volume: int
+    volume: Optional[int] = None
     market_cap: Optional[float] = None
     day_high: Optional[float] = None
     day_low: Optional[float] = None
     open: Optional[float] = None
     previous_close: Optional[float] = None
-    timestamp: str
+    timestamp: Optional[str] = None
     market: str
-    source: str
+    source: Optional[str] = None
 
 
 class OHLCVBarResponse(CamelModel):
@@ -84,7 +84,7 @@ class StockHistoryResponse(CamelModel):
     interval: str
     bars: List[OHLCVBarResponse]
     market: str
-    source: str
+    source: Optional[str] = None
 
 
 class StockInfoResponse(CamelModel):
@@ -98,10 +98,10 @@ class StockInfoResponse(CamelModel):
     website: Optional[str] = None
     employees: Optional[int] = None
     market_cap: Optional[float] = None
-    currency: str
-    exchange: str
+    currency: Optional[str] = None
+    exchange: Optional[str] = None
     market: str
-    source: str
+    source: Optional[str] = None
 
 
 class StockFinancialsResponse(CamelModel):
@@ -128,7 +128,7 @@ class StockFinancialsResponse(CamelModel):
     eps_growth: Optional[float] = None
     payout_ratio: Optional[float] = None
     market: str
-    source: str
+    source: Optional[str] = None
 
 
 class SearchResultResponse(CamelModel):
@@ -136,7 +136,7 @@ class SearchResultResponse(CamelModel):
 
     symbol: str
     name: str
-    exchange: str
+    exchange: Optional[str] = None
     market: str
     match_field: Optional[str] = None  # Which field matched (for highlighting)
     name_zh: Optional[str] = None  # Chinese name (for display)

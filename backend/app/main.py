@@ -13,6 +13,7 @@ from app.db.database import AsyncSessionLocal, close_db, init_db
 from app.db.redis import close_redis, init_redis
 from app.services.cache_service import cleanup_cache_service
 from app.services.data_aggregator import cleanup_data_aggregator
+from app.services.data_service_client import close_data_service_client
 from app.services.qlib_client import close_qlib_client
 from app.services.stock_service import cleanup_stock_service
 
@@ -270,6 +271,11 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     logger.debug("Cleaning up cache service...")
     await cleanup_cache_service()
     logger.debug("Cache service cleanup complete")
+
+    # Close DataServiceClient
+    logger.debug("Closing DataServiceClient...")
+    await close_data_service_client()
+    logger.debug("DataServiceClient closed")
 
     # Close Qlib client
     logger.debug("Closing Qlib client...")
