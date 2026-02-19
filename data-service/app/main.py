@@ -33,14 +33,22 @@ settings = get_settings()
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
-    """Application lifespan: configure logging, cleanup on shutdown."""
+    """Application lifespan: configure logging, load keys, cleanup on shutdown."""
     logging.basicConfig(
         level=getattr(logging, settings.LOG_LEVEL.upper(), logging.INFO),
         format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
     )
     logger.info("Starting data-service...")
+
+    # Load API keys from DB and start Redis subscriber for live updates
+    from app.core.api_keys import load_api_keys_from_db, start_subscriber, stop_subscriber
+    await load_api_keys_from_db()
+    start_subscriber()
+
     yield
+
     logger.info("Shutting down data-service...")
+    await stop_subscriber()
     shutdown_executor()
     await close_redis()
     logger.info("data-service shut down")

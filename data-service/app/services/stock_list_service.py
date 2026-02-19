@@ -58,10 +58,10 @@ def _fetch_finnhub_us() -> List[Dict[str, Any]]:
     """Fetch US stock symbols from Finnhub API."""
     import finnhub
 
-    settings = get_settings()
-    api_key = settings.FINNHUB_API_KEY
+    from app.core.api_keys import get_api_key
+    api_key = get_api_key("finnhub")
     if not api_key:
-        logger.warning("FINNHUB_API_KEY not configured, skipping US stocks")
+        logger.warning("Finnhub API key not configured, skipping US stocks")
         return []
 
     try:

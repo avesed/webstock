@@ -59,6 +59,16 @@ celery_app.conf.update(
         "worker.tasks.qlib_sync.sync_qlib_market": {"queue": "default"},
     },
 
+    # Broker transport — Redis visibility timeout
+    # CRITICAL: With task_acks_late=True, Redis re-delivers unacknowledged
+    # messages after visibility_timeout.  Default is 3600s (1 hour), but
+    # daily bar tasks can run for 8+ hours.  Without this, tasks running
+    # longer than 1 hour get duplicated every hour, causing the "progress
+    # bar completes then resets to 0" loop on the admin dashboard.
+    broker_transport_options={
+        "visibility_timeout": 43200,  # 12h — exceeds longest task time_limit (8h)
+    },
+
     # Task execution settings
     task_acks_late=True,
     task_reject_on_worker_lost=True,

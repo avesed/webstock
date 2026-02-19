@@ -50,11 +50,12 @@ class FinnhubNewsProvider:
     """
 
     def __init__(self) -> None:
-        self._settings = get_settings()
+        pass
 
     def _get_api_key(self) -> Optional[str]:
-        """Get Finnhub API key from config."""
-        return self._settings.FINNHUB_API_KEY or None
+        """Get Finnhub API key (DB → env fallback)."""
+        from app.core.api_keys import get_api_key
+        return get_api_key("finnhub")
 
     async def get_company_news(
         self,

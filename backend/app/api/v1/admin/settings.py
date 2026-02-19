@@ -195,6 +195,17 @@ async def update_system_settings(
     await db.commit()
     await db.refresh(settings)
 
+    # Notify data-service to reload API keys if any data-provider key changed
+    _DATA_SERVICE_KEYS = {"finnhub_api_key", "polygon_api_key", "tavily_api_key"}
+    if _DATA_SERVICE_KEYS & set(update_fields.keys()):
+        try:
+            from app.db.redis import get_redis
+            redis = await get_redis()
+            await redis.publish("data_service:reload_keys", "reload")
+            logger.info("Notified data-service to reload API keys")
+        except Exception as e:
+            logger.warning(f"Failed to notify data-service: {e}")
+
     logger.info(
         f"[AUDIT] Admin {admin.id} updated system settings: {list(update_fields.keys())}"
     )

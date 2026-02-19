@@ -97,3 +97,34 @@ class SearchItem(BaseModel):
     name: str
     exchange: Optional[str] = None
     market: str
+
+
+# --- Batch daily bars models ---
+
+
+class DailyBarSymbolRequest(BaseModel):
+    """Per-symbol request in a batch daily bars fetch."""
+
+    symbol: str
+    start_date: Optional[str] = None  # YYYY-MM-DD; None = full history
+
+
+class BatchDailyBarsRequest(BaseModel):
+    """Request body for batch daily bars endpoint."""
+
+    symbols: list[DailyBarSymbolRequest]  # max 50
+    market: str  # us, hk, cn, metal
+
+
+class SymbolBarsResult(BaseModel):
+    """Bars result for a single symbol."""
+
+    bars: list[OHLCVBar]
+    source: str  # "yfinance" or "akshare"
+
+
+class BatchDailyBarsData(BaseModel):
+    """Response data for batch daily bars endpoint."""
+
+    results: dict[str, SymbolBarsResult]  # symbol -> bars
+    errors: dict[str, str]  # symbol -> error message

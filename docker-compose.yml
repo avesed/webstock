@@ -160,10 +160,13 @@ services:
     depends_on:
       redis:
         condition: service_healthy
+      postgres:
+        condition: service_healthy
     networks:
       - webstock-network
     environment:
       - REDIS_URL=redis://redis:6379/5
+      - DATABASE_URL=postgresql://webstock:${POSTGRES_PASSWORD:-webstock}@postgres:5432/webstock
       - INTERNAL_API_TOKEN=${INTERNAL_API_TOKEN:-}
       - FINNHUB_API_KEY=${FINNHUB_API_KEY:-}
       - TUSHARE_TOKEN=${TUSHARE_TOKEN:-}

@@ -7,13 +7,20 @@ Collects enriched stock profiles from multiple data sources:
 
 Returns raw dicts matching the StockProfileData model. Does NOT perform
 embedding — the backend handles that step.
+
+Two endpoint modes:
+- **Monolithic** (legacy): ``collect_cn/us/hk_profiles()`` — full market collection
+  in one call.  Kept for backward compat but may timeout for large markets.
+- **Granular** (new): ``collect_concept_mapping()`` + ``fetch_*_batch()`` — small
+  batches (≤50 symbols) that complete in <60s, orchestrated by the backend
+  Celery worker.
 """
 from __future__ import annotations
 
 import asyncio
 import logging
 import time
-from typing import Any, Dict, List, Optional, Set
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 from app.core.executor import run_in_executor
 
@@ -34,27 +41,39 @@ def _is_rate_limit_error(exc: Exception) -> bool:
     return False
 
 
+def _cn_code_to_symbol(code: str) -> Tuple[str, str]:
+    """Convert a 6-digit A-share code to (symbol, market).
+
+    Returns e.g. ("600519.SS", "sh") or ("000001.SZ", "sz").
+    """
+    if code.startswith(("6", "9")):
+        return f"{code}.SS", "sh"
+    elif code.startswith(("0", "2", "3")):
+        return f"{code}.SZ", "sz"
+    return f"{code}.SS", "sh"
+
+
 # ---------------------------------------------------------------------------
-# CN profiles: concept boards + individual stock info
+# CN concept board mapping (shared by monolithic + granular endpoints)
 # ---------------------------------------------------------------------------
 
-async def collect_cn_profiles() -> List[Dict[str, Any]]:
-    """Collect A-share profiles via akshare concept boards + stock info.
+async def collect_concept_mapping() -> Tuple[
+    Dict[str, List[str]], Dict[str, str]
+]:
+    """Collect A-share concept board -> stock mapping (inversion only).
 
-    Strategy:
-    1. Fetch all concept board names (~400 boards)
-    2. For each board, fetch constituent stocks -> invert to stock->concepts mapping
-    3. For each stock, fetch basic info (description, industry, sector)
-
-    Rate limiting: Semaphore(3) + 1s delay between akshare calls.
+    Fetches all ~400 concept board names, then for each board fetches its
+    constituent stocks to build an inverted mapping: stock code -> list of
+    concept board names.
 
     Returns:
-        List of profile dicts with keys:
-        symbol, market, name, name_zh, sector, industry, concepts, main_business, description.
+        Tuple of (concepts_dict, names_dict) where:
+        - concepts_dict: {6-digit code: [sorted concept names]}
+        - names_dict: {6-digit code: name_zh}
     """
     import akshare as ak
 
-    logger.info("[StockProfile] Starting CN profile collection")
+    logger.info("[StockProfile] Starting concept board mapping")
     t0 = time.monotonic()
 
     # Step 1: Fetch concept board list
@@ -64,11 +83,11 @@ async def collect_cn_profiles() -> List[Dict[str, Any]]:
         )
     except Exception as e:
         logger.error("[StockProfile] Failed to fetch concept boards: %s", e)
-        return []
+        return {}, {}
 
     if boards_df is None or boards_df.empty:
         logger.warning("[StockProfile] Empty concept board list")
-        return []
+        return {}, {}
 
     board_names = boards_df["板块名称"].tolist()
     logger.info("[StockProfile] Found %d concept boards", len(board_names))
@@ -79,7 +98,7 @@ async def collect_cn_profiles() -> List[Dict[str, Any]]:
     sem = asyncio.Semaphore(3)
     errors = 0
     rate_limit_streak = 0
-    abort_event = asyncio.Event()  # signal all tasks to stop on rate-limit flood
+    abort_event = asyncio.Event()
 
     async def fetch_board_stocks(board_name: str) -> None:
         nonlocal errors, rate_limit_streak
@@ -130,7 +149,7 @@ async def collect_cn_profiles() -> List[Dict[str, Any]]:
                     break
             await asyncio.sleep(1.0)
 
-    # Process boards in batches
+    # Process boards in batches of 20
     batch_size = 20
     for i in range(0, len(board_names), batch_size):
         batch = board_names[i : i + batch_size]
@@ -144,10 +163,40 @@ async def collect_cn_profiles() -> List[Dict[str, Any]]:
                 i, len(board_names), len(stock_concepts),
             )
 
+    # Convert sets to sorted lists
+    concepts_dict = {
+        code: sorted(concepts)
+        for code, concepts in stock_concepts.items()
+    }
+
+    elapsed = time.monotonic() - t0
     logger.info(
-        "[StockProfile] Concept board mapping complete: %d stocks, %d errors",
-        len(stock_concepts), errors,
+        "[StockProfile] Concept board mapping complete: %d stocks, %d errors in %.0fs",
+        len(concepts_dict), errors, elapsed,
     )
+    return concepts_dict, dict(stock_names)
+
+
+# ---------------------------------------------------------------------------
+# CN profiles: concept boards + individual stock info (monolithic, legacy)
+# ---------------------------------------------------------------------------
+
+async def collect_cn_profiles() -> List[Dict[str, Any]]:
+    """Collect A-share profiles via akshare concept boards + stock info.
+
+    This is the monolithic version that does concept mapping + individual info
+    in one call. May timeout for HTTP endpoints; prefer the granular
+    ``collect_concept_mapping()`` + ``fetch_cn_stock_info_batch()`` combo.
+    """
+    import akshare as ak
+
+    logger.info("[StockProfile] Starting CN profile collection (monolithic)")
+    t0 = time.monotonic()
+
+    # Step 1-2: Get concept mapping
+    concepts_dict, names_dict = await collect_concept_mapping()
+    if not concepts_dict:
+        return []
 
     # Step 3: Fetch individual stock info for each stock
     profiles: List[Dict[str, Any]] = []
@@ -156,26 +205,15 @@ async def collect_cn_profiles() -> List[Dict[str, Any]]:
     info_429_streak = 0
     info_abort = asyncio.Event()
 
-    async def fetch_stock_info(code: str, concepts: Set[str]) -> None:
+    async def fetch_stock_info(code: str, concepts: List[str]) -> None:
         nonlocal info_errors, info_429_streak
         if info_abort.is_set():
             return
         async with info_sem:
             if info_abort.is_set():
                 return
-            # Determine market suffix
-            if code.startswith(("6", "9")):
-                suffix = ".SS"
-                market = "sh"
-            elif code.startswith(("0", "2", "3")):
-                suffix = ".SZ"
-                market = "sz"
-            else:
-                suffix = ".SS"
-                market = "sh"
-
-            symbol = f"{code}{suffix}"
-            name_zh = stock_names.get(code, "")
+            symbol, market = _cn_code_to_symbol(code)
+            name_zh = names_dict.get(code, "")
 
             profile: Dict[str, Any] = {
                 "symbol": symbol,
@@ -184,7 +222,7 @@ async def collect_cn_profiles() -> List[Dict[str, Any]]:
                 "name_zh": name_zh,
                 "sector": "",
                 "industry": "",
-                "concepts": sorted(concepts),
+                "concepts": concepts,
                 "main_business": "",
                 "description": "",
             }
@@ -239,7 +277,7 @@ async def collect_cn_profiles() -> List[Dict[str, Any]]:
             await asyncio.sleep(1.0)
 
     # Process stocks in batches
-    stock_items = list(stock_concepts.items())
+    stock_items = list(concepts_dict.items())
     batch_size = 20
     for i in range(0, len(stock_items), batch_size):
         batch = stock_items[i : i + batch_size]
@@ -263,19 +301,14 @@ async def collect_cn_profiles() -> List[Dict[str, Any]]:
 
 
 # ---------------------------------------------------------------------------
-# US profiles: yfinance Ticker info
+# US profiles: yfinance Ticker info (monolithic, legacy)
 # ---------------------------------------------------------------------------
 
 async def collect_us_profiles(symbols: List[str]) -> List[Dict[str, Any]]:
     """Collect US stock profiles via yfinance.
 
-    Args:
-        symbols: List of US stock symbols (e.g. ["AAPL", "MSFT"]).
-                 Capped at 5000 internally.
-
-    Returns:
-        List of profile dicts with keys:
-        symbol, market, name, name_zh, sector, industry, concepts, main_business, description.
+    Monolithic version — processes all symbols in one call.
+    Prefer ``fetch_us_profiles_batch()`` for granular batching.
     """
     try:
         import yfinance as yf
@@ -373,19 +406,14 @@ async def collect_us_profiles(symbols: List[str]) -> List[Dict[str, Any]]:
 
 
 # ---------------------------------------------------------------------------
-# HK profiles: yfinance Ticker info
+# HK profiles: yfinance Ticker info (monolithic, legacy)
 # ---------------------------------------------------------------------------
 
 async def collect_hk_profiles(symbols: List[str]) -> List[Dict[str, Any]]:
     """Collect HK stock profiles via yfinance.
 
-    Args:
-        symbols: List of HK stock symbols in canonical format (e.g. ["00700.HK"]).
-                 Capped at 500 internally.
-
-    Returns:
-        List of profile dicts with keys:
-        symbol, market, name, name_zh, sector, industry, concepts, main_business, description.
+    Monolithic version — processes all symbols in one call.
+    Prefer ``fetch_hk_profiles_batch()`` for granular batching.
     """
     try:
         import yfinance as yf
@@ -398,7 +426,6 @@ async def collect_hk_profiles(symbols: List[str]) -> List[Dict[str, Any]]:
     t0 = time.monotonic()
 
     # yfinance uses 4-digit HK codes (0700.HK), stock list uses 5-digit (00700.HK)
-    # Build mapping: yfinance_symbol -> canonical_symbol
     yf_to_canonical: Dict[str, str] = {}
     yf_symbols: List[str] = []
     for s in symbols:
@@ -490,6 +517,263 @@ async def collect_hk_profiles(symbols: List[str]) -> List[Dict[str, Any]]:
     elapsed = time.monotonic() - t0
     logger.info(
         "[StockProfile] HK collection complete: %d profiles in %.0fs (errors=%d)",
+        len(profiles), elapsed, errors,
+    )
+    return profiles
+
+
+# ===========================================================================
+# Granular batch functions (new) — max 50 symbols per call, <60s each
+# ===========================================================================
+
+
+async def fetch_cn_stock_info_batch(
+    codes: List[str],
+) -> List[Dict[str, Any]]:
+    """Fetch individual stock info for a small batch of A-share codes.
+
+    Unlike ``collect_cn_profiles()``, this does NOT perform concept board
+    mapping. The caller is expected to merge concept data separately.
+
+    Args:
+        codes: List of 6-digit A-share codes (max 50).
+
+    Returns:
+        List of profile dicts (without concepts — caller adds them).
+    """
+    import akshare as ak
+
+    codes = codes[:50]
+    logger.info("[StockProfile] Fetching CN stock info batch: %d codes", len(codes))
+    t0 = time.monotonic()
+
+    profiles: List[Dict[str, Any]] = []
+    sem = asyncio.Semaphore(3)
+    errors = 0
+
+    async def fetch_one(code: str) -> None:
+        nonlocal errors
+        async with sem:
+            symbol, market = _cn_code_to_symbol(code)
+            profile: Dict[str, Any] = {
+                "symbol": symbol,
+                "market": market,
+                "name": "",
+                "name_zh": "",
+                "sector": "",
+                "industry": "",
+                "concepts": [],
+                "main_business": "",
+                "description": "",
+            }
+
+            for attempt in range(2):
+                try:
+                    df = await run_in_executor(
+                        lambda c=code: ak.stock_individual_info_em(symbol=c),
+                        timeout=30.0,
+                    )
+                    if df is not None and not df.empty:
+                        info: Dict[str, str] = {}
+                        for _, row in df.iterrows():
+                            info[row["item"]] = row["value"]
+                        biz_scope = str(info.get("经营范围", ""))[:500]
+                        profile["main_business"] = biz_scope
+                        profile["description"] = biz_scope
+                        profile["industry"] = str(info.get("行业", ""))
+                        profile["sector"] = str(info.get("行业", ""))
+                        profile["name"] = str(info.get("股票简称", ""))
+                        profile["name_zh"] = profile["name"]
+                    break
+                except Exception as e:
+                    if _is_rate_limit_error(e) and attempt < 1:
+                        await asyncio.sleep(30)
+                        continue
+                    errors += 1
+                    if errors <= 5:
+                        logger.warning(
+                            "[StockProfile] Error fetching info for %s: %s",
+                            code, e,
+                        )
+                    break
+
+            profiles.append(profile)
+            await asyncio.sleep(1.0)
+
+    await asyncio.gather(
+        *[fetch_one(c) for c in codes],
+        return_exceptions=True,
+    )
+
+    elapsed = time.monotonic() - t0
+    logger.info(
+        "[StockProfile] CN batch info done: %d profiles in %.1fs (errors=%d)",
+        len(profiles), elapsed, errors,
+    )
+    return profiles
+
+
+async def fetch_us_profiles_batch(
+    symbols: List[str],
+) -> List[Dict[str, Any]]:
+    """Fetch US stock profiles for a small batch via yfinance.
+
+    Args:
+        symbols: List of US stock symbols (max 50).
+
+    Returns:
+        List of profile dicts.
+    """
+    try:
+        import yfinance as yf
+    except ImportError:
+        logger.warning("[StockProfile] yfinance not installed")
+        return []
+
+    symbols = symbols[:50]
+    logger.info("[StockProfile] Fetching US profiles batch: %d symbols", len(symbols))
+    t0 = time.monotonic()
+
+    profiles: List[Dict[str, Any]] = []
+    sem = asyncio.Semaphore(5)
+    errors = 0
+
+    async def fetch_one(symbol: str) -> None:
+        nonlocal errors
+        async with sem:
+            for attempt in range(2):
+                try:
+                    def _get_info(s: str = symbol) -> Optional[Dict[str, Any]]:
+                        ticker = yf.Ticker(s)
+                        return ticker.info
+
+                    info = await run_in_executor(_get_info, timeout=30.0)
+                    if info and isinstance(info, dict):
+                        name = info.get("shortName") or info.get("longName", "")
+                        if name:
+                            biz_summary = info.get("longBusinessSummary", "")[:500]
+                            profiles.append({
+                                "symbol": symbol,
+                                "market": "us",
+                                "name": name,
+                                "name_zh": "",
+                                "sector": info.get("sector", ""),
+                                "industry": info.get("industry", ""),
+                                "concepts": [],
+                                "main_business": biz_summary,
+                                "description": biz_summary,
+                            })
+                    break
+                except Exception as e:
+                    if _is_rate_limit_error(e) and attempt < 1:
+                        await asyncio.sleep(30)
+                        continue
+                    errors += 1
+                    if errors <= 5:
+                        logger.warning(
+                            "[StockProfile] yfinance error for %s: %s",
+                            symbol, e,
+                        )
+                    break
+            await asyncio.sleep(0.5)
+
+    await asyncio.gather(
+        *[fetch_one(s) for s in symbols],
+        return_exceptions=True,
+    )
+
+    elapsed = time.monotonic() - t0
+    logger.info(
+        "[StockProfile] US batch done: %d profiles in %.1fs (errors=%d)",
+        len(profiles), elapsed, errors,
+    )
+    return profiles
+
+
+async def fetch_hk_profiles_batch(
+    symbols: List[str],
+) -> List[Dict[str, Any]]:
+    """Fetch HK stock profiles for a small batch via yfinance.
+
+    Args:
+        symbols: List of HK stock symbols in canonical format e.g. ["00700.HK"]
+                 (max 50).
+
+    Returns:
+        List of profile dicts (with canonical 5-digit symbols).
+    """
+    try:
+        import yfinance as yf
+    except ImportError:
+        logger.warning("[StockProfile] yfinance not installed")
+        return []
+
+    symbols = symbols[:50]
+    logger.info("[StockProfile] Fetching HK profiles batch: %d symbols", len(symbols))
+    t0 = time.monotonic()
+
+    # yfinance uses 4-digit HK codes (0700.HK), stock list uses 5-digit (00700.HK)
+    yf_to_canonical: Dict[str, str] = {}
+    yf_symbols: List[str] = []
+    for s in symbols:
+        code, _, suffix = s.partition(".")
+        yf_code = code.lstrip("0").zfill(4)
+        yf_sym = f"{yf_code}.{suffix}" if suffix else yf_code
+        yf_to_canonical[yf_sym] = s
+        yf_symbols.append(yf_sym)
+
+    profiles: List[Dict[str, Any]] = []
+    sem = asyncio.Semaphore(5)
+    errors = 0
+
+    async def fetch_one(yf_symbol: str) -> None:
+        nonlocal errors
+        async with sem:
+            for attempt in range(2):
+                try:
+                    def _get_info(s: str = yf_symbol) -> Optional[Dict[str, Any]]:
+                        ticker = yf.Ticker(s)
+                        return ticker.info
+
+                    info = await run_in_executor(_get_info, timeout=30.0)
+                    if info and isinstance(info, dict):
+                        name = info.get("shortName") or info.get("longName", "")
+                        if name:
+                            canonical = yf_to_canonical.get(yf_symbol, yf_symbol)
+                            biz_summary = info.get("longBusinessSummary", "")[:500]
+                            profiles.append({
+                                "symbol": canonical,
+                                "market": "hk",
+                                "name": name,
+                                "name_zh": "",
+                                "sector": info.get("sector", ""),
+                                "industry": info.get("industry", ""),
+                                "concepts": [],
+                                "main_business": biz_summary,
+                                "description": biz_summary,
+                            })
+                    break
+                except Exception as e:
+                    if _is_rate_limit_error(e) and attempt < 1:
+                        await asyncio.sleep(30)
+                        continue
+                    errors += 1
+                    if errors <= 5:
+                        logger.warning(
+                            "[StockProfile] yfinance error for %s: %s",
+                            yf_symbol, e,
+                        )
+                    break
+            await asyncio.sleep(0.5)
+
+    await asyncio.gather(
+        *[fetch_one(s) for s in yf_symbols],
+        return_exceptions=True,
+    )
+
+    elapsed = time.monotonic() - t0
+    logger.info(
+        "[StockProfile] HK batch done: %d profiles in %.1fs (errors=%d)",
         len(profiles), elapsed, errors,
     )
     return profiles

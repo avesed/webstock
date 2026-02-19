@@ -11,13 +11,6 @@ from app.services.currency_service import (
     get_supported_currencies,
 )
 from app.services.data_aggregator import DataAggregator, get_data_aggregator
-from app.services.full_content_service import (
-    ContentSource,
-    FetchResult,
-    FullContentService,
-    get_full_content_service,
-    BLOCKED_DOMAINS,
-)
 from app.services.news_layer3_analysis_service import (
     NewsLayer3AnalysisService,
     get_news_layer3_analysis_service,
@@ -70,12 +63,6 @@ __all__ = [
     # Data aggregator
     "DataAggregator",
     "get_data_aggregator",
-    # Full content
-    "ContentSource",
-    "FetchResult",
-    "FullContentService",
-    "get_full_content_service",
-    "BLOCKED_DOMAINS",
     # News Layer 3 analysis
     "NewsLayer3AnalysisService",
     "get_news_layer3_analysis_service",

@@ -57,8 +57,13 @@ class TavilyContentProvider:
     """
 
     def __init__(self, api_key: Optional[str] = None) -> None:
-        settings = get_settings()
-        self.api_key = api_key or settings.TAVILY_API_KEY or None
+        self._static_key = api_key  # explicit key wins; None = resolve lazily
+
+    def _resolve_key(self) -> Optional[str]:
+        if self._static_key:
+            return self._static_key
+        from app.core.api_keys import get_api_key
+        return get_api_key("tavily")
 
     async def extract(self, url: str) -> Optional[Dict[str, Any]]:
         """Extract content via Tavily Extract API.
@@ -69,7 +74,8 @@ class TavilyContentProvider:
         Returns:
             Dict matching ContentResult model, or None on failure.
         """
-        if not self.api_key:
+        api_key = self._resolve_key()
+        if not api_key:
             return {
                 "url": url,
                 "success": False,
@@ -85,7 +91,7 @@ class TavilyContentProvider:
                 response = await client.post(
                     "https://api.tavily.com/extract",
                     json={
-                        "api_key": self.api_key,
+                        "api_key": api_key,
                         "urls": [url],
                         "extract_depth": "advanced",
                     },

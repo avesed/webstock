@@ -15,12 +15,15 @@ from pydantic import BaseModel
 from app.core.auth import verify_internal_token
 from app.models.base import ApiResponse
 from app.models.stock import (
+    BatchDailyBarsData,
+    BatchDailyBarsRequest,
     FinancialsData,
     HistoryData,
     InfoData,
     OHLCVBar,
     QuoteData,
     SearchItem,
+    SymbolBarsResult,
 )
 from app.services.stock_router import get_stock_router
 
@@ -290,6 +293,66 @@ async def batch_quotes(body: BatchQuotesRequest):
 
     return ApiResponse(
         data={"quotes": quotes, "count": len(quotes)},
+        source="mixed",
+        elapsed_ms=elapsed,
+    )
+
+
+@router.post(
+    "/batch/daily-bars",
+    response_model=ApiResponse[BatchDailyBarsData],
+)
+async def batch_daily_bars(body: BatchDailyBarsRequest):
+    """Fetch daily OHLCV bars for up to 50 symbols.
+
+    Used by the backend's daily bar collection tasks to fetch bars
+    from yfinance (US/HK/Metal) or akshare (CN).
+    """
+    from app.services.daily_bar_service import DailyBarFetcher
+
+    t0 = time.monotonic()
+
+    # Cap at 50 symbols
+    entries = [
+        {"symbol": s.symbol, "start_date": s.start_date}
+        for s in body.symbols[:50]
+    ]
+
+    fetcher = DailyBarFetcher()
+    raw_results, raw_errors = await fetcher.fetch_batch(entries, market=body.market)
+
+    # Convert raw dicts to Pydantic models
+    results: dict[str, SymbolBarsResult] = {}
+    for symbol, data in raw_results.items():
+        bars = [
+            OHLCVBar(
+                date=b["date"],
+                open=b["open"],
+                high=b["high"],
+                low=b["low"],
+                close=b["close"],
+                volume=b.get("volume"),
+            )
+            for b in data.get("bars", [])
+        ]
+        results[symbol] = SymbolBarsResult(
+            bars=bars,
+            source=data.get("source", "unknown"),
+        )
+
+    elapsed = int((time.monotonic() - t0) * 1000)
+    logger.info(
+        "batch_daily_bars: market=%s, requested=%d, returned=%d, errors=%d, elapsed=%dms",
+        body.market, len(entries), len(results), len(raw_errors), elapsed,
+    )
+
+    response_data = BatchDailyBarsData(
+        results=results,
+        errors=raw_errors,
+    )
+
+    return ApiResponse(
+        data=response_data,
         source="mixed",
         elapsed_ms=elapsed,
     )

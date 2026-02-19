@@ -17,6 +17,9 @@ class Settings(BaseSettings):
     # Redis (DB 5 — separate from app/celery/qlib/rsshub on 0-4)
     REDIS_URL: str = "redis://redis:6379/5"
 
+    # PostgreSQL (read-only, for loading API keys from system_settings)
+    DATABASE_URL: str = ""
+
     # Service-to-service auth
     INTERNAL_API_TOKEN: str = ""
 

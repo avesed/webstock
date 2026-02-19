@@ -1,9 +1,9 @@
 """Reference data models — stock lists, profiles."""
 from __future__ import annotations
 
-from typing import Optional
+from typing import Literal, Optional
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class StockListItem(BaseModel):
@@ -15,7 +15,7 @@ class StockListItem(BaseModel):
     exchange: Optional[str] = None
     market: str
     pinyin: Optional[str] = None
-    pinyin_initials: Optional[str] = None
+    pinyin_initial: Optional[str] = None
 
 
 class StockListResult(BaseModel):
@@ -45,3 +45,18 @@ class StockProfileResult(BaseModel):
     profiles: list[StockProfileData]
     count: int
     market: str
+
+
+class ConceptMappingResult(BaseModel):
+    """CN concept board → stock mapping result."""
+
+    concepts: dict[str, list[str]]  # 6-digit code -> concept board names
+    names: dict[str, str]           # 6-digit code -> name_zh
+    count: int                      # number of unique stocks
+
+
+class BatchProfileRequest(BaseModel):
+    """Request for batch stock profile collection (max 50 symbols)."""
+
+    market: Literal["cn", "us", "hk"]
+    symbols: list[str] = Field(..., max_length=50)

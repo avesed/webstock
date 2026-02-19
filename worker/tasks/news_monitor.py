@@ -100,7 +100,7 @@ def _dict_to_news_article(d: Dict[str, Any]):
         published_at = datetime.now(timezone.utc)
 
     return NewsArticle(
-        id=d.get("id") or hashlib.md5(url.encode()).hexdigest()[:16],
+        id=d.get("id") or hashlib.md5(url.encode()).hexdigest(),
         symbol=d.get("symbol", ""),
         title=d.get("title", ""),
         summary=d.get("summary"),
@@ -131,10 +131,7 @@ async def _monitor_news_async() -> Dict[str, Any]:
     from app.models.watchlist import WatchlistItem
     from app.models.news import News, NewsAlert, FilterStatus
     from app.services.data_service_client import get_data_service_client
-    from app.services.news_service import (
-        NewsArticle,
-        get_news_service,
-    )
+    from app.services.news_service import NewsArticle
     from app.services.settings_service import SettingsService
 
     logger.info("Starting news monitor task")
@@ -175,22 +172,35 @@ async def _monitor_news_async() -> Dict[str, Any]:
             enable_pipeline = system_settings.enable_llm_pipeline
             stats["llm_pipeline_enabled"] = enable_pipeline
 
+            # Initialize data-service client before Layer 1 try block so it's
+            # available in Layer 2 even if Layer 1 fails
+            data_client = await get_data_service_client()
+
             try:
                 # --- Fetch from both sources via data-service ---
-                data_client = await get_data_service_client()
 
-                # Source 1: Finnhub news (all categories)
+                # Source 1: Finnhub news (all categories, fetched concurrently)
                 finnhub_articles = []
                 finnhub_categories = ["general", "forex", "crypto", "merger"]
-                for cat in finnhub_categories:
+
+                async def _fetch_category(cat: str):
                     try:
-                        cat_results = await data_client.get_general_news(category=cat)
-                        if cat_results:
-                            for item in cat_results:
-                                finnhub_articles.append(_dict_to_news_article(item))
-                        logger.info(f"Layer 1: Finnhub [{cat}] fetched {len(cat_results or [])} articles")
+                        results = await data_client.get_general_news(category=cat)
+                        articles = []
+                        if results:
+                            for item in results:
+                                articles.append(_dict_to_news_article(item))
+                        logger.info(f"Layer 1: Finnhub [{cat}] fetched {len(results or [])} articles")
+                        return articles
                     except Exception as e:
                         logger.warning(f"Layer 1: Finnhub [{cat}] fetch failed: {e}")
+                        return []
+
+                cat_results = await asyncio.gather(
+                    *[_fetch_category(cat) for cat in finnhub_categories],
+                )
+                for articles in cat_results:
+                    finnhub_articles.extend(articles)
                 stats["global_finnhub"] = len(finnhub_articles)
 
                 await _update_progress("layer1_akshare", "Layer 1: Fetching AKShare news...", 10)
@@ -406,24 +416,22 @@ async def _monitor_news_async() -> Dict[str, Any]:
                 result = await db.execute(query)
                 watchlist_symbols = [row[0] for row in result.fetchall()]
 
-                news_service = await get_news_service()
                 import asyncio
 
-                # Pass 1: Collect all watchlist articles
+                # Pass 1: Collect all watchlist articles via data-service
                 watchlist_collected = []  # (symbol, article_data)
                 for symbol in watchlist_symbols[:40]:  # Limit to 40 symbols per run
                     try:
-                        articles = await news_service.get_news_by_symbol(
-                            symbol,
-                            force_refresh=True,
-                        )
-                        stats["watchlist_fetched"] += len(articles)
-                        for article_data in articles[:5]:  # Limit per symbol
+                        raw = await data_client.get_company_news(symbol) or []
+                        for item in raw[:5]:
+                            article = _dict_to_news_article(item)
+                            article_data = article.to_dict()
                             url = article_data.get("url", "")
                             if url and url not in seen_urls:
                                 watchlist_collected.append((symbol, article_data))
                             if url:
                                 seen_urls.add(url)
+                        stats["watchlist_fetched"] += len(raw)
                         await asyncio.sleep(0.3)  # Rate limiting
                     except Exception as e:
                         logger.warning(f"Error fetching watchlist news for {symbol}: {e}")

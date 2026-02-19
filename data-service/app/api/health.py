@@ -33,13 +33,14 @@ async def health_check(response: Response):
         checks["redis"] = f"error: {e}"
         checks["status"] = "degraded"
 
-    # Report which API keys are configured (never expose the actual keys)
+    # Report which API keys are configured (DB + env, never expose actual keys)
+    from app.core.api_keys import get_api_key
     checks["providers"] = {
-        "finnhub": bool(settings.FINNHUB_API_KEY),
-        "tushare": bool(settings.TUSHARE_TOKEN),
-        "tiingo": bool(settings.TIINGO_API_KEY),
-        "tavily": bool(settings.TAVILY_API_KEY),
-        "polygon": bool(settings.POLYGON_API_KEY),
+        "finnhub": bool(get_api_key("finnhub")),
+        "tushare": bool(get_api_key("tushare")),
+        "tiingo": bool(get_api_key("tiingo")),
+        "tavily": bool(get_api_key("tavily")),
+        "polygon": bool(get_api_key("polygon")),
         "yfinance": True,  # No key needed
         "akshare": True,  # No key needed
     }

@@ -8,6 +8,9 @@ pydantic-settings>=2.0.0
 # Cache
 redis>=5.0.0
 
+# Database (read-only, for loading API keys from system_settings)
+asyncpg>=0.29.0
+
 # HTTP client (for Playwright/Tavily/Polygon/Finnhub forex)
 httpx>=0.25.0
 

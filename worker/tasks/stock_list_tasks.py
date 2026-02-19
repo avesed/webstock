@@ -63,7 +63,7 @@ async def _fetch_and_save_stock_list() -> Dict[str, Any]:
         logger.error("Data-service returned no stock list data")
         return {"status": "error", "reason": "no_data_from_service"}
 
-    stocks = data.get("stocks", [])
+    stocks = data.get("items", [])
     if not stocks:
         logger.error("Data-service returned empty stock list")
         return {"status": "error", "reason": "empty_stock_list"}
@@ -160,8 +160,8 @@ def _notify_reload():
     """Notify backend to reload stock list data."""
     try:
         import redis
-        redis_host = os.environ.get("REDIS_HOST", "localhost")
-        r = redis.Redis(host=redis_host, port=6379, db=0)
+        redis_url = os.environ.get("REDIS_URL", "redis://localhost:6379/0")
+        r = redis.Redis.from_url(redis_url)
         r.publish("stock_list_reload", "reload")
         logger.info("Published stock list reload notification")
     except Exception as e:

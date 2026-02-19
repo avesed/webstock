@@ -51,9 +51,14 @@ class PolygonContentProvider:
     """
 
     def __init__(self, api_key: Optional[str] = None) -> None:
-        settings = get_settings()
-        self.api_key = api_key or settings.POLYGON_API_KEY or None
+        self._static_key = api_key
         self.base_url = "https://api.polygon.io"
+
+    def _resolve_key(self) -> Optional[str]:
+        if self._static_key:
+            return self._static_key
+        from app.core.api_keys import get_api_key
+        return get_api_key("polygon")
 
     async def extract(self, url: str) -> Optional[Dict[str, Any]]:
         """Search Polygon news by URL to get article metadata.
@@ -68,7 +73,8 @@ class PolygonContentProvider:
         Returns:
             Dict matching ContentResult model, or None on failure.
         """
-        if not self.api_key:
+        api_key = self._resolve_key()
+        if not api_key:
             return {
                 "url": url,
                 "success": False,
@@ -84,7 +90,7 @@ class PolygonContentProvider:
                 response = await client.get(
                     f"{self.base_url}/v2/reference/news",
                     params={
-                        "apiKey": self.api_key,
+                        "apiKey": api_key,
                         "limit": 1,
                         "sort": "published_utc",
                     },

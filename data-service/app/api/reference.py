@@ -9,6 +9,15 @@ POST /v1/reference/stock-profiles/{market}
     For CN: symbols body is ignored (collects all from concept boards).
     For US/HK: ``symbols`` specifies which stocks to collect.
     Long-running (can take minutes). Returns profile dicts.
+    **Legacy** — prefer the granular endpoints below.
+
+POST /v1/reference/cn-concept-mapping
+    Collect A-share concept board → stock mapping (inversion only).
+    Returns concepts dict + names dict. Timeout hint: 300s.
+
+POST /v1/reference/stock-profiles-batch
+    Fetch stock profiles for a small batch (max 50 symbols) of any market.
+    Timeout hint: 60s.
 """
 from __future__ import annotations
 
@@ -21,7 +30,12 @@ from pydantic import BaseModel
 
 from app.core.auth import verify_internal_token
 from app.models.base import ApiResponse
-from app.models.reference import StockListResult, StockProfileResult
+from app.models.reference import (
+    BatchProfileRequest,
+    ConceptMappingResult,
+    StockListResult,
+    StockProfileResult,
+)
 
 logger = logging.getLogger(__name__)
 router = APIRouter(
@@ -151,6 +165,119 @@ async def collect_profiles_endpoint(
     except Exception as e:
         elapsed_ms = int((time.monotonic() - t0) * 1000)
         logger.exception("Profile collection failed for %s: %s", market, e)
+        return ApiResponse(
+            success=False,
+            error=str(e),
+            elapsed_ms=elapsed_ms,
+        )
+
+
+# ---------------------------------------------------------------------------
+# Granular endpoints (new) — small batches, short timeouts
+# ---------------------------------------------------------------------------
+
+
+@router.post(
+    "/cn-concept-mapping",
+    response_model=ApiResponse[ConceptMappingResult],
+)
+async def cn_concept_mapping_endpoint():
+    """Collect A-share concept board → stock mapping.
+
+    Fetches all ~400 concept boards and inverts them to build a
+    stock code → concept names mapping. Does NOT fetch individual stock info.
+
+    Timeout hint: 300s.
+    """
+    from app.services.stock_profile_service import collect_concept_mapping
+
+    t0 = time.monotonic()
+    try:
+        concepts, names = await collect_concept_mapping()
+        elapsed_ms = int((time.monotonic() - t0) * 1000)
+        logger.info(
+            "Concept mapping collected: %d stocks in %dms",
+            len(concepts), elapsed_ms,
+        )
+        return ApiResponse(
+            success=True,
+            data=ConceptMappingResult(
+                concepts=concepts,
+                names=names,
+                count=len(concepts),
+            ),
+            source="akshare",
+            elapsed_ms=elapsed_ms,
+        )
+    except Exception as e:
+        elapsed_ms = int((time.monotonic() - t0) * 1000)
+        logger.exception("Concept mapping failed: %s", e)
+        return ApiResponse(
+            success=False,
+            error=str(e),
+            elapsed_ms=elapsed_ms,
+        )
+
+
+@router.post(
+    "/stock-profiles-batch",
+    response_model=ApiResponse[StockProfileResult],
+)
+async def stock_profiles_batch_endpoint(body: BatchProfileRequest):
+    """Fetch stock profiles for a small batch of symbols.
+
+    Max 50 symbols per request. Per-market behaviour:
+    - ``cn``: calls ``akshare.stock_individual_info_em`` per 6-digit code.
+      Returns profiles WITHOUT concepts (caller merges from concept mapping).
+    - ``us``: calls ``yfinance.Ticker.info`` per symbol.
+    - ``hk``: calls ``yfinance.Ticker.info`` per symbol (handles 4/5-digit
+      conversion internally).
+
+    Timeout hint: 60s.
+    """
+    from app.services.stock_profile_service import (
+        fetch_cn_stock_info_batch,
+        fetch_hk_profiles_batch,
+        fetch_us_profiles_batch,
+    )
+
+    market = body.market
+    symbols = body.symbols
+
+    if not symbols:
+        return ApiResponse(success=False, error="symbols list is empty")
+
+    t0 = time.monotonic()
+    try:
+        if market == "cn":
+            profiles = await fetch_cn_stock_info_batch(symbols)
+            source = "akshare"
+        elif market == "us":
+            profiles = await fetch_us_profiles_batch(symbols)
+            source = "yfinance"
+        else:  # hk — validated by Literal
+            profiles = await fetch_hk_profiles_batch(symbols)
+            source = "yfinance"
+
+        elapsed_ms = int((time.monotonic() - t0) * 1000)
+        logger.info(
+            "Profile batch for %s: %d/%d profiles in %dms",
+            market, len(profiles), len(symbols), elapsed_ms,
+        )
+
+        return ApiResponse(
+            success=True,
+            data=StockProfileResult(
+                profiles=profiles,
+                count=len(profiles),
+                market=market,
+            ),
+            source=source,
+            elapsed_ms=elapsed_ms,
+        )
+    except Exception as e:
+        elapsed_ms = int((time.monotonic() - t0) * 1000)
+        logger.exception("Profile batch failed for %s: %s", market, e)
         return ApiResponse(
             success=False,
             error=str(e),

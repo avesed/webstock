@@ -43,6 +43,8 @@ _DEFAULT_TIMEOUT = httpx.Timeout(30.0, connect=10.0)
 _MEDIUM_TIMEOUT = httpx.Timeout(60.0, connect=10.0)
 _LONG_TIMEOUT = httpx.Timeout(120.0, connect=10.0)
 _VERY_LONG_TIMEOUT = httpx.Timeout(300.0, connect=10.0)
+# CN concept mapping: ~400 boards × akshare API ≈ 15-20 min
+_CONCEPT_MAPPING_TIMEOUT = httpx.Timeout(1500.0, connect=10.0)
 
 
 class DataServiceClient:
@@ -204,6 +206,28 @@ class DataServiceClient:
             timeout=_MEDIUM_TIMEOUT,
         )
 
+    async def fetch_daily_bars_batch(
+        self,
+        symbols_with_dates: List[Dict[str, Any]],
+        market: str,
+    ) -> Optional[Dict[str, Any]]:
+        """Fetch daily bars for a batch of symbols from data-service.
+
+        Args:
+            symbols_with_dates: List of {"symbol": "AAPL", "start_date": "2025-01-15"}.
+                                start_date can be None for full history.
+            market: Market code (us, hk, cn, metal).
+
+        Returns:
+            Dict with "results" and "errors" keys, or None on failure.
+        """
+        return await self._request(
+            "POST",
+            "/v1/batch/daily-bars",
+            json={"symbols": symbols_with_dates, "market": market},
+            timeout=_VERY_LONG_TIMEOUT,  # 300s — batch can be slow
+        )
+
     # ==================================================================
     # Market endpoints (/v1/market/...)
     # ==================================================================
@@ -308,7 +332,7 @@ class DataServiceClient:
         *,
         from_date: Optional[str] = None,
         to_date: Optional[str] = None,
-        source: str = "finnhub",
+        source: str = "auto",
     ) -> Optional[List[Dict[str, Any]]]:
         """Get news articles for a specific company."""
         params: Dict[str, Any] = {"source": source}
@@ -337,12 +361,12 @@ class DataServiceClient:
     # ==================================================================
 
     async def fetch_content(
-        self, url: str, *, language: str = "en",
+        self, url: str, *, language: str = "en", include_images: bool = True,
     ) -> Optional[Dict[str, Any]]:
         """Fetch full article content via trafilatura/Playwright/Tavily/Polygon fallback chain."""
         return await self._request(
             "POST", "/v1/content/fetch",
-            json={"url": url, "language": language},
+            json={"url": url, "language": language, "include_images": include_images},
             timeout=_MEDIUM_TIMEOUT,
         )
 
@@ -360,12 +384,35 @@ class DataServiceClient:
     async def collect_profiles(
         self, market: str, *, symbols: Optional[List[str]] = None,
     ) -> Optional[Dict[str, Any]]:
-        """Collect stock profiles for a given market."""
+        """Collect stock profiles for a given market (legacy monolithic)."""
         body = {"symbols": symbols or []}
         return await self._request(
             "POST", f"/v1/reference/stock-profiles/{market}",
             json=body,
             timeout=_VERY_LONG_TIMEOUT,
+        )
+
+    async def fetch_cn_concept_mapping(self) -> Optional[Dict[str, Any]]:
+        """Fetch A-share concept board → stock mapping.
+
+        Returns dict with keys: concepts, names, count.
+        """
+        return await self._request(
+            "POST", "/v1/reference/cn-concept-mapping",
+            timeout=_CONCEPT_MAPPING_TIMEOUT,  # ~400 boards × akshare ≈ 15-20min
+        )
+
+    async def fetch_stock_profiles_batch(
+        self, market: str, symbols: List[str],
+    ) -> Optional[Dict[str, Any]]:
+        """Fetch stock profiles for a small batch (max 50 symbols).
+
+        Returns dict with keys: profiles, count, market.
+        """
+        return await self._request(
+            "POST", "/v1/reference/stock-profiles-batch",
+            json={"market": market, "symbols": symbols},
+            timeout=_MEDIUM_TIMEOUT,  # ≤50 symbols ≈ 20-40s
         )
 
     # ==================================================================
