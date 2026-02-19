@@ -520,9 +520,10 @@
     "error": "Action failed",
 
     "progress": {
-      "collecting": "Collecting...",
+      "collecting": "Collecting",
       "collecting_cn": "Collecting CN...",
       "collecting_us": "Collecting US...",
+      "embedding": "Embedding",
       "embedding_cn": "Embedding CN",
       "embedding_us": "Embedding US",
       "embedding_hk": "Embedding HK",

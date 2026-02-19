@@ -403,20 +403,22 @@ class DailyBarService:
 
                 symbols_done += len(batch)
 
-            # Log + progress update after each window
+                # Update progress after each batch (every ~50 symbols)
+                if on_progress:
+                    try:
+                        await on_progress(
+                            symbols_done, len(symbols), symbols_with_data, len(errors),
+                        )
+                    except Exception:
+                        pass
+
+            # Log after each window
             logger.info(
                 "Window %d-%d/%d done, %d/%d symbols, %d inserted, %d errors",
                 win_start + 1, min(win_start + _YF_WINDOW_SIZE, len(batches)),
                 len(batches), symbols_done, len(symbols),
                 total_inserted, len(errors),
             )
-            if on_progress:
-                try:
-                    await on_progress(
-                        symbols_done, len(symbols), symbols_with_data, len(errors),
-                    )
-                except Exception:
-                    pass
 
             # Explicitly discard references so GC can reclaim memory
             del responses

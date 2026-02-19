@@ -3,9 +3,8 @@
 Fetches stock symbols from multiple data sources across all markets:
 - US: Finnhub ``client.stock_symbols("US")``
 - HK: AKShare ``ak.stock_hk_spot()``
-- SH: AKShare ``ak.stock_info_sh_name_code()``
-- SZ: AKShare ``ak.stock_info_sz_name_code(symbol="A股列表")``
-- BJ: AKShare ``ak.stock_info_bj_name_code()``
+- CN (SH+SZ+BJ): AKShare ``ak.stock_zh_a_spot_em()`` (EastMoney, single call for all
+  ~5,300+ A-shares including STAR Board/ChiNext/BSE), with per-exchange fallback
 - Precious metals: Hardcoded from constants.py
 
 Returns raw dicts; does NOT persist to msgpack or manage in-memory indexes.
@@ -100,49 +99,124 @@ def _process_finnhub_symbol(data: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
-def _fetch_akshare_sh() -> List[Dict[str, Any]]:
-    """Fetch Shanghai A-share symbols from AKShare."""
+def _determine_cn_suffix(code: str) -> Tuple[str, str, str]:
+    """Determine exchange suffix, exchange name, and market key for a CN stock code.
+
+    A-share code ranges:
+    - 6xxxxx → SSE (Shanghai): Main Board + STAR Board (688xxx)
+    - 0xxxxx → SZSE (Shenzhen): Main Board
+    - 3xxxxx → SZSE (Shenzhen): ChiNext (创业板)
+    - 9xxxxx → BSE (Beijing): 920xxx series
+    - 8xxxxx → BSE (Beijing): 83xxxx/87xxxx series
+
+    Returns:
+        (suffix, exchange, market) e.g. (".SS", "SSE", "sh")
+    """
+    if code.startswith("6"):
+        return ".SS", "SSE", "sh"
+    if code.startswith(("0", "3")):
+        return ".SZ", "SZSE", "sz"
+    if code.startswith(("8", "9")):
+        return ".BJ", "BSE", "bj"
+    # Fallback: treat as SH
+    return ".SS", "SSE", "sh"
+
+
+def _fetch_akshare_cn() -> List[Dict[str, Any]]:
+    """Fetch all A-share symbols from AKShare via EastMoney (stock_zh_a_spot_em).
+
+    This single API returns all ~5,300+ A-shares across SSE (Main Board + STAR Board),
+    SZSE (Main Board + ChiNext), and BSE in one call — far more reliable than calling
+    three separate exchange APIs individually.
+
+    Falls back to the legacy per-exchange approach if EastMoney fails.
+    """
+    stocks = _fetch_cn_via_eastmoney()
+    if stocks:
+        return stocks
+
+    logger.warning("EastMoney API failed, falling back to per-exchange fetchers")
+    return _fetch_cn_per_exchange_fallback()
+
+
+def _fetch_cn_via_eastmoney() -> List[Dict[str, Any]]:
+    """Primary: fetch all A-shares from EastMoney in a single call."""
     try:
         import akshare as ak
 
-        df = ak.stock_info_sh_name_code()
+        df = ak.stock_zh_a_spot_em()
         stocks = []
         for _, row in df.iterrows():
-            code = str(row.get("证券代码", "")).strip()
-            name_zh = str(row.get("证券简称", "")).strip()
-            if not code:
+            code = str(row.get("代码", "")).strip()
+            name_zh = str(row.get("名称", "")).strip()
+            if not code or len(code) != 6:
                 continue
+            suffix, exchange, market = _determine_cn_suffix(code)
             pinyin, pinyin_initial = _get_pinyin(name_zh)
             stocks.append({
-                "symbol": f"{code}.SS",
+                "symbol": f"{code}{suffix}",
                 "name": name_zh,
                 "name_zh": name_zh,
-                "exchange": "SSE",
-                "market": "sh",
+                "exchange": exchange,
+                "market": market,
                 "pinyin": pinyin,
                 "pinyin_initial": pinyin_initial,
             })
-        logger.info("Fetched %d Shanghai stocks from AKShare", len(stocks))
+
+        by_market: Dict[str, int] = {}
+        for s in stocks:
+            m = s["market"]
+            by_market[m] = by_market.get(m, 0) + 1
+        logger.info(
+            "Fetched %d CN stocks from EastMoney — %s", len(stocks), by_market,
+        )
         return stocks
     except Exception as e:
-        logger.error("Failed to fetch Shanghai stocks from AKShare: %s", e)
+        logger.error("Failed to fetch CN stocks from EastMoney: %s", e)
         return []
 
 
-def _fetch_akshare_sz() -> List[Dict[str, Any]]:
-    """Fetch Shenzhen A-share symbols from AKShare."""
+def _fetch_cn_per_exchange_fallback() -> List[Dict[str, Any]]:
+    """Fallback: fetch from each exchange API individually."""
+    all_stocks: List[Dict[str, Any]] = []
+
+    # Shanghai (Main Board + STAR Board)
+    try:
+        import akshare as ak
+
+        for board in ("主板A股", "科创板"):
+            df = ak.stock_info_sh_name_code(symbol=board)
+            for _, row in df.iterrows():
+                code = str(row.get("证券代码", "")).strip()
+                name_zh = str(row.get("证券简称", "")).strip()
+                if not code:
+                    continue
+                pinyin, pinyin_initial = _get_pinyin(name_zh)
+                all_stocks.append({
+                    "symbol": f"{code}.SS",
+                    "name": name_zh,
+                    "name_zh": name_zh,
+                    "exchange": "SSE",
+                    "market": "sh",
+                    "pinyin": pinyin,
+                    "pinyin_initial": pinyin_initial,
+                })
+        logger.info("Fallback: fetched %d Shanghai stocks", sum(1 for s in all_stocks if s["market"] == "sh"))
+    except Exception as e:
+        logger.error("Fallback: failed to fetch Shanghai stocks: %s", e)
+
+    # Shenzhen
     try:
         import akshare as ak
 
         df = ak.stock_info_sz_name_code(symbol="A股列表")
-        stocks = []
         for _, row in df.iterrows():
             code = str(row.get("A股代码", "")).strip()
             name_zh = str(row.get("A股简称", "")).strip()
             if not code:
                 continue
             pinyin, pinyin_initial = _get_pinyin(name_zh)
-            stocks.append({
+            all_stocks.append({
                 "symbol": f"{code}.SZ",
                 "name": name_zh,
                 "name_zh": name_zh,
@@ -151,27 +225,22 @@ def _fetch_akshare_sz() -> List[Dict[str, Any]]:
                 "pinyin": pinyin,
                 "pinyin_initial": pinyin_initial,
             })
-        logger.info("Fetched %d Shenzhen stocks from AKShare", len(stocks))
-        return stocks
+        logger.info("Fallback: fetched %d Shenzhen stocks", sum(1 for s in all_stocks if s["market"] == "sz"))
     except Exception as e:
-        logger.error("Failed to fetch Shenzhen stocks from AKShare: %s", e)
-        return []
+        logger.error("Fallback: failed to fetch Shenzhen stocks: %s", e)
 
-
-def _fetch_akshare_bj() -> List[Dict[str, Any]]:
-    """Fetch Beijing Stock Exchange symbols from AKShare."""
+    # Beijing
     try:
         import akshare as ak
 
         df = ak.stock_info_bj_name_code()
-        stocks = []
         for _, row in df.iterrows():
             code = str(row.get("证券代码", "")).strip()
             name_zh = str(row.get("证券简称", "")).strip()
             if not code:
                 continue
             pinyin, pinyin_initial = _get_pinyin(name_zh)
-            stocks.append({
+            all_stocks.append({
                 "symbol": f"{code}.BJ",
                 "name": name_zh,
                 "name_zh": name_zh,
@@ -180,11 +249,12 @@ def _fetch_akshare_bj() -> List[Dict[str, Any]]:
                 "pinyin": pinyin,
                 "pinyin_initial": pinyin_initial,
             })
-        logger.info("Fetched %d Beijing stocks from AKShare", len(stocks))
-        return stocks
+        logger.info("Fallback: fetched %d Beijing stocks", sum(1 for s in all_stocks if s["market"] == "bj"))
     except Exception as e:
-        logger.error("Failed to fetch Beijing stocks from AKShare: %s", e)
-        return []
+        logger.error("Fallback: failed to fetch Beijing stocks: %s", e)
+
+    logger.info("Fallback total: %d CN stocks", len(all_stocks))
+    return all_stocks
 
 
 def _fetch_akshare_hk() -> List[Dict[str, Any]]:
@@ -251,25 +321,21 @@ async def build_stock_list() -> List[Dict[str, Any]]:
     logger.info("Starting stock list build from all markets")
 
     # Run all synchronous fetchers in parallel via the thread-pool executor.
-    # Each fetcher has its own 90s timeout to allow for slow AKShare calls.
+    # CN uses a single EastMoney call (with per-exchange fallback internally).
     results = await asyncio.gather(
         run_in_executor(_fetch_finnhub_us, timeout=90.0),
         run_in_executor(_fetch_akshare_hk, timeout=90.0),
-        run_in_executor(_fetch_akshare_sh, timeout=90.0),
-        run_in_executor(_fetch_akshare_sz, timeout=90.0),
-        run_in_executor(_fetch_akshare_bj, timeout=90.0),
+        run_in_executor(_fetch_akshare_cn, timeout=300.0),
         return_exceptions=True,
     )
 
     # Unpack, treating exceptions as empty lists
     us_raw: List[Dict[str, Any]] = []
     hk_stocks: List[Dict[str, Any]] = []
-    sh_stocks: List[Dict[str, Any]] = []
-    sz_stocks: List[Dict[str, Any]] = []
-    bj_stocks: List[Dict[str, Any]] = []
+    cn_stocks: List[Dict[str, Any]] = []
 
-    labels = ["US", "HK", "SH", "SZ", "BJ"]
-    targets = [us_raw, hk_stocks, sh_stocks, sz_stocks, bj_stocks]
+    labels = ["US", "HK", "CN"]
+    targets = [us_raw, hk_stocks, cn_stocks]
 
     for i, (label, target) in enumerate(zip(labels, targets)):
         result = results[i]
@@ -289,9 +355,7 @@ async def build_stock_list() -> List[Dict[str, Any]]:
 
     # Add AKShare-sourced stocks (already in standard format)
     all_stocks.extend(hk_stocks)
-    all_stocks.extend(sh_stocks)
-    all_stocks.extend(sz_stocks)
-    all_stocks.extend(bj_stocks)
+    all_stocks.extend(cn_stocks)
 
     # Add precious metals
     all_stocks.extend(_get_precious_metals())

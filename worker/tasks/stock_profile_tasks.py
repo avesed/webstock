@@ -11,6 +11,7 @@ Stock profiles are embedded and stored in ``document_embeddings`` with
 import asyncio
 import json
 import logging
+import uuid
 from typing import Any, Dict, List, Optional, Set
 
 from worker.celery_app import celery_app
@@ -67,6 +68,101 @@ def _clear_progress_sync():
     try:
         r = redis_lib.from_url(str(settings.REDIS_URL), decode_responses=True)
         r.delete(_PROGRESS_KEY)
+    except Exception:
+        pass
+
+
+# ---------------------------------------------------------------------------
+# Per-market Redis keys (matching daily_bar_tasks pattern)
+# ---------------------------------------------------------------------------
+_MARKET_LOCK_KEY_TEMPLATE = "kb:stock_profile:{market}:lock"
+_MARKET_LOCK_TTL = 14400  # 4 hours — matches task time_limit
+_MARKET_PROGRESS_KEY_TEMPLATE = "kb:stock_profile:{market}:progress"
+_MARKET_PROGRESS_TTL = 3600  # 1 hour — auto-expires if task crashes
+_MARKET_QUEUED_KEY_TEMPLATE = "kb:stock_profile:{market}:queued"
+_MARKET_QUEUED_TTL = 14400
+
+# CAS lock release: only delete if current value matches owner
+_RELEASE_LOCK_LUA = """
+if redis.call("get", KEYS[1]) == ARGV[1] then
+    return redis.call("del", KEYS[1])
+end
+return 0
+"""
+
+# Module-level sync Redis connection — reused across calls within one task
+_redis_conn = None
+
+
+def _get_sync_redis():
+    """Get or create a module-level sync Redis connection."""
+    global _redis_conn
+    if _redis_conn is None:
+        import redis as redis_lib
+        from app.config import settings
+        _redis_conn = redis_lib.from_url(str(settings.REDIS_URL), decode_responses=True)
+    return _redis_conn
+
+
+def _acquire_market_lock_sync(market: str, task_id: str = None) -> Optional[str]:
+    """Acquire per-market lock. Returns owner token (task_id) or None if already locked."""
+    try:
+        r = _get_sync_redis()
+        owner = task_id or str(uuid.uuid4())
+        acquired = r.set(
+            _MARKET_LOCK_KEY_TEMPLATE.format(market=market),
+            owner,
+            nx=True,
+            ex=_MARKET_LOCK_TTL,
+        )
+        if acquired:
+            # Clear queued flag on lock acquisition
+            r.delete(_MARKET_QUEUED_KEY_TEMPLATE.format(market=market))
+            return owner
+        return None
+    except Exception as e:
+        logger.warning("[StockProfileTask] Lock acquire failed for %s: %s", market, e)
+        return task_id or "fallback"  # fail-open
+
+
+def _release_market_lock_sync(market: str, owner: str):
+    """CAS lock release — only delete if current value matches owner."""
+    try:
+        r = _get_sync_redis()
+        r.eval(
+            _RELEASE_LOCK_LUA,
+            1,
+            _MARKET_LOCK_KEY_TEMPLATE.format(market=market),
+            owner,
+        )
+    except Exception as e:
+        logger.warning("[StockProfileTask] Failed to release lock for %s (owner=%s): %s", market, owner, e)
+
+
+def _update_market_progress_sync(market: str, phase: str, current: int, total: int):
+    """Write per-market progress to Redis."""
+    try:
+        from datetime import datetime, timezone
+        r = _get_sync_redis()
+        pct = int(current * 100 / total) if total > 0 else 0
+        progress = {
+            "phase": phase,
+            "current": current,
+            "total": total,
+            "percent": pct,
+            "updatedAt": datetime.now(timezone.utc).isoformat(),
+        }
+        key = _MARKET_PROGRESS_KEY_TEMPLATE.format(market=market)
+        r.set(key, json.dumps(progress), ex=_MARKET_PROGRESS_TTL)
+    except Exception:
+        pass
+
+
+def _clear_market_progress_sync(market: str):
+    """Clear per-market progress key."""
+    try:
+        r = _get_sync_redis()
+        r.delete(_MARKET_PROGRESS_KEY_TEMPLATE.format(market=market))
     except Exception:
         pass
 
@@ -132,6 +228,63 @@ def sync_concept_boards(self):
         raise self.retry(exc=e, countdown=300)
     finally:
         _release_redis_lock(_SYNC_LOCK_KEY)
+
+
+@celery_app.task(
+    bind=True,
+    name="worker.tasks.stock_profile_tasks.collect_market_profiles",
+    max_retries=1,
+    time_limit=14400,
+    soft_time_limit=13800,
+)
+def collect_market_profiles(self, market: str):
+    """Collect + embed stock profiles for a single market.
+
+    Per-market locking, progress tracking, and counter rebuild.
+    Used by the admin UI for individual market control.
+    """
+    if market not in ("cn", "us", "hk"):
+        logger.error("[StockProfileTask] Invalid market: %s", market)
+        return {"error": f"Invalid market: {market}"}
+
+    # Check if the global build task is running (prevents concurrent writes)
+    try:
+        r = _get_sync_redis()
+        if r.exists(_BUILD_LOCK_KEY):
+            logger.warning(
+                "[StockProfileTask] Global build lock held, skipping per-market collect for %s",
+                market,
+            )
+            return {"skipped": True, "reason": "global_build_running"}
+    except Exception:
+        pass  # fail-open
+
+    owner = _acquire_market_lock_sync(market, task_id=self.request.id)
+    if owner is None:
+        # Log holder info for debugging stale locks
+        try:
+            r = _get_sync_redis()
+            holder = r.get(_MARKET_LOCK_KEY_TEMPLATE.format(market=market))
+            ttl = r.ttl(_MARKET_LOCK_KEY_TEMPLATE.format(market=market))
+            logger.warning(
+                "[StockProfileTask] market=%s already locked (holder=%s, ttl=%ds), skipping",
+                market, holder, ttl,
+            )
+        except Exception:
+            logger.warning("[StockProfileTask] market=%s already locked, skipping", market)
+        return {"skipped": True, "reason": "already_running"}
+
+    logger.info("[StockProfileTask] Starting per-market collection: market=%s", market)
+    try:
+        result = run_async_task(lambda: _collect_market_async(market))
+        logger.info("[StockProfileTask] market=%s complete: %s", market, result)
+        return result
+    except Exception as e:
+        logger.exception("[StockProfileTask] market=%s failed: %s", market, e)
+        raise self.retry(exc=e, countdown=300)
+    finally:
+        _clear_market_progress_sync(market)
+        _release_market_lock_sync(market, owner)
 
 
 # ---------------------------------------------------------------------------
@@ -368,6 +521,86 @@ async def _build_kb_async() -> Dict[str, Any]:
     except Exception as e:
         logger.warning("[StockProfileTask] Failed to rebuild per-market counters: %s", e)
 
+    return stats
+
+
+async def _collect_market_async(market: str) -> Dict[str, Any]:
+    """Collect and embed profiles for a single market."""
+    import time as _time
+
+    from app.db.task_session import get_task_session
+    from app.services.rag import get_index_service
+    from app.services.rag.embedding import get_embedding_config_from_db
+    from app.services.stock_profile_service import get_stock_profile_service
+
+    svc = get_stock_profile_service()
+    stats: Dict[str, Any] = {"collected": 0, "embedded": 0, "errors": 0}
+    t0 = _time.monotonic()
+
+    # Phase 1: Collect
+    _update_market_progress_sync(market, "collecting", 0, 1)
+    logger.info("[StockProfileTask] Collecting profiles for market=%s", market)
+
+    if market == "cn":
+        profiles = await svc.collect_cn_profiles()
+    elif market == "us":
+        profiles = await svc.collect_us_profiles()
+    else:  # hk
+        profiles = await svc.collect_hk_profiles()
+
+    stats["collected"] = len(profiles)
+    collect_s = _time.monotonic() - t0
+    logger.info(
+        "[StockProfileTask] market=%s collected %d profiles in %.0fs",
+        market, len(profiles), collect_s,
+    )
+
+    if not profiles:
+        logger.warning("[StockProfileTask] market=%s: no profiles collected", market)
+        return stats
+
+    # Phase 2: Embed
+    async with get_task_session() as db:
+        embed_config = await get_embedding_config_from_db(db)
+    index_service = get_index_service()
+
+    def _progress_sync(embedded_so_far: int):
+        _update_market_progress_sync(market, "embedding", embedded_so_far, len(profiles))
+
+    async def _progress(embedded_so_far: int):
+        _progress_sync(embedded_so_far)
+
+    emb, err = await _batch_embed_profiles(
+        profiles, index_service, embed_config,
+        market_label=market.upper(),
+        progress_callback=_progress,
+    )
+    stats["embedded"] = emb
+    stats["errors"] = err
+
+    # If CN, update concept cache
+    if market == "cn" and profiles:
+        cn_mapping: Dict[str, List[str]] = {}
+        for p in profiles:
+            code = p.symbol.split(".")[0]
+            cn_mapping[code] = p.concepts
+        await _save_concept_cache(cn_mapping)
+
+    # Rebuild counters
+    await _rebuild_embedding_counter_async("stock_profile")
+    try:
+        from app.api.v1.admin.knowledge_base import rebuild_stock_profile_market_counters
+        from app.db.task_session import get_task_session as _get_session
+        async with _get_session() as db:
+            await rebuild_stock_profile_market_counters(db)
+    except Exception as e:
+        logger.warning("[StockProfileTask] Failed to rebuild per-market counters: %s", e)
+
+    elapsed = _time.monotonic() - t0
+    logger.info(
+        "[StockProfileTask] market=%s done: %d collected, %d embedded, %d errors in %.0fs",
+        market, stats["collected"], stats["embedded"], stats["errors"], elapsed,
+    )
     return stats
 
 

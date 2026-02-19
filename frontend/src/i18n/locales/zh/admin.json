@@ -473,8 +473,8 @@
     "failed": "{{count}} 个失败",
     "noData": "暂无数据",
 
-    "stockProfile": "股票画像",
-    "stockProfileDesc": "用于实体提取和搜索的股票画像向量库",
+    "stockProfile": "股票档案",
+    "stockProfileDesc": "用于实体提取和搜索的股票档案向量库",
     "news": "新闻向量",
     "newsDesc": "用于RAG增强对话的新闻文章向量库",
     "analysis": "分析向量",
@@ -520,9 +520,10 @@
     "error": "操作失败",
 
     "progress": {
-      "collecting": "采集中...",
+      "collecting": "采集中",
       "collecting_cn": "采集A股...",
       "collecting_us": "采集美股...",
+      "embedding": "向量化中",
       "embedding_cn": "向量化A股",
       "embedding_us": "向量化美股",
       "embedding_hk": "向量化港股",

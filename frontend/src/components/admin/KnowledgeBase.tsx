@@ -232,11 +232,13 @@ function StockListCard({
 function StockProfilesCard({
   stockProfile,
   progress,
+  locks,
   actionLoading,
   onAction,
 }: {
   stockProfile: KnowledgeBaseStats['embeddings']['stock_profile'] | undefined
-  progress: StockProfileProgress | null
+  progress: KnowledgeBaseStatsResponse['progress']['stockProfiles'] | undefined
+  locks: KnowledgeBaseStatsResponse['stockProfileLocks'] | undefined
   actionLoading: string | null
   onAction: (key: string, action: () => Promise<unknown>, confirmMsg?: string) => void
 }) {
@@ -277,20 +279,18 @@ function StockProfilesCard({
             </Button>
             <Button
               size="sm"
-              variant="destructive"
+              variant="outline"
               disabled={actionLoading !== null}
               onClick={() =>
-                onAction(
-                  'rebuild-stock_profile',
-                  () => adminApi.rebuildKnowledgeBase('stock_profile'),
-                  td(t, 'knowledge.rebuildConfirm', { type: t('knowledge.stockProfile') }),
-                )
+                onAction('collect-all-profiles', () => adminApi.collectAllStockProfiles())
               }
             >
-              {actionLoading === 'rebuild-stock_profile' ? (
+              {actionLoading === 'collect-all-profiles' ? (
                 <Loader2 className="h-3 w-3 animate-spin mr-1" />
-              ) : null}
-              {t('knowledge.rebuild')}
+              ) : (
+                <RefreshCw className="h-3 w-3 mr-1" />
+              )}
+              {t('knowledge.collectAll')}
             </Button>
           </div>
         </div>
@@ -299,12 +299,69 @@ function StockProfilesCard({
         <div className="grid gap-4 sm:grid-cols-3">
           {profileMarkets.map((market) => {
             const stats = stockProfile?.[market]
-            const isActive = progress?.phase?.includes(`_${market}`)
+            const prog = progress?.[market]
+            const lock = locks?.[market]
+            const isLocked = lock?.locked === true
+            const isQueued = !isLocked && lock?.queued === true
             return (
               <div key={market} className="space-y-2 rounded-md border p-3">
-                <span className="font-medium text-sm">
-                  {td(t, `knowledge.market_${market}`)}
-                </span>
+                <div className="flex items-center justify-between">
+                  <span className="font-medium text-sm">
+                    {td(t, `knowledge.market_${market}`)}
+                    {isLocked && (
+                      <Badge variant="outline" className="ml-2 text-[10px] px-1.5 py-0 text-orange-600 border-orange-300">
+                        {td(t, 'knowledge.locked', { ttl: Math.round((lock?.ttlSeconds ?? 0) / 60) })}
+                      </Badge>
+                    )}
+                    {isQueued && (
+                      <Badge variant="outline" className="ml-2 text-[10px] px-1.5 py-0 text-blue-600 border-blue-300">
+                        {t('knowledge.queued')}
+                      </Badge>
+                    )}
+                  </span>
+                  <div className="flex gap-1">
+                    {isLocked ? (
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        className="h-7 px-2 text-xs text-orange-600 hover:text-orange-700"
+                        disabled={actionLoading !== null}
+                        onClick={() =>
+                          onAction(
+                            `unlock-profile-${market}`,
+                            () => adminApi.unlockStockProfiles(market),
+                            td(t, 'knowledge.unlockConfirm', { market: td(t, `knowledge.market_${market}`) }),
+                          )
+                        }
+                      >
+                        {actionLoading === `unlock-profile-${market}` ? (
+                          <Loader2 className="h-3 w-3 animate-spin" />
+                        ) : (
+                          <><Unlock className="h-3 w-3 mr-1" />{t('knowledge.unlock')}</>
+                        )}
+                      </Button>
+                    ) : isQueued ? (
+                      <Loader2 className="h-3 w-3 animate-spin text-blue-500" />
+                    ) : (
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        className="h-7 px-2 text-xs"
+                        disabled={actionLoading !== null}
+                        onClick={() =>
+                          onAction(`collect-profile-${market}`, () => adminApi.collectStockProfiles(market))
+                        }
+                      >
+                        {actionLoading === `collect-profile-${market}` ? (
+                          <Loader2 className="h-3 w-3 animate-spin" />
+                        ) : (
+                          t('knowledge.collect')
+                        )}
+                      </Button>
+                    )}
+                  </div>
+                </div>
+
                 {stats && stats.count > 0 ? (
                   <div className="space-y-1 text-xs text-muted-foreground">
                     <div>
@@ -328,26 +385,17 @@ function StockProfilesCard({
                     {t('knowledge.noData')}
                   </div>
                 )}
-                {isActive && progress && (
+
+                {prog && (
                   <ProgressBar
-                    percent={progress.percent}
-                    label={`${td(t, `knowledge.progress.${progress.phase}`)} ${progress.current}/${progress.total}`}
+                    percent={prog.percent}
+                    label={`${td(t, `knowledge.progress.${prog.phase}`)} ${prog.current}/${prog.total}`}
                   />
                 )}
               </div>
             )
           })}
         </div>
-
-        {/* Global progress when phase doesn't match any specific market */}
-        {progress && !['cn', 'us', 'hk'].some((m) => progress.phase?.includes(`_${m}`)) && (
-          <div className="mt-4">
-            <ProgressBar
-              percent={progress.percent}
-              label={`${td(t, `knowledge.progress.${progress.phase}`)} ${progress.current}/${progress.total}`}
-            />
-          </div>
-        )}
       </CardContent>
     </Card>
   )
@@ -637,6 +685,7 @@ export default function KnowledgeBase() {
       const progress = query.state.data?.progress
       const hasActive =
         progress?.stockProfile != null ||
+        Object.values(progress?.stockProfiles ?? {}).some((v) => v != null) ||
         Object.values(progress?.dailyBars ?? {}).some((v) => v != null)
       return hasActive ? 3000 : 30000
     },
@@ -833,7 +882,8 @@ export default function KnowledgeBase() {
       {/* Stock Profiles: full-width card with per-market breakdown */}
       <StockProfilesCard
         stockProfile={stats?.embeddings?.stock_profile}
-        progress={progress?.stockProfile ?? null}
+        progress={stats?.progress?.stockProfiles}
+        locks={stats?.stockProfileLocks}
         actionLoading={actionLoading}
         onAction={handleAction}
       />

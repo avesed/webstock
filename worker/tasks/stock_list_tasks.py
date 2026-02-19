@@ -15,7 +15,7 @@ from worker.celery_app import celery_app
 logger = logging.getLogger(__name__)
 
 
-@celery_app.task(bind=True, max_retries=3)
+@celery_app.task(bind=True, max_retries=3, time_limit=600, soft_time_limit=540)
 def update_stock_list(self):
     """
     Update the local stock list from the data-service.

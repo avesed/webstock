@@ -472,6 +472,27 @@ export const adminApi = {
     return response.data
   },
 
+  collectStockProfiles: async (market: string): Promise<{ message: string; taskId: string }> => {
+    const response = await apiClient.post<{ message: string; taskId: string }>(
+      `/admin/knowledge-base/stock-profiles/${market}/collect`
+    )
+    return response.data
+  },
+
+  collectAllStockProfiles: async (): Promise<{ message: string; taskId: string; markets: string[]; skipped: string[] }> => {
+    const response = await apiClient.post<{ message: string; taskId: string; markets: string[]; skipped: string[] }>(
+      '/admin/knowledge-base/stock-profiles/collect-all'
+    )
+    return response.data
+  },
+
+  unlockStockProfiles: async (market: string): Promise<{ message: string }> => {
+    const response = await apiClient.post<{ message: string }>(
+      `/admin/knowledge-base/stock-profiles/${market}/unlock`
+    )
+    return response.data
+  },
+
   updateStockList: async (): Promise<{ message: string; taskId: string }> => {
     const response = await apiClient.post<{ message: string; taskId: string }>('/admin/knowledge-base/stock-list/update')
     return response.data
@@ -812,6 +833,11 @@ export interface KnowledgeBaseStatsResponse {
       percent: number
       updatedAt: string
     } | null
+    stockProfiles?: {
+      cn: { phase: string; current: number; total: number; percent: number; updatedAt: string } | null
+      us: { phase: string; current: number; total: number; percent: number; updatedAt: string } | null
+      hk: { phase: string; current: number; total: number; percent: number; updatedAt: string } | null
+    }
     dailyBars: {
       cn: KBDailyBarProgress | null
       us: KBDailyBarProgress | null
@@ -824,5 +850,10 @@ export interface KnowledgeBaseStatsResponse {
     us: KBMarketLock | null
     hk: KBMarketLock | null
     metal: KBMarketLock | null
+  }
+  stockProfileLocks?: {
+    cn: KBMarketLock | null
+    us: KBMarketLock | null
+    hk: KBMarketLock | null
   }
 }

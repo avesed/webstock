@@ -17,7 +17,7 @@ Design:
 Timeout strategy:
 - Default: 30s (quotes, info, news, content)
 - Medium: 60s (history, batch quotes, analysis)
-- Long: 120s (stock list build)
+- Long: 120s (general long operations)
 - Very long: 300s (stock profile collection)
 """
 
@@ -375,10 +375,14 @@ class DataServiceClient:
     # ==================================================================
 
     async def build_stock_list(self) -> Optional[Dict[str, Any]]:
-        """Build the full stock list from all markets (~37K symbols)."""
+        """Build the full stock list from all markets (~37K symbols).
+
+        Uses very long timeout because the CN EastMoney API fetches ~5,800
+        A-shares in 58 paginated requests (~160s).
+        """
         return await self._request(
             "POST", "/v1/reference/stock-list",
-            timeout=_LONG_TIMEOUT,
+            timeout=_VERY_LONG_TIMEOUT,
         )
 
     async def collect_profiles(

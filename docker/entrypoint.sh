@@ -303,10 +303,15 @@ try:
             key = f'kb:daily_bars:{m}:{suffix}'
             if r.delete(key):
                 cleaned.append(key)
-    # Stock profile knowledge base locks
+    # Stock profile knowledge base locks (global + per-market)
     for key in ('stock_profile:build_lock', 'stock_profile:sync_lock', 'kb:stock_profile:progress'):
         if r.delete(key):
             cleaned.append(key)
+    for m in ('cn', 'us', 'hk'):
+        for suffix in ('lock', 'progress', 'queued'):
+            key = f'kb:stock_profile:{m}:{suffix}'
+            if r.delete(key):
+                cleaned.append(key)
     if cleaned:
         print(f'  -> Cleaned {len(cleaned)} orphan key(s): {cleaned}')
     else:

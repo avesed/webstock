@@ -35,6 +35,13 @@ COUNTER_KEY_EMBEDDING = "kb:counters:embeddings:{source_type}"
 COUNTER_KEY_STOCK_PROFILE = "kb:counters:stock_profile:{market}"
 STOCK_PROFILE_MARKETS = ("cn", "us", "hk")
 
+# Per-market stock profile lock/progress/queued keys
+_SP_MARKETS = ("cn", "us", "hk")
+_SP_LOCK_KEY_TEMPLATE = "kb:stock_profile:{market}:lock"
+_SP_PROGRESS_KEY_TEMPLATE = "kb:stock_profile:{market}:progress"
+_SP_QUEUED_KEY_TEMPLATE = "kb:stock_profile:{market}:queued"
+_SP_QUEUED_TTL = 14400
+
 CLEARABLE_SOURCE_TYPES = {"news", "analysis", "report"}
 REBUILDABLE_SOURCE_TYPES = {
     "stock_profile", "stock_profile_sync", "news", "analysis", "report",
@@ -135,6 +142,80 @@ async def _force_release_market_lock(market: str) -> Optional[str]:
 
         return task_id
     except Exception:
+        return None
+
+
+# ---------------------------------------------------------------------------
+# Stock profile per-market lock helpers (mirror daily bars helpers)
+# ---------------------------------------------------------------------------
+
+
+async def _check_sp_market_lock(market: str) -> Optional[int]:
+    """Check stock profile per-market lock TTL. Returns seconds remaining or None."""
+    try:
+        from app.db.redis import get_redis
+        redis = await get_redis()
+        ttl = await redis.ttl(_SP_LOCK_KEY_TEMPLATE.format(market=market))
+        return ttl if ttl > 0 else None
+    except Exception:
+        return None
+
+
+async def _mark_sp_market_queued(market: str) -> None:
+    """Set a Redis flag indicating this market's stock profile task is queued."""
+    try:
+        from app.db.redis import get_redis
+        redis = await get_redis()
+        await redis.set(
+            _SP_QUEUED_KEY_TEMPLATE.format(market=market), "1", ex=_SP_QUEUED_TTL,
+        )
+    except Exception:
+        pass
+
+
+async def _check_sp_market_queued(market: str) -> bool:
+    """Check if a market has a pending queued stock profile task."""
+    try:
+        from app.db.redis import get_redis
+        redis = await get_redis()
+        return bool(await redis.exists(_SP_QUEUED_KEY_TEMPLATE.format(market=market)))
+    except Exception:
+        return False
+
+
+async def _get_running_sp_markets(exclude: str = "") -> List[str]:
+    """Return list of stock profile markets that currently hold a lock."""
+    running = []
+    for m in _SP_MARKETS:
+        if m == exclude:
+            continue
+        ttl = await _check_sp_market_lock(m)
+        if ttl is not None:
+            running.append(m)
+    return running
+
+
+async def _force_release_sp_market_lock(market: str) -> Optional[str]:
+    """Force-release stock profile lock and revoke the holding Celery task. Returns revoked task_id."""
+    try:
+        from app.db.redis import get_redis
+        redis = await get_redis()
+        lock_key = _SP_LOCK_KEY_TEMPLATE.format(market=market)
+        task_id = await redis.get(lock_key)
+
+        await redis.delete(lock_key)
+        await redis.delete(_SP_PROGRESS_KEY_TEMPLATE.format(market=market))
+        await redis.delete(_SP_QUEUED_KEY_TEMPLATE.format(market=market))
+
+        if task_id and task_id != "1":
+            try:
+                from worker.celery_app import celery_app as _celery
+                _celery.control.revoke(task_id, terminate=True, signal="SIGTERM")
+            except Exception as e:
+                logger.warning("Failed to revoke stock profile task %s: %s", task_id, e)
+        return task_id
+    except Exception as e:
+        logger.error("Failed to force-release stock profile lock for %s: %s", market, e)
         return None
 
 
@@ -386,6 +467,18 @@ async def get_knowledge_base_stats(
         else:
             locks[market] = None
 
+    # ── 8b. Stock profile per-market locks ──
+    sp_locks: Dict[str, Any] = {}
+    for market in _SP_MARKETS:
+        ttl = await _check_sp_market_lock(market)
+        queued = await _check_sp_market_queued(market)
+        if ttl is not None:
+            sp_locks[market] = {"locked": True, "ttlSeconds": ttl}
+        elif queued:
+            sp_locks[market] = {"queued": True}
+        else:
+            sp_locks[market] = None
+
     # ── 9. Stock list stats ──
     stock_list_stats = None
     try:
@@ -418,6 +511,7 @@ async def get_knowledge_base_stats(
         "stockList": stock_list_stats,
         "progress": progress,
         "locks": locks,
+        "stockProfileLocks": sp_locks,
     }
 
 
@@ -839,6 +933,137 @@ async def unlock_daily_bars(
 
 
 # ---------------------------------------------------------------------------
+# POST /knowledge-base/stock-profiles/{market}/collect
+# ---------------------------------------------------------------------------
+
+
+@router.post(
+    "/knowledge-base/stock-profiles/{market}/collect",
+    summary="Collect stock profiles for a single market",
+)
+async def collect_stock_profiles(
+    market: str,
+    current_user: User = Depends(require_admin),
+) -> Dict[str, Any]:
+    """Trigger stock profile collection for a single market."""
+
+    if market not in _SP_MARKETS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid market: {market}. Must be one of: {', '.join(_SP_MARKETS)}",
+        )
+
+    lock_ttl = await _check_sp_market_lock(market)
+    if lock_ttl is not None:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Stock profile collection for {market} is already running (lock TTL: {lock_ttl}s)",
+        )
+
+    from worker.tasks.stock_profile_tasks import collect_market_profiles
+    result = collect_market_profiles.delay(market)
+
+    running = await _get_running_sp_markets(exclude=market)
+    msg = f"Stock profile collection started for market={market}"
+    resp: Dict[str, Any] = {"message": msg, "taskId": result.id}
+    if running:
+        await _mark_sp_market_queued(market)
+        resp["queued"] = True
+        resp["runningMarkets"] = running
+        resp["message"] = msg + f" (queued behind: {', '.join(running)})"
+
+    logger.info(
+        "Admin %s triggered stock profile collect: market=%s, taskId=%s",
+        current_user.email, market, result.id,
+    )
+    return resp
+
+
+# ---------------------------------------------------------------------------
+# POST /knowledge-base/stock-profiles/collect-all
+# ---------------------------------------------------------------------------
+
+
+@router.post(
+    "/knowledge-base/stock-profiles/collect-all",
+    summary="Collect stock profiles for all markets sequentially",
+)
+async def collect_all_stock_profiles(
+    current_user: User = Depends(require_admin),
+) -> Dict[str, Any]:
+    """Trigger stock profile collection for all markets (chained sequentially)."""
+
+    from celery import chain as celery_chain
+    from worker.tasks.stock_profile_tasks import collect_market_profiles
+
+    markets_to_run: List[str] = []
+    skipped: List[str] = []
+    for market in _SP_MARKETS:
+        lock_ttl = await _check_sp_market_lock(market)
+        if lock_ttl is not None:
+            skipped.append(market)
+        else:
+            markets_to_run.append(market)
+
+    if not markets_to_run:
+        raise HTTPException(
+            status_code=409,
+            detail=f"All stock profile markets are locked: {', '.join(skipped)}",
+        )
+
+    task_chain = celery_chain(
+        *(collect_market_profiles.si(m) for m in markets_to_run)
+    )
+    result = task_chain.apply_async()
+
+    # Mark non-first markets as queued
+    for m in markets_to_run[1:]:
+        await _mark_sp_market_queued(m)
+
+    logger.info(
+        "Admin %s triggered stock profile collect-all: markets=%s, skipped=%s, chainId=%s",
+        current_user.email, markets_to_run, skipped, result.id,
+    )
+    return {
+        "message": f"Stock profile collection chain started for {', '.join(markets_to_run)}",
+        "taskId": result.id,
+        "markets": markets_to_run,
+        "skipped": skipped,
+    }
+
+
+# ---------------------------------------------------------------------------
+# POST /knowledge-base/stock-profiles/{market}/unlock
+# ---------------------------------------------------------------------------
+
+
+@router.post(
+    "/knowledge-base/stock-profiles/{market}/unlock",
+    summary="Force-unlock a stock profile market lock",
+)
+async def unlock_stock_profiles(
+    market: str,
+    current_user: User = Depends(require_admin),
+) -> Dict[str, Any]:
+    """Force-release a stale stock profile per-market lock and revoke the running task."""
+
+    if market not in _SP_MARKETS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid market: {market}. Must be one of: {', '.join(_SP_MARKETS)}",
+        )
+
+    revoked_task_id = await _force_release_sp_market_lock(market)
+    if revoked_task_id:
+        logger.warning(
+            "Admin %s force-released stock profile lock: market=%s, revoked_task=%s",
+            current_user.email, market, revoked_task_id,
+        )
+        return {"message": f"Lock released and task terminated for market={market}"}
+    return {"message": f"No lock held for market={market}"}
+
+
+# ---------------------------------------------------------------------------
 # POST /knowledge-base/stock-list/update
 # ---------------------------------------------------------------------------
 
@@ -869,9 +1094,15 @@ async def _get_all_progress() -> Dict[str, Any]:
         from app.db.redis import get_redis
         redis = await get_redis()
 
-        # Stock profile progress
+        # Stock profile progress (legacy aggregate)
         raw = await redis.get("kb:stock_profile:progress")
         stock_profile_progress = json.loads(raw) if raw else None
+
+        # Per-market stock profile progress
+        sp_progress: Dict[str, Any] = {}
+        for market in _SP_MARKETS:
+            raw = await redis.get(_SP_PROGRESS_KEY_TEMPLATE.format(market=market))
+            sp_progress[market] = json.loads(raw) if raw else None
 
         # Daily bars progress per market
         daily_bars_progress: Dict[str, Any] = {}
@@ -881,11 +1112,13 @@ async def _get_all_progress() -> Dict[str, Any]:
 
         return {
             "stockProfile": stock_profile_progress,
+            "stockProfiles": sp_progress,
             "dailyBars": daily_bars_progress,
         }
     except Exception as e:
         logger.warning("Failed to read progress from Redis: %s", e)
         return {
             "stockProfile": None,
+            "stockProfiles": {m: None for m in _SP_MARKETS},
             "dailyBars": {m: None for m in VALID_MARKETS},
         }
