@@ -95,8 +95,8 @@ class TokenUsage:
 class ChatRequest:
     """Provider-agnostic chat completion request.
 
-    Provider-specific parameters (reasoning model detection, stream_options,
-    max_completion_tokens) are handled internally by each provider.
+    Parameters are passed through to the underlying provider as-is.
+    No model-name-based heuristics are applied.
     """
     messages: List[Message]
     model: str

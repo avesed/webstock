@@ -44,6 +44,7 @@ BLOCKED_DOMAINS = [
     "washingtonpost.com", # Paywall
     "bloomberg.com",      # Paywall
     "seekingalpha.com",   # Paywall (premium)
+    "marketwatch.com",    # Paywall (401)
 ]
 
 

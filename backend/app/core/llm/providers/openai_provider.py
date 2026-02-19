@@ -43,14 +43,6 @@ _TEXT_TOOL_CALL_PATTERNS = re.compile(
     re.IGNORECASE,
 )
 
-# Model prefixes that are reasoning models (no temperature, use max_completion_tokens)
-_REASONING_PREFIXES = ("o1-", "o1", "o3-", "o3", "gpt-5")
-
-# Model prefixes known to be OpenAI (support stream_options)
-_OPENAI_MODEL_PATTERNS = (
-    "gpt-3.5", "gpt-4", "gpt-5", "o1", "o3", "chatgpt", "davinci", "turbo"
-)
-
 
 class OpenAIProvider(LLMProvider):
     """Provider for OpenAI API and OpenAI-compatible endpoints.
@@ -132,25 +124,22 @@ class OpenAIProvider(LLMProvider):
         ]
 
     def _build_api_kwargs(self, request: ChatRequest) -> Dict[str, Any]:
-        """Build kwargs for client.chat.completions.create()."""
+        """Build kwargs for client.chat.completions.create().
+
+        Passes parameters exactly as specified by the caller without
+        model-name-based heuristics.  In proxy environments (NewAPI/OneAPI)
+        model names are arbitrary aliases, so inferring capabilities from
+        the name is unreliable.
+        """
         kwargs: Dict[str, Any] = {
             "model": request.model,
             "messages": self._convert_messages(request.messages),
         }
 
-        model_lower = request.model.lower()
-        is_reasoning = any(m in model_lower for m in _REASONING_PREFIXES)
-        is_openai = any(m in model_lower for m in _OPENAI_MODEL_PATTERNS)
-
-        # max_tokens handling
         if request.max_tokens is not None:
-            if is_reasoning:
-                kwargs["max_completion_tokens"] = request.max_tokens
-            else:
-                kwargs["max_tokens"] = request.max_tokens
+            kwargs["max_tokens"] = request.max_tokens
 
-        # Temperature (reasoning models don't support it)
-        if request.temperature is not None and not is_reasoning:
+        if request.temperature is not None:
             kwargs["temperature"] = request.temperature
 
         # Tools
@@ -162,10 +151,6 @@ class OpenAIProvider(LLMProvider):
         # Response format (JSON mode)
         if request.response_format:
             kwargs["response_format"] = request.response_format
-
-        # stream_options for OpenAI models only
-        if request.stream and is_openai:
-            kwargs["stream_options"] = {"include_usage": True}
 
         # Timeout
         kwargs["timeout"] = request.timeout
@@ -225,6 +210,9 @@ class OpenAIProvider(LLMProvider):
         client = self._get_client()
         kwargs = self._build_api_kwargs(request)
         kwargs["stream"] = True
+        # Request usage data in the final streaming chunk.
+        # Supported by OpenAI and most compatible proxies (NewAPI, vLLM, etc.).
+        kwargs["stream_options"] = {"include_usage": True}
 
         try:
             stream = await client.chat.completions.create(**kwargs)
