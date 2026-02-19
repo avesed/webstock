@@ -18,6 +18,7 @@ from worker.task_helpers import (
     run_async_task,
     run_layer1_scoring_if_enabled,
     build_score_details,
+    add_scoring_pending,
 )
 
 logger = logging.getLogger(__name__)
@@ -185,12 +186,43 @@ async def _monitor_rss_feeds_async() -> Dict[str, Any]:
                 ]
 
                 scoring_results = []
+                timed_out_articles = []
                 try:
-                    scoring_results, _ = await run_layer1_scoring_if_enabled(
+                    outcome, _ = await run_layer1_scoring_if_enabled(
                         db, system_settings, articles_for_scoring
                     )
+                    scoring_results = outcome.results
+                    timed_out_articles = outcome.timed_out_articles
                 except Exception as e:
                     logger.warning("RSS Layer 1 scoring failed: %s", e)
+
+                # Handle timed-out articles → Redis pending + retry task
+                if timed_out_articles:
+                    timed_out_urls = [a.get("url", "") for a in timed_out_articles if a.get("url")]
+                    await add_scoring_pending(timed_out_urls)
+
+                    timed_out_url_set = set(timed_out_urls)
+                    retry_payload = [
+                        {
+                            "url": a.url,
+                            "title": (a.title or "")[:500],
+                            "summary": a.summary or "",
+                            "source": a.source or "unknown",
+                            "symbol": a.symbol or "",
+                            "market": a.market or "US",
+                            "published_at": a.published_at.isoformat() if a.published_at else None,
+                        }
+                        for a in all_new_articles if a.url in timed_out_url_set
+                    ]
+                    if retry_payload:
+                        from worker.tasks.news_monitor import retry_score_articles
+                        retry_score_articles.delay(retry_payload)
+                        logger.info("RSS监控：%d篇评分超时 已派发重试", len(retry_payload))
+
+                    # Remove timed-out articles from processing list
+                    all_new_articles = [
+                        a for a in all_new_articles if a.url not in timed_out_url_set
+                    ]
 
                 # Build URL -> scoring result map
                 scoring_map = {r.url: r for r in scoring_results}

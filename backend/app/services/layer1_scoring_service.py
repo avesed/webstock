@@ -165,6 +165,19 @@ class Layer1ScoringResult:
     raw_responses: Dict[str, str] = field(default_factory=dict)
 
 
+@dataclass
+class BatchScoringOutcome:
+    """Result of batch_score_articles with partial success support.
+
+    When a batch times out, its articles move to ``timed_out_articles``
+    instead of receiving default scores.  The caller decides whether to
+    retry them via a Celery task or fail-open to lightweight.
+    """
+
+    results: List[Layer1ScoringResult]          # Successfully scored
+    timed_out_articles: List[Dict[str, str]]    # Article dicts whose batch timed out
+
+
 # ---------------------------------------------------------------------------
 # JSON extraction helper
 # ---------------------------------------------------------------------------
@@ -633,15 +646,19 @@ class Layer1ScoringService:
         db: AsyncSession,
         articles: List[Dict[str, str]],
         batch_size: int = 20,
-    ) -> List[Layer1ScoringResult]:
+        batch_timeout: int = 90,
+    ) -> BatchScoringOutcome:
         """Score a list of articles and determine routing decisions.
 
         This is the main entry point for Layer 1 scoring.  Articles are
         processed in batches of ``batch_size`` to keep LLM context windows
-        manageable.
+        manageable.  Each batch has a per-batch timeout; timed-out batches
+        are returned in ``BatchScoringOutcome.timed_out_articles`` for the
+        caller to retry via a Celery task.
 
         On service-level failure (e.g., unable to resolve model config),
-        all articles default to ``"lightweight"`` routing (fail-open).
+        all articles are returned as timed-out so the caller can decide
+        whether to retry or fail-open.
 
         Args:
             db: Async database session.
@@ -652,13 +669,14 @@ class Layer1ScoringService:
                   to ``_MAX_TEXT_LENGTH`` characters per article).
             batch_size: Maximum number of articles per LLM call.
                 Defaults to 20.
+            batch_timeout: Per-batch timeout in seconds.  Defaults to 90.
 
         Returns:
-            List of ``Layer1ScoringResult`` in the same order as the input
-            ``articles`` list.
+            ``BatchScoringOutcome`` with successfully scored results and
+            any timed-out article dicts.
         """
         if not articles:
-            return []
+            return BatchScoringOutcome(results=[], timed_out_articles=[])
 
         t0 = time.monotonic()
 
@@ -667,55 +685,58 @@ class Layer1ScoringService:
             discard_threshold, full_analysis_threshold = await self._get_thresholds(db)
 
             all_results: List[Layer1ScoringResult] = []
+            all_timed_out: List[Dict[str, str]] = []
 
-            # Process in batches
+            # Process in batches with per-batch timeout
             for i in range(0, len(articles), batch_size):
                 batch = articles[i : i + batch_size]
-                batch_results = await self._score_batch(
-                    db, batch, discard_threshold, full_analysis_threshold,
-                )
-                all_results.extend(batch_results)
+                batch_num = i // batch_size + 1
+                try:
+                    batch_results = await asyncio.wait_for(
+                        self._score_batch(
+                            db, batch, discard_threshold, full_analysis_threshold,
+                        ),
+                        timeout=batch_timeout,
+                    )
+                    all_results.extend(batch_results)
+                except asyncio.TimeoutError:
+                    logger.warning(
+                        "[Layer1] Batch %d timed out after %ds (%d articles)",
+                        batch_num, batch_timeout, len(batch),
+                    )
+                    all_timed_out.extend(batch)
 
             # Track routing stats (non-fatal)
-            await self._track_routing_stats(all_results)
+            if all_results:
+                await self._track_routing_stats(all_results)
 
             elapsed_ms = (time.monotonic() - t0) * 1000
             logger.info(
-                "[Layer1] Total scoring complete: %d articles in %.0fms",
+                "[Layer1] Total scoring complete: %d articles in %.0fms "
+                "(scored=%d, timed_out=%d)",
                 len(articles), elapsed_ms,
+                len(all_results), len(all_timed_out),
             )
 
-            return all_results
+            return BatchScoringOutcome(
+                results=all_results,
+                timed_out_articles=all_timed_out,
+            )
 
         except Exception as e:
             elapsed_ms = (time.monotonic() - t0) * 1000
             logger.error(
                 "[Layer1] Service-level failure (%.0fms): %s. "
-                "All %d articles defaulting to 'lightweight'.",
+                "All %d articles marked as timed-out for caller retry.",
                 elapsed_ms, e, len(articles),
             )
 
-            # Fail-open: default all articles to lightweight routing.
-            default_results: List[Layer1ScoringResult] = []
-            for article in articles:
-                url = article.get("url", "")
-                default_agent_scores = {}
-                for name in self.AGENT_NAMES:
-                    default_agent_scores[name] = AgentScore(
-                        agent=name,
-                        tier="error",
-                        score=_DEFAULT_AGENT_SCORE,
-                        reason=f"service_error: {str(e)[:50]}",
-                    )
-                default_results.append(Layer1ScoringResult(
-                    url=url,
-                    total_score=_DEFAULT_AGENT_SCORE * 3,
-                    agent_scores=default_agent_scores,
-                    routing_decision="lightweight",
-                    is_critical=False,
-                    reasoning=f"Service error fallback: {str(e)[:100]}",
-                ))
-            return default_results
+            # Service failure: return all articles as timed-out so the
+            # caller can decide whether to retry or fail-open.
+            return BatchScoringOutcome(
+                results=[],
+                timed_out_articles=list(articles),
+            )
 
 
 # ---------------------------------------------------------------------------

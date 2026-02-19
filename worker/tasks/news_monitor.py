@@ -13,7 +13,13 @@ from worker.celery_app import celery_app
 from app.db.task_session import get_task_session
 
 # Shared worker helpers (event loop lifecycle, scoring, cost tracking)
-from worker.task_helpers import run_async_task, run_layer1_scoring_if_enabled, build_score_details
+from worker.task_helpers import (
+    run_async_task,
+    run_layer1_scoring_if_enabled,
+    build_score_details,
+    add_scoring_pending,
+    get_scoring_pending,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -55,16 +61,20 @@ async def _finish_progress(stats: Dict[str, Any]):
     except Exception:
         pass
 
-@celery_app.task(bind=True, max_retries=3)
+@celery_app.task(bind=True, max_retries=3, time_limit=600, soft_time_limit=540)
 def monitor_news(self):
     """
     Periodic task to fetch and store new news articles.
 
     Runs every 15 minutes to:
     1. Fetch news for all stocks in users' watchlists
-    2. Store new articles in database
+    2. Store new articles in database (with per-layer commit)
     3. Check for keyword matches in news alerts
     4. Trigger notifications for matched alerts
+
+    Per-batch timeout (90s) ensures individual slow LLM batches don't
+    kill the entire task.  Timed-out articles are dispatched to
+    retry_score_articles for up to 3 attempts before fail-open.
 
     This task is registered with Celery Beat schedule.
     """
@@ -230,6 +240,11 @@ async def _monitor_news_async() -> Dict[str, Any]:
                     dedup_result = await db.execute(dedup_query)
                     existing_urls = {row[0] for row in dedup_result.fetchall()}
 
+                # Also exclude URLs pending retry scoring (in Redis)
+                pending_urls = await get_scoring_pending()
+                if pending_urls:
+                    existing_urls |= pending_urls
+
                 new_articles = []
                 for a in global_articles:
                     if a.url and a.url not in seen_urls and a.url not in existing_urls:
@@ -256,12 +271,40 @@ async def _monitor_news_async() -> Dict[str, Any]:
                     await _update_progress("layer1_scoring", f"Layer 1: Scoring {len(new_articles)} new articles...", 20)
 
                     scoring_results = []
+                    timed_out_articles = []
                     try:
-                        scoring_results, _ = await run_layer1_scoring_if_enabled(
+                        outcome, _ = await run_layer1_scoring_if_enabled(
                             db, system_settings, articles_for_scoring
                         )
+                        scoring_results = outcome.results
+                        timed_out_articles = outcome.timed_out_articles
                     except Exception as e:
                         logger.warning("Layer 1: Scoring failed, all articles default to lightweight: %s", e)
+
+                    # Handle timed-out articles → Redis pending + retry task
+                    if timed_out_articles:
+                        timed_out_urls = [a.get("url", "") for a in timed_out_articles if a.get("url")]
+                        await add_scoring_pending(timed_out_urls)
+
+                        timed_out_url_set = set(timed_out_urls)
+                        retry_payload = [
+                            {
+                                "url": a.url,
+                                "title": a.title[:500] if a.title else "",
+                                "summary": a.summary or "",
+                                "source": a.source or "unknown",
+                                "symbol": a.symbol or "",
+                                "market": a.market or "US",
+                                "published_at": a.published_at.isoformat() if a.published_at else None,
+                            }
+                            for a in new_articles if a.url in timed_out_url_set
+                        ]
+                        if retry_payload:
+                            retry_score_articles.delay(retry_payload)
+                            logger.info("新闻监控：%d篇评分超时 已派发重试", len(retry_payload))
+
+                        # Add to seen_urls so Layer 2 watchlist doesn't re-process
+                        seen_urls.update(timed_out_urls)
 
                     # Build URL -> scoring result map
                     scoring_map = {}
@@ -371,12 +414,19 @@ async def _monitor_news_async() -> Dict[str, Any]:
                             )
 
                     logger.info(
-                        "新闻监控L1：丢弃=%d 轻量=%d 深度=%d 关键=%d",
+                        "新闻监控L1：丢弃=%d 轻量=%d 深度=%d 关键=%d 超时=%d",
                         stats["layer1_discard"],
                         stats["layer1_lightweight"],
                         stats["layer1_full_analysis"],
                         stats["layer1_critical"],
+                        len(timed_out_articles),
                     )
+
+                    # Per-layer commit: persist scored articles immediately
+                    # so the dedup query in the next run finds them.
+                    if stats["articles_stored"] > 0:
+                        await db.commit()
+                        logger.debug("Layer 1: committed %d articles", stats["articles_stored"])
 
                 else:
                     # Pipeline OFF: store all new articles with basic metadata only
@@ -398,6 +448,10 @@ async def _monitor_news_async() -> Dict[str, Any]:
                         )
                         db.add(news)
                         stats["articles_stored"] += 1
+
+                    # Per-layer commit for pipeline OFF path too
+                    if stats["articles_stored"] > 0:
+                        await db.commit()
 
                     logger.debug(
                         "Layer 1 (pipeline OFF): stored=%d articles with basic metadata",
@@ -469,11 +523,33 @@ async def _monitor_news_async() -> Dict[str, Any]:
                         55,
                     )
                     try:
-                        wl_scoring_results, _ = await run_layer1_scoring_if_enabled(
+                        wl_outcome, _ = await run_layer1_scoring_if_enabled(
                             db, system_settings, wl_articles_for_scoring
                         )
-                        wl_scoring_map = {r.url: r for r in wl_scoring_results}
-                        wl_scoring_count = len(wl_scoring_results)
+                        wl_scoring_map = {r.url: r for r in wl_outcome.results}
+                        wl_scoring_count = len(wl_outcome.results)
+
+                        # Handle timed-out watchlist articles
+                        if wl_outcome.timed_out_articles:
+                            wl_timed_out_urls = [a.get("url", "") for a in wl_outcome.timed_out_articles if a.get("url")]
+                            await add_scoring_pending(wl_timed_out_urls)
+
+                            wl_timed_out_url_set = set(wl_timed_out_urls)
+                            wl_retry_payload = [
+                                {
+                                    "url": ad.get("url", ""),
+                                    "title": ad.get("title", "")[:500],
+                                    "summary": ad.get("summary") or "",
+                                    "source": ad.get("source", "unknown"),
+                                    "symbol": symbol,
+                                    "market": ad.get("market", "US"),
+                                    "published_at": ad.get("publishedAt"),
+                                }
+                                for symbol, ad in new_watchlist if ad.get("url") in wl_timed_out_url_set
+                            ]
+                            if wl_retry_payload:
+                                retry_score_articles.delay(wl_retry_payload)
+                                logger.info("新闻监控自选：%d篇评分超时 已派发重试", len(wl_retry_payload))
                     except Exception as e:
                         logger.warning(
                             "Watchlist: Layer 1 scoring failed, defaulting to lightweight: %s", e
@@ -590,10 +666,15 @@ async def _monitor_news_async() -> Dict[str, Any]:
                     len(new_watchlist),
                 )
 
+                # Per-layer commit: persist Layer 2 watchlist articles
+                if new_watchlist:
+                    await db.commit()
+                    logger.debug("Layer 2: committed %d watchlist articles", len(new_watchlist))
+
             except Exception as e:
                 logger.exception(f"Error in Layer 2 (Watchlist news): {e}")
 
-            # Commit all new articles
+            # Safety commit: ensure any uncommitted articles are persisted
             await _update_progress("saving", f"Saving {stats['articles_stored']} new articles...", 85)
             await db.commit()
 
@@ -774,6 +855,337 @@ def _trigger_alert_notification(
         "user_id": user_id,
         "news_id": news_id,
         "keyword": matched_keyword,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Scoring retry task
+# ---------------------------------------------------------------------------
+
+class _ScoringPartialTimeout(Exception):
+    """Raised when some articles scored successfully but others timed out.
+
+    Carries the timed-out subset so Celery retry only re-scores them.
+    """
+
+    def __init__(self, timed_out_data: list, message: str = ""):
+        self.timed_out_data = timed_out_data
+        super().__init__(message)
+
+
+@celery_app.task(bind=True, max_retries=2, time_limit=180, soft_time_limit=150)
+def retry_score_articles(self, articles_data: list):
+    """Retry Layer 1 scoring for timed-out articles.
+
+    max_retries=2 means 3 total attempts (original dispatch + 2 retries).
+    After all 3 failures, fail-open to lightweight processing.
+
+    Args:
+        articles_data: List of article dicts with url, title, summary,
+            source, symbol, market, published_at.
+    """
+    try:
+        return run_async_task(_retry_score_async, articles_data, self.request.retries)
+    except _ScoringPartialTimeout as e:
+        # Only retry the timed-out subset, not the full list
+        try:
+            logger.warning(
+                "评分重试部分超时(第%d次)，剩余%d篇: %s",
+                self.request.retries + 1, len(e.timed_out_data), e,
+            )
+            raise self.retry(
+                exc=e,
+                args=[e.timed_out_data],  # Narrow to timed-out subset
+                countdown=30 * (2 ** self.request.retries),
+            )
+        except self.MaxRetriesExceededError:
+            logger.warning(
+                "评分重试3次均失败，%d篇转轻量处理", len(e.timed_out_data),
+            )
+            try:
+                return run_async_task(_fail_open_store, e.timed_out_data)
+            except Exception as fail_err:
+                logger.error("轻量兜底也失败：%s", fail_err)
+                # Clean up Redis pending set so next monitor run can re-fetch
+                run_async_task(
+                    _cleanup_pending_urls,
+                    [a.get("url", "") for a in e.timed_out_data],
+                )
+                return {"status": "error", "reason": str(fail_err)}
+    except Exception as e:
+        try:
+            logger.warning(
+                "评分重试失败(第%d次)，%d篇文章: %s",
+                self.request.retries + 1, len(articles_data), e,
+            )
+            raise self.retry(exc=e, countdown=30 * (2 ** self.request.retries))
+        except self.MaxRetriesExceededError:
+            logger.warning(
+                "评分重试3次均失败，%d篇转轻量处理", len(articles_data),
+            )
+            try:
+                return run_async_task(_fail_open_store, articles_data)
+            except Exception as fail_err:
+                logger.error("轻量兜底也失败：%s", fail_err)
+                run_async_task(
+                    _cleanup_pending_urls,
+                    [a.get("url", "") for a in articles_data],
+                )
+                return {"status": "error", "reason": str(fail_err)}
+
+
+async def _cleanup_pending_urls(urls: list):
+    """Remove URLs from Redis pending set (cleanup helper)."""
+    from worker.task_helpers import remove_scoring_pending
+    await remove_scoring_pending(urls)
+
+
+async def _retry_score_async(articles_data: list, retry_num: int) -> Dict[str, Any]:
+    """Async implementation of scoring retry.
+
+    Opens a fresh DB session, re-runs Layer 1 scoring, and stores
+    successfully scored articles.  If some articles still time out,
+    raises _ScoringPartialTimeout with only the timed-out subset.
+    """
+    from sqlalchemy import select
+    from sqlalchemy.exc import IntegrityError
+    from app.models.news import News, FilterStatus
+    from app.services.settings_service import SettingsService
+    from worker.task_helpers import remove_scoring_pending
+
+    logger.info("重试评分：%d篇文章，第%d次尝试", len(articles_data), retry_num + 1)
+
+    async with get_task_session() as db:
+        settings_service = SettingsService()
+        system_settings = await settings_service.get_system_settings(db)
+
+        # Format for scoring service
+        articles_for_scoring = [
+            {
+                "url": a.get("url", ""),
+                "headline": a.get("title", ""),
+                "summary": a.get("summary", "")[:500],
+            }
+            for a in articles_data
+        ]
+
+        outcome, _ = await run_layer1_scoring_if_enabled(
+            db, system_settings, articles_for_scoring
+        )
+
+        scoring_map = {r.url: r for r in outcome.results}
+        stored_count = 0
+        scored_urls = []
+        dispatch_articles = []  # (News obj, article_data) for dispatch
+
+        # Store successfully scored articles with SAVEPOINT for race safety
+        for article_data in articles_data:
+            url = article_data.get("url", "")
+            scoring = scoring_map.get(url)
+            if not scoring:
+                continue  # Will be handled below as still-timed-out
+
+            scored_urls.append(url)
+
+            if scoring.routing_decision == "discard":
+                filter_status = FilterStatus.DISCARDED.value
+                processing_path = "discarded"
+            else:
+                filter_status = FilterStatus.INITIAL_USEFUL.value
+                processing_path = scoring.routing_decision
+
+            news = News(
+                symbol=article_data.get("symbol", ""),
+                title=article_data.get("title", "")[:500],
+                summary=article_data.get("summary"),
+                source=article_data.get("source", "unknown"),
+                url=url,
+                published_at=_parse_datetime(article_data.get("published_at")),
+                market=article_data.get("market", "US"),
+                related_entities=None,
+                has_stock_entities=False,
+                has_macro_entities=False,
+                max_entity_score=None,
+                primary_entity=None,
+                primary_entity_type=None,
+                filter_status=filter_status,
+                content_score=scoring.total_score,
+                processing_path=processing_path,
+                score_details=build_score_details(scoring),
+            )
+
+            # SAVEPOINT insert: handle concurrent URL collision gracefully
+            try:
+                async with db.begin_nested():
+                    db.add(news)
+                stored_count += 1
+                if scoring.routing_decision != "discard":
+                    dispatch_articles.append(news)
+            except IntegrityError:
+                logger.debug("重试评分：URL已存在(并发插入) %s", url[:80])
+
+        if stored_count > 0:
+            try:
+                await db.commit()
+                logger.debug("重试评分：已提交%d篇", stored_count)
+            except Exception as e:
+                logger.error("重试评分：提交失败: %s", e)
+                raise
+
+            # Remove scored URLs from Redis pending set
+            await remove_scoring_pending(scored_urls)
+
+            # Dispatch batch_fetch_content for non-discarded articles
+            # (expire_on_commit=False means objects retain their attributes)
+            if dispatch_articles:
+                dispatch_batch = []
+                for news_obj in dispatch_articles:
+                    if news_obj.id and news_obj.url:
+                        dispatch_batch.append({
+                            "news_id": str(news_obj.id),
+                            "url": news_obj.url,
+                            "market": news_obj.market or "US",
+                            "symbol": news_obj.symbol or "",
+                            "title": news_obj.title or "",
+                            "summary": news_obj.summary or "",
+                            "source": news_obj.source or "",
+                            "published_at": news_obj.published_at.isoformat() if news_obj.published_at else None,
+                            "content_source": "trafilatura",
+                            "content_score": news_obj.content_score or 0,
+                            "processing_path": news_obj.processing_path or "lightweight",
+                            "score_details": news_obj.score_details,
+                        })
+
+                if dispatch_batch:
+                    from worker.tasks.full_content_tasks import batch_fetch_content, BATCH_CHUNK_SIZE
+                    for i in range(0, len(dispatch_batch), BATCH_CHUNK_SIZE):
+                        chunk = dispatch_batch[i:i + BATCH_CHUNK_SIZE]
+                        batch_fetch_content.delay(chunk)
+                    logger.info("重试评分：%d篇已入库并派发", len(dispatch_batch))
+        elif scored_urls:
+            # All scored URLs already existed — just clean up Redis
+            await remove_scoring_pending(scored_urls)
+
+        logger.info(
+            "重试评分完成：评分成功=%d 超时=%d 入库=%d",
+            len(outcome.results), len(outcome.timed_out_articles), stored_count,
+        )
+
+        # If some articles still timed out, raise with only the timed-out subset
+        if outcome.timed_out_articles:
+            timed_out_urls = {a.get("url", "") for a in outcome.timed_out_articles}
+            timed_out_subset = [
+                a for a in articles_data if a.get("url", "") in timed_out_urls
+            ]
+            raise _ScoringPartialTimeout(
+                timed_out_data=timed_out_subset,
+                message=f"{len(timed_out_subset)} articles still timed out",
+            )
+
+    return {
+        "status": "success",
+        "scored": len(outcome.results),
+        "stored": stored_count,
+        "timed_out": len(outcome.timed_out_articles),
+    }
+
+
+async def _fail_open_store(articles_data: list) -> Dict[str, Any]:
+    """Store articles with lightweight routing after all retry attempts failed.
+
+    This is the fail-open path: articles get stored in DB with
+    processing_path="lightweight" and a marker in score_details so
+    downstream processing knows these were not properly scored.
+    """
+    from sqlalchemy.exc import IntegrityError
+    from app.models.news import News, FilterStatus
+    from worker.task_helpers import remove_scoring_pending
+
+    logger.info("轻量兜底：%d篇文章", len(articles_data))
+
+    stored_count = 0
+    all_urls = []
+    dispatch_articles = []  # News objects for dispatch
+
+    async with get_task_session() as db:
+        for article_data in articles_data:
+            url = article_data.get("url", "")
+            if not url:
+                continue
+            all_urls.append(url)
+
+            news = News(
+                symbol=article_data.get("symbol", ""),
+                title=article_data.get("title", "")[:500],
+                summary=article_data.get("summary"),
+                source=article_data.get("source", "unknown"),
+                url=url,
+                published_at=_parse_datetime(article_data.get("published_at")),
+                market=article_data.get("market", "US"),
+                related_entities=None,
+                has_stock_entities=False,
+                has_macro_entities=False,
+                max_entity_score=None,
+                primary_entity=None,
+                primary_entity_type=None,
+                filter_status=FilterStatus.INITIAL_USEFUL.value,
+                content_score=0,
+                processing_path="lightweight",
+                score_details={"failOpen": True, "reason": "scoring_retry_exhausted"},
+            )
+
+            # SAVEPOINT insert: handle concurrent URL collision gracefully
+            try:
+                async with db.begin_nested():
+                    db.add(news)
+                stored_count += 1
+                dispatch_articles.append(news)
+            except IntegrityError:
+                logger.debug("轻量兜底：URL已存在(并发插入) %s", url[:80])
+
+        if stored_count > 0:
+            try:
+                await db.commit()
+                logger.debug("轻量兜底：已提交%d篇", stored_count)
+            except Exception as e:
+                logger.error("轻量兜底：提交失败: %s", e)
+                raise
+
+        # Remove from Redis pending set (always, even if all existed)
+        await remove_scoring_pending(all_urls)
+
+        # Dispatch batch_fetch_content for stored articles
+        # (expire_on_commit=False means objects retain their attributes)
+        if dispatch_articles:
+            dispatch_batch = []
+            for news_obj in dispatch_articles:
+                if news_obj.id and news_obj.url:
+                    dispatch_batch.append({
+                        "news_id": str(news_obj.id),
+                        "url": news_obj.url,
+                        "market": news_obj.market or "US",
+                        "symbol": news_obj.symbol or "",
+                        "title": news_obj.title or "",
+                        "summary": news_obj.summary or "",
+                        "source": news_obj.source or "",
+                        "published_at": news_obj.published_at.isoformat() if news_obj.published_at else None,
+                        "content_source": "trafilatura",
+                        "content_score": 0,
+                        "processing_path": "lightweight",
+                        "score_details": news_obj.score_details,
+                    })
+
+            if dispatch_batch:
+                from worker.tasks.full_content_tasks import batch_fetch_content, BATCH_CHUNK_SIZE
+                for i in range(0, len(dispatch_batch), BATCH_CHUNK_SIZE):
+                    chunk = dispatch_batch[i:i + BATCH_CHUNK_SIZE]
+                    batch_fetch_content.delay(chunk)
+
+    logger.info("轻量兜底完成：入库%d篇", stored_count)
+
+    return {
+        "status": "fail_open",
+        "stored": stored_count,
     }
 
 

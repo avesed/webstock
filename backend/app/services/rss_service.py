@@ -228,7 +228,7 @@ class RssService:
         prepared_entries = fetched_data["entries"]
 
         if not prepared_entries:
-            logger.info("Feed %s returned 0 entries", feed.name)
+            logger.debug("Feed %s returned 0 entries", feed.name)
             feed.last_polled_at = datetime.now(timezone.utc)
             feed.consecutive_errors = 0
             feed.last_error = None
@@ -356,7 +356,7 @@ class RssService:
             feed.article_count += result["new_count"]
 
             elapsed = fetched_data.get("elapsed", 0)
-            logger.info(
+            logger.debug(
                 "Polled feed %s: %d new, %d skipped (%.1fs)",
                 feed.name, result["new_count"], result["skipped_count"], elapsed,
             )

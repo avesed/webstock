@@ -6,12 +6,13 @@ Provides:
 - ensure_usage_recorder(): One-time LLM cost tracking registration.
 - run_layer1_scoring_if_enabled(): Layer 1 3-agent scoring wrapper.
 - build_score_details(): Serialize Layer1ScoringResult for DB storage.
+- Redis pending-set helpers for scoring retry dedup.
 """
 
 import asyncio
 import importlib
 import logging
-from typing import Any, Callable, Dict, List, TypeVar
+from typing import Any, Callable, Dict, List, Set, TypeVar
 
 logger = logging.getLogger(__name__)
 
@@ -167,7 +168,7 @@ async def run_layer1_scoring_if_enabled(
     db,
     system_settings,
     articles: List[Dict[str, str]],
-) -> tuple[List, bool]:
+):
     """Run Layer 1 scoring if LLM pipeline is enabled.
 
     Args:
@@ -176,10 +177,12 @@ async def run_layer1_scoring_if_enabled(
         articles: List of dicts with url, title, text (summary).
 
     Returns:
-        Tuple of (list of Layer1ScoringResult, is_enabled bool).
+        Tuple of (BatchScoringOutcome, is_enabled bool).
     """
+    from app.services.layer1_scoring_service import BatchScoringOutcome
+
     if not system_settings.enable_llm_pipeline:
-        return [], False
+        return BatchScoringOutcome(results=[], timed_out_articles=[]), False
 
     from app.services.layer1_scoring_service import get_layer1_scoring_service
 
@@ -195,8 +198,60 @@ async def run_layer1_scoring_if_enabled(
         for a in articles
     ]
 
-    results = await scoring_service.batch_score_articles(db, scoring_articles)
-    return results, True
+    outcome = await scoring_service.batch_score_articles(db, scoring_articles)
+    return outcome, True
+
+
+# ---------------------------------------------------------------------------
+# Redis pending-set helpers for scoring retry dedup
+# ---------------------------------------------------------------------------
+
+SCORING_PENDING_KEY = "news:scoring:pending"
+_PENDING_TTL = 1800  # 30 minutes
+
+
+async def add_scoring_pending(urls: List[str]):
+    """Mark URLs as pending retry scoring (for dedup in next monitor run).
+
+    Uses a Redis SET with a 30-minute TTL as safety net.
+    """
+    if not urls:
+        return
+    try:
+        from app.db.redis import get_redis
+        redis = await get_redis()
+        pipe = redis.pipeline()
+        pipe.sadd(SCORING_PENDING_KEY, *urls)
+        # nx=True: only set TTL when key is new, don't extend on every SADD
+        pipe.expire(SCORING_PENDING_KEY, _PENDING_TTL, nx=True)
+        await pipe.execute()
+        logger.debug("Scoring pending: added %d URLs", len(urls))
+    except Exception as e:
+        logger.warning("Failed to add scoring pending URLs: %s", e)
+
+
+async def remove_scoring_pending(urls: List[str]):
+    """Remove URLs from pending set after scoring completes or fails-open."""
+    if not urls:
+        return
+    try:
+        from app.db.redis import get_redis
+        redis = await get_redis()
+        await redis.srem(SCORING_PENDING_KEY, *urls)
+        logger.debug("Scoring pending: removed %d URLs", len(urls))
+    except Exception as e:
+        logger.warning("Failed to remove scoring pending URLs: %s", e)
+
+
+async def get_scoring_pending() -> Set[str]:
+    """Get all URLs currently pending retry scoring (for dedup check)."""
+    try:
+        from app.db.redis import get_redis
+        redis = await get_redis()
+        return await redis.smembers(SCORING_PENDING_KEY)
+    except Exception as e:
+        logger.warning("Failed to get scoring pending URLs: %s", e)
+        return set()
 
 
 def build_score_details(scoring_result) -> dict:
