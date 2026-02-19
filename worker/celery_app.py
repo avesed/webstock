@@ -1,9 +1,13 @@
 """Celery application configuration."""
 
+import logging
 import os
 
 from celery import Celery
 from celery.schedules import crontab
+from celery.signals import worker_ready
+
+logger = logging.getLogger(__name__)
 
 # Redis configuration from environment variables
 CELERY_BROKER_URL = os.environ.get("CELERY_BROKER_URL", "redis://localhost:6379/1")
@@ -159,6 +163,72 @@ celery_app.conf.update(
         # },
     },
 )
+
+# ---------------------------------------------------------------------------
+# Startup self-check: trigger knowledge base build if empty
+# ---------------------------------------------------------------------------
+
+@worker_ready.connect
+def _check_stock_knowledge_base(sender, **kwargs):
+    """Auto-trigger stock profile knowledge base build on first deploy.
+
+    The weekly beat task (Sunday 6 AM) handles routine rebuilds, but on a
+    fresh deployment there are zero embeddings and the first Sunday may be
+    days away.  This signal fires once per worker startup and dispatches the
+    build task if no stock_profile embeddings exist yet.
+    """
+    import redis as redis_lib
+
+    try:
+        redis_url = os.environ.get("REDIS_URL", "redis://localhost:6379/0")
+        r = redis_lib.from_url(redis_url, decode_responses=True)
+
+        # Check the cached embedding counter first (fast, no DB query)
+        raw = r.get("kb:counters:embeddings:stock_profile")
+        if raw:
+            import json
+            counter = json.loads(raw)
+            if counter.get("count", 0) > 0:
+                logger.info(
+                    "[KBCheck] stock_profile has %d embeddings (Redis cache), skipping auto-build",
+                    counter["count"],
+                )
+                return
+
+        # Counter missing or zero — check DB to be sure
+        # Use a sync connection to avoid event loop issues in signal handler
+        db_url = os.environ.get("DATABASE_URL", "")
+        if not db_url:
+            return
+        # Convert asyncpg URL to psycopg2-compatible: strip +asyncpg dialect
+        # and remove asyncpg-specific query params (e.g. ?ssl=disable)
+        sync_url = db_url.replace("+asyncpg", "").split("?")[0]
+
+        from sqlalchemy import create_engine, text
+        engine = create_engine(sync_url, pool_pre_ping=True)
+        with engine.connect() as conn:
+            count = conn.execute(
+                text("SELECT COUNT(*) FROM document_embeddings WHERE source_type = 'stock_profile'")
+            ).scalar() or 0
+        engine.dispose()
+
+        if count > 0:
+            logger.info(
+                "[KBCheck] stock_profile has %d embeddings, skipping auto-build", count,
+            )
+            return
+
+        # No embeddings — trigger build (with a short delay to let worker fully initialize)
+        logger.warning(
+            "[KBCheck] Zero stock_profile embeddings detected, "
+            "auto-triggering build_stock_knowledge_base"
+        )
+        from worker.tasks.stock_profile_tasks import build_stock_knowledge_base
+        build_stock_knowledge_base.apply_async(countdown=30)
+
+    except Exception as e:
+        logger.warning("[KBCheck] Startup check failed (non-fatal): %s", e)
+
 
 if __name__ == "__main__":
     celery_app.start()

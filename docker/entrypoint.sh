@@ -272,25 +272,45 @@ for i in $(seq 1 30); do
     sleep 1
 done
 
+# ============ Clean stale Celery Beat schedule ============
+# Celery Beat's PersistentScheduler stores last_run_at per task in a shelve file.
+# On container restart, it recreates entries for never-run tasks with last_run_at=now,
+# which pushes weekly tasks (like build_stock_knowledge_base) perpetually into the
+# future — they never become "due" if the container restarts within the week.
+# Deleting the schedule file forces a clean start; frequent tasks (every minute)
+# recover instantly, and weekly tasks will fire on the next matching crontab slot.
+BEAT_SCHEDULE="/app/data/celerybeat-schedule"
+if [ -f "$BEAT_SCHEDULE" ]; then
+    rm -f "$BEAT_SCHEDULE"
+    echo "  -> Removed stale celerybeat-schedule (weekly tasks will re-sync)"
+else
+    echo "  -> No celerybeat-schedule found (clean start)"
+fi
+
 # ============ Clean orphan Redis locks ============
-# On container restart, any daily-bar locks in Redis are orphans — the Celery
+# On container restart, any locks in Redis are orphans — the Celery
 # workers that held them died with the old container.  Clean them up before
 # starting new workers so tasks are not blocked for hours.
 python3 -c "
 import redis, os
 try:
     r = redis.from_url(os.environ.get('REDIS_URL', 'redis://localhost:6379/0'), decode_responses=True)
-    markets = ('cn', 'us', 'hk', 'metal')
     cleaned = []
+    # Daily bar locks
+    markets = ('cn', 'us', 'hk', 'metal')
     for m in markets:
         for suffix in ('lock', 'progress', 'queued'):
             key = f'kb:daily_bars:{m}:{suffix}'
             if r.delete(key):
                 cleaned.append(key)
+    # Stock profile knowledge base locks
+    for key in ('stock_profile:build_lock', 'stock_profile:sync_lock', 'kb:stock_profile:progress'):
+        if r.delete(key):
+            cleaned.append(key)
     if cleaned:
         print(f'  -> Cleaned {len(cleaned)} orphan key(s): {cleaned}')
     else:
-        print('  -> No orphan daily-bar locks found')
+        print('  -> No orphan locks found')
 except Exception as e:
     print(f'  -> WARNING: Could not clean orphan locks: {e}')
 "

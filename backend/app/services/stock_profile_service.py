@@ -637,3 +637,15 @@ def get_stock_profile_service() -> StockProfileService:
     if _service is None:
         _service = StockProfileService()
     return _service
+
+
+async def reset_stock_profile_service() -> None:
+    """Reset singleton instance (async variant)."""
+    global _service
+    _service = None
+
+
+def reset_stock_profile_service_sync() -> None:
+    """Sync reset for Celery singleton cleanup after each task."""
+    global _service
+    _service = None
