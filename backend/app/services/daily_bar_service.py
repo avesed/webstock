@@ -23,6 +23,7 @@ _CN_BATCH_SIZE = 36            # symbols per fetch-upsert cycle (bounds memory)
 # yfinance batch path for US/HK/Metal markets
 _YF_BATCH_SIZE = 50           # symbols per data-service batch call
 _YF_MAX_CONCURRENT_BATCHES = 5  # simultaneous batch requests
+_YF_WINDOW_SIZE = 20          # batches per fetch-upsert window (bounds peak memory)
 # Commit every N symbols during upsert to bound transaction size
 _UPSERT_COMMIT_INTERVAL = 50
 
@@ -295,9 +296,13 @@ class DailyBarService:
     ) -> tuple[int, list[str]]:
         """Fetch daily bars via data-service and upsert to DB.
 
-        Two-phase approach:
-        1. HTTP fetch phase — parallel with asyncio.gather + semaphore
-        2. DB upsert phase — sequential to avoid concurrent AsyncSession access
+        Windowed approach to bound peak memory:
+        - Process batches in groups of _YF_WINDOW_SIZE (20).
+        - Within each window: parallel HTTP fetch (semaphore-bounded).
+        - After each window: sequential DB upsert + commit, then free responses.
+
+        This prevents accumulating ALL batch responses in memory at once,
+        which caused OOM kills for US market (~12K symbols, 261 batches).
         """
         from collections import defaultdict
         from app.services.data_service_client import get_data_service_client
@@ -337,78 +342,84 @@ class DailyBarService:
             len(batches), len(date_groups), total_symbols,
         )
 
-        # ── Phase 1: Parallel HTTP fetch ──────────────────────────────
         semaphore = asyncio.Semaphore(_YF_MAX_CONCURRENT_BATCHES)
-        # Each element: (batch_info, response_or_none)
-        fetch_results: list[tuple[Optional[str], list[tuple[str, Optional[date]]], Optional[dict]]] = []
+        symbols_done = up_to_date_count
+        symbols_with_data = 0
 
-        async def fetch_batch(
+        async def fetch_one(
             start_str: Optional[str],
             batch: list[tuple[str, Optional[date]]],
-        ) -> tuple[Optional[str], list[tuple[str, Optional[date]]], Optional[dict]]:
+        ) -> Optional[dict]:
             async with semaphore:
                 try:
                     batch_request = [
                         {"symbol": sym, "start_date": start_str}
                         for sym, _ in batch
                     ]
-                    resp = await client.fetch_daily_bars_batch(batch_request, market)
-                    return (start_str, batch, resp)
+                    return await client.fetch_daily_bars_batch(batch_request, market)
                 except Exception as exc:
                     logger.error(
                         "Batch fetch failed (start=%s, size=%d): %s",
                         start_str, len(batch), exc,
                     )
                     errors.extend(f"{sym}: batch error - {exc}" for sym, _ in batch)
-                    return (start_str, batch, None)
+                    return None
 
-        fetch_results = await asyncio.gather(
-            *[fetch_batch(s, b) for s, b in batches]
-        )
+        # ── Process in windows of _YF_WINDOW_SIZE batches ─────────────
+        for win_start in range(0, len(batches), _YF_WINDOW_SIZE):
+            window = batches[win_start : win_start + _YF_WINDOW_SIZE]
 
-        # ── Phase 2: Sequential DB upsert ─────────────────────────────
-        symbols_done = up_to_date_count
-        symbols_with_data = 0
+            # Parallel HTTP fetch within this window
+            responses = await asyncio.gather(
+                *[fetch_one(s, b) for s, b in window]
+            )
 
-        for batch_idx, (start_str, batch, resp) in enumerate(fetch_results):
-            if resp and resp.get("results"):
-                for symbol, data in resp["results"].items():
-                    try:
-                        bars = data.get("bars") if isinstance(data, dict) else []
-                        source = data.get("source", "yfinance") if isinstance(data, dict) else "yfinance"
-                        count = await self._batch_upsert(
-                            db, symbol, market, source, bars,
-                        )
-                        total_inserted += count
-                    except Exception as exc:
-                        errors.append(f"{symbol}: upsert error - {exc}")
-                        logger.error("Upsert failed for %s: %s", symbol, exc)
+            # Sequential DB upsert for this window's results
+            for i, ((start_str, batch), resp) in enumerate(zip(window, responses)):
+                batch_idx = win_start + i
 
-                await db.commit()
-                symbols_with_data += len(resp["results"])
+                if resp and resp.get("results"):
+                    for symbol, data in resp["results"].items():
+                        try:
+                            bars = data.get("bars") if isinstance(data, dict) else []
+                            source = data.get("source", "yfinance") if isinstance(data, dict) else "yfinance"
+                            count = await self._batch_upsert(
+                                db, symbol, market, source, bars,
+                            )
+                            total_inserted += count
+                        except Exception as exc:
+                            errors.append(f"{symbol}: upsert error - {exc}")
+                            logger.error("Upsert failed for %s: %s", symbol, exc)
 
-            if resp and resp.get("errors"):
-                for sym, msg in resp["errors"].items():
-                    errors.append(f"{sym}: {msg}")
+                    await db.commit()
+                    symbols_with_data += len(resp["results"])
 
-            if resp is None:
-                errors.append(f"batch: data-service request failed (start={start_str}, size={len(batch)})")
+                if resp and resp.get("errors"):
+                    for sym, msg in resp["errors"].items():
+                        errors.append(f"{sym}: {msg}")
 
-            symbols_done += len(batch)
-            if (batch_idx + 1) % 20 == 0 or (batch_idx + 1) == len(fetch_results):
-                logger.info(
-                    "Upsert progress: %d/%d batches done, %d/%d symbols, "
-                    "%d inserted, %d errors",
-                    batch_idx + 1, len(fetch_results), symbols_done, len(symbols),
-                    total_inserted, len(errors),
-                )
-            if on_progress and (symbols_done % 500 == 0 or (batch_idx + 1) == len(fetch_results)):
+                if resp is None:
+                    errors.append(f"batch: data-service request failed (start={start_str}, size={len(batch)})")
+
+                symbols_done += len(batch)
+
+            # Log + progress update after each window
+            logger.info(
+                "Window %d-%d/%d done, %d/%d symbols, %d inserted, %d errors",
+                win_start + 1, min(win_start + _YF_WINDOW_SIZE, len(batches)),
+                len(batches), symbols_done, len(symbols),
+                total_inserted, len(errors),
+            )
+            if on_progress:
                 try:
                     await on_progress(
                         symbols_done, len(symbols), symbols_with_data, len(errors),
                     )
                 except Exception:
                     pass
+
+            # Explicitly discard references so GC can reclaim memory
+            del responses
 
         return total_inserted, errors
 

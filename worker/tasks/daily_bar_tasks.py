@@ -18,7 +18,7 @@ logger = logging.getLogger(__name__)
 
 # Redis progress key pattern for admin dashboard
 _PROGRESS_KEY_TEMPLATE = "kb:daily_bars:{market}:progress"
-_PROGRESS_TTL = 600  # 10 minutes — auto-expires if task crashes
+_PROGRESS_TTL = 3600  # 1 hour — auto-expires if task crashes without cleanup
 _LOCK_KEY_TEMPLATE = "kb:daily_bars:{market}:lock"
 _LOCK_TTL = 28800  # matches task time_limit — auto-releases if task crashes
 
