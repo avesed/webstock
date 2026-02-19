@@ -184,20 +184,21 @@ class AnthropicProvider(LLMProvider):
         ]
 
     def _build_api_kwargs(self, request: ChatRequest) -> Dict[str, Any]:
-        """Build kwargs for client.messages.create()."""
+        """Build kwargs for client.messages.create().
+
+        Only passes model, messages, max_tokens (API-required), system,
+        and tools.  temperature is NOT sent — proxy controls it.
+        """
         system_prompt, messages = self._convert_messages(request.messages)
 
         kwargs: Dict[str, Any] = {
             "model": request.model,
             "messages": messages,
-            "max_tokens": request.max_tokens or 4096,  # Required for Anthropic
+            "max_tokens": request.max_tokens or 4096,  # Required by Anthropic API
         }
 
         if system_prompt:
             kwargs["system"] = system_prompt
-
-        if request.temperature is not None:
-            kwargs["temperature"] = request.temperature
 
         if request.tools:
             kwargs["tools"] = self._convert_tools(request.tools)

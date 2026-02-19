@@ -26,10 +26,6 @@ logger = logging.getLogger(__name__)
 def get_langchain_model(
     model: str,
     *,
-    temperature: float = 0.7,
-    max_tokens: Optional[int] = None,
-    timeout: int = 120,
-    max_retries: int = 3,
     response_format: Optional[dict] = None,
     # DB-level config passthrough
     system_openai_api_key: Optional[str] = None,
@@ -41,8 +37,9 @@ def get_langchain_model(
 ) -> Union["ChatOpenAI", "ChatAnthropic"]:
     """Create a LangChain chat model for the given model name.
 
-    Detects provider from model name and creates the appropriate
-    LangChain wrapper with correct credentials.
+    Only passes model, credentials, and response_format.
+    temperature / max_tokens are NOT sent — the proxy (NewAPI/OneAPI)
+    controls these per-model settings.
 
     Returns:
         ChatOpenAI or ChatAnthropic instance
@@ -69,15 +66,10 @@ def get_langchain_model(
         kwargs: dict[str, Any] = {
             "model": model,
             "api_key": config.api_key,
-            "temperature": temperature,
-            "timeout": timeout,
-            "max_retries": max_retries,
-            "max_tokens": max_tokens or 4096,  # Required for Anthropic
+            "max_tokens": 4096,  # Required by Anthropic API
         }
         if config.base_url:
             kwargs["base_url"] = config.base_url
-        # Note: Claude does not support response_format (JSON mode)
-        # Prompt engineering is used instead
         logger.info("Creating LangChain ChatAnthropic: model=%s, base_url=%s", model, config.base_url or "default")
         return ChatAnthropic(**kwargs)
 
@@ -92,20 +84,14 @@ def get_langchain_model(
 
         kwargs = {
             "model": model,
-            "temperature": temperature,
-            "timeout": timeout,
-            "max_retries": max_retries,
             # Always use streaming internally — some OpenAI-compatible proxies
             # return SSE even for non-streaming requests, which breaks the SDK.
-            # With streaming=True, ainvoke() collects chunks transparently.
             "streaming": True,
         }
         if config.api_key:
             kwargs["api_key"] = config.api_key
         if config.base_url:
             kwargs["base_url"] = config.base_url
-        if max_tokens:
-            kwargs["max_tokens"] = max_tokens
         if response_format:
             kwargs["model_kwargs"] = {"response_format": response_format}
 
@@ -144,7 +130,6 @@ async def get_analysis_langchain_model(
 
     return get_langchain_model(
         model=resolved.model,
-        temperature=0.3,
         response_format=response_format,
         system_openai_api_key=resolved.api_key if resolved.provider_type == "openai" else None,
         system_openai_base_url=resolved.base_url if resolved.provider_type == "openai" else None,
@@ -173,8 +158,6 @@ async def get_synthesis_langchain_model(
 
     return get_langchain_model(
         model=resolved.model,
-        temperature=0.5,
-        max_tokens=4000,
         system_openai_api_key=resolved.api_key if resolved.provider_type == "openai" else None,
         system_openai_base_url=resolved.base_url if resolved.provider_type == "openai" else None,
         system_anthropic_api_key=resolved.api_key if resolved.provider_type == "anthropic" else None,

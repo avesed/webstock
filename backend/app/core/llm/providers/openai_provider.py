@@ -126,21 +126,14 @@ class OpenAIProvider(LLMProvider):
     def _build_api_kwargs(self, request: ChatRequest) -> Dict[str, Any]:
         """Build kwargs for client.chat.completions.create().
 
-        Passes parameters exactly as specified by the caller without
-        model-name-based heuristics.  In proxy environments (NewAPI/OneAPI)
-        model names are arbitrary aliases, so inferring capabilities from
-        the name is unreliable.
+        Only passes model, messages, tools, and response_format.
+        temperature / max_tokens are NOT sent — the proxy (NewAPI/OneAPI)
+        controls these per-model settings.
         """
         kwargs: Dict[str, Any] = {
             "model": request.model,
             "messages": self._convert_messages(request.messages),
         }
-
-        if request.max_tokens is not None:
-            kwargs["max_tokens"] = request.max_tokens
-
-        if request.temperature is not None:
-            kwargs["temperature"] = request.temperature
 
         # Tools
         if request.tools:
@@ -152,7 +145,7 @@ class OpenAIProvider(LLMProvider):
         if request.response_format:
             kwargs["response_format"] = request.response_format
 
-        # Timeout
+        # Timeout (client-side SDK parameter, not sent to API)
         kwargs["timeout"] = request.timeout
 
         return kwargs
