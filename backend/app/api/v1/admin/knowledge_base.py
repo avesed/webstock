@@ -933,6 +933,71 @@ async def unlock_daily_bars(
 
 
 # ---------------------------------------------------------------------------
+# POST /knowledge-base/daily-bars/{market}/sync-qlib
+# ---------------------------------------------------------------------------
+
+
+@router.post(
+    "/knowledge-base/daily-bars/{market}/sync-qlib",
+    summary="Trigger Qlib data sync for a market",
+    description="Trigger non-blocking Qlib .bin file sync for the specified market via qlib-service.",
+)
+async def sync_qlib(
+    market: str,
+    current_user: User = Depends(require_admin),
+) -> Dict[str, Any]:
+    """Trigger Qlib sync for a single market (non-blocking)."""
+
+    if market not in VALID_MARKETS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid market '{market}'. Must be one of: {', '.join(sorted(VALID_MARKETS))}",
+        )
+
+    logger.info("Admin %s triggered Qlib sync for market=%s", current_user.email, market)
+
+    try:
+        from app.services.qlib_client import get_qlib_client
+        client = await get_qlib_client()
+        result = await client.trigger_sync(market=market, update_only=True)
+        return result
+    except Exception as e:
+        from app.services.qlib_client import QlibServiceError
+        if isinstance(e, QlibServiceError) and e.status_code == 409:
+            raise HTTPException(
+                status_code=409,
+                detail=f"Qlib sync already running for market={market}",
+            )
+        logger.error("Failed to trigger Qlib sync for %s: %s", market, e, exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Failed to trigger Qlib sync: {e}")
+
+
+# ---------------------------------------------------------------------------
+# GET /knowledge-base/qlib-sync/progress
+# ---------------------------------------------------------------------------
+
+
+@router.get(
+    "/knowledge-base/qlib-sync/progress",
+    summary="Get Qlib sync progress",
+    description="Get current Qlib sync progress for all markets from qlib-service.",
+)
+async def get_qlib_sync_progress(
+    current_user: User = Depends(require_admin),
+) -> Dict[str, Any]:
+    """Get Qlib sync progress for all markets."""
+
+    try:
+        from app.services.qlib_client import get_qlib_client
+        client = await get_qlib_client()
+        return await client.get_sync_progress()
+    except Exception as e:
+        logger.error("Failed to get Qlib sync progress: %s", e, exc_info=True)
+        # Return empty progress on error rather than 500
+        return {"markets": {"us": None, "hk": None, "cn": None, "metal": None}}
+
+
+# ---------------------------------------------------------------------------
 # POST /knowledge-base/stock-profiles/{market}/collect
 # ---------------------------------------------------------------------------
 

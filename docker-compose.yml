@@ -289,7 +289,6 @@ services:
       - LOG_LEVEL=info
       - WEBSTOCK_BACKEND_URL=http://app:80
       - INTERNAL_API_TOKEN=${INTERNAL_API_TOKEN:-}
-      - QLIB_DATA_SOURCE=backend
     healthcheck:
       test: ["CMD", "curl", "-f", "http://127.0.0.1:8001/health"]
       interval: 30s

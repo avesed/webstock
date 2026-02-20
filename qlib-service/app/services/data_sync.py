@@ -1,11 +1,10 @@
 """Data synchronization service for Qlib .bin format.
 
-Provides market data download (yfinance for US/HK/metal, akshare for A-shares)
-and conversion to Qlib binary format. Designed to run in ProcessPoolExecutor
-via run_qlib_background().
+Fetches market data from the main backend's internal API (PostgreSQL daily bars)
+and converts to Qlib binary format. All data flows through the backend --
+there is no direct download from external providers.
 
-This service reuses the same download logic as scripts/seed_data.py but
-exposes it as a callable service with structured return values.
+Designed to run in ProcessPoolExecutor via run_qlib_background().
 """
 import json
 import logging
@@ -21,6 +20,7 @@ from app.config import get_settings
 from app.context import QlibContext
 from app.utils.bin_writer import (
     dataframe_to_bin,
+    read_calendar,
     update_calendar,
     update_instruments,
 )
@@ -28,12 +28,52 @@ from app.utils.symbol_mapping import webstock_to_qlib
 
 logger = logging.getLogger(__name__)
 
-METAL_SYMBOLS = ["GC=F", "SI=F", "PL=F", "PA=F"]
 
-# Rate limiting between batches / sequential downloads
-_BATCH_DELAY = 0.5
-_CN_DELAY = 0.3
-_CN_PROGRESS_INTERVAL = 100
+def _write_sync_progress(data_dir: str, market: str, info: dict) -> None:
+    """Write sync progress to a shared JSON file (IPC with main process)."""
+    progress_path = os.path.join(data_dir, "sync_progress.json")
+    try:
+        progress = {}
+        if os.path.exists(progress_path):
+            with open(progress_path) as f:
+                progress = json.load(f)
+        progress[market] = info
+        # Atomic write via temp file
+        tmp_path = progress_path + ".tmp"
+        with open(tmp_path, "w") as f:
+            json.dump(progress, f)
+        os.replace(tmp_path, progress_path)
+    except Exception as e:
+        logger.warning("Failed to write sync progress: %s", e)
+
+
+def _clear_sync_progress(data_dir: str, market: str) -> None:
+    """Clear progress for a market after completion or failure."""
+    progress_path = os.path.join(data_dir, "sync_progress.json")
+    try:
+        if not os.path.exists(progress_path):
+            return
+        with open(progress_path) as f:
+            progress = json.load(f)
+        progress.pop(market, None)
+        tmp_path = progress_path + ".tmp"
+        with open(tmp_path, "w") as f:
+            json.dump(progress, f)
+        os.replace(tmp_path, progress_path)
+    except Exception as e:
+        logger.warning("Failed to clear sync progress: %s", e)
+
+
+def get_sync_progress(data_dir: str) -> dict:
+    """Read current sync progress for all markets."""
+    progress_path = os.path.join(data_dir, "sync_progress.json")
+    if not os.path.exists(progress_path):
+        return {}
+    try:
+        with open(progress_path) as f:
+            return json.load(f)
+    except Exception:
+        return {}
 
 
 class DataSyncService:
@@ -52,6 +92,8 @@ class DataSyncService:
     ) -> Dict[str, Any]:
         """Synchronize market data to Qlib .bin format.
 
+        All data is fetched from the main backend's internal API.
+
         Args:
             market: Market code (us, hk, cn, metal).
             data_dir: Override base Qlib data directory.
@@ -60,73 +102,50 @@ class DataSyncService:
 
         Returns:
             Dict with keys: market, symbol_count, new_symbols, errors, duration_s.
+
+        Raises:
+            RuntimeError: If backend is unreachable or returns no data.
+            ValueError: If market code is invalid.
         """
         settings = get_settings()
         data_dir = data_dir or settings.QLIB_DATA_DIR
         os.makedirs(data_dir, exist_ok=True)
 
-        logger.info("Starting data sync for market=%s, update_only=%s", market, update_only)
-        start_time = time.monotonic()
+        valid_markets = {"us", "hk", "cn", "sh", "sz", "metal"}
+        if market not in valid_markets:
+            raise ValueError(
+                f"Unknown market: {market}. Valid: {sorted(valid_markets)}"
+            )
 
         # Normalize cn/sh/sz to a common market key for backend API
-        backend_market = market
-        if market in ("sh", "sz"):
-            backend_market = "cn"
+        backend_market = market if market not in ("sh", "sz") else "cn"
 
-        # Try backend data source first if configured
-        data_source = os.environ.get("QLIB_DATA_SOURCE", "backend")
-        if data_source == "backend":
-            try:
-                result = DataSyncService._sync_from_backend(
-                    backend_market, data_dir, symbols, update_only,
-                )
-                # On success, skip direct download
-                elapsed = time.monotonic() - start_time
-                result["duration_s"] = round(elapsed, 2)
-                result["market"] = market
-                result["data_source"] = "backend"
-                DataSyncService._save_metadata(data_dir, market, result)
-                logger.info(
-                    "Data sync complete (backend) for market=%s: "
-                    "%d symbols, %d errors in %.1fs",
-                    market,
-                    result["symbol_count"],
-                    len(result.get("errors", [])),
-                    elapsed,
-                )
-                return result
-            except Exception as e:
-                logger.warning(
-                    "Backend sync failed for market=%s, falling back to direct: %s",
-                    market,
-                    e,
-                )
+        logger.info(
+            "Starting data sync for market=%s, update_only=%s", market, update_only
+        )
+        start_time = time.monotonic()
 
-        # Original direct sync logic
-        if market == "us":
-            result = DataSyncService._sync_us(data_dir, symbols, update_only)
-        elif market == "hk":
-            result = DataSyncService._sync_hk(data_dir, symbols, update_only)
-        elif market in ("cn", "sh", "sz"):
-            result = DataSyncService._sync_cn(data_dir, symbols, update_only)
-        elif market == "metal":
-            result = DataSyncService._sync_metal(data_dir, update_only)
-        else:
-            raise ValueError(
-                f"Unknown market: {market}. Valid: us, hk, cn, sh, sz, metal"
+        try:
+            result = DataSyncService._sync_from_backend(
+                backend_market, data_dir, symbols, update_only,
             )
+        except Exception:
+            _clear_sync_progress(data_dir, backend_market)
+            raise
+        # After success, clear progress
+        _clear_sync_progress(data_dir, backend_market)
 
         elapsed = time.monotonic() - start_time
         result["duration_s"] = round(elapsed, 2)
         result["market"] = market
-        result["data_source"] = "direct"
-
-        # Update sync metadata
         DataSyncService._save_metadata(data_dir, market, result)
 
         logger.info(
             "Data sync complete for market=%s: %d symbols, %d errors in %.1fs",
-            market, result["symbol_count"], len(result.get("errors", [])), elapsed,
+            market,
+            result["symbol_count"],
+            len(result.get("errors", [])),
+            elapsed,
         )
         return result
 
@@ -174,296 +193,6 @@ class DataSyncService:
         return markets
 
     # ------------------------------------------------------------------ #
-    # Private sync methods per market
-    # ------------------------------------------------------------------ #
-
-    @staticmethod
-    def _sync_us(
-        data_dir: str,
-        symbols: Optional[List[str]],
-        update_only: bool,
-    ) -> Dict[str, Any]:
-        """Sync US market data via yfinance."""
-        import yfinance as yf
-
-        market_dir = os.path.join(data_dir, "us_data")
-        os.makedirs(market_dir, exist_ok=True)
-
-        # Determine symbol list
-        if symbols is None:
-            symbols = DataSyncService._get_us_symbols()
-
-        start_date = DataSyncService._resolve_start_date(
-            market_dir, update_only, default="2000-01-01"
-        )
-
-        logger.info("Syncing %d US symbols from %s", len(symbols), start_date)
-
-        all_dates: Set[str] = set()
-        errors: List[str] = []
-        success_count = 0
-
-        # Batch download via yfinance
-        batch_size = 100
-        for i in range(0, len(symbols), batch_size):
-            batch = symbols[i : i + batch_size]
-            logger.info(
-                "  US batch %d/%d (%d symbols)",
-                i // batch_size + 1,
-                (len(symbols) + batch_size - 1) // batch_size,
-                len(batch),
-            )
-
-            try:
-                data = yf.download(
-                    batch,
-                    start=start_date,
-                    auto_adjust=True,
-                    group_by="ticker",
-                    threads=True,
-                )
-
-                for sym in batch:
-                    try:
-                        if len(batch) == 1:
-                            df = data
-                        else:
-                            df = data[sym].dropna(how="all")
-
-                        if df.empty:
-                            continue
-
-                        df.columns = [c.lower() for c in df.columns]
-                        if "adj close" in df.columns:
-                            df = df.drop(columns=["adj close"])
-
-                        qlib_sym = webstock_to_qlib(sym, "us")
-                        dates = [d.strftime("%Y-%m-%d") for d in df.index]
-                        all_dates.update(dates)
-
-                        if dataframe_to_bin(df, qlib_sym, market_dir):
-                            update_instruments(market_dir, qlib_sym, dates[0], dates[-1])
-                            success_count += 1
-                    except Exception as e:
-                        logger.warning("  Failed to process %s: %s", sym, e)
-                        errors.append(f"{sym}: {e}")
-            except Exception as e:
-                logger.error("  Batch download failed: %s", e)
-                errors.append(f"batch_{i}: {e}")
-
-            time.sleep(_BATCH_DELAY)
-
-        if all_dates:
-            update_calendar(market_dir, sorted(all_dates))
-
-        return {
-            "symbol_count": success_count,
-            "new_symbols": success_count,
-            "errors": errors,
-        }
-
-    @staticmethod
-    def _sync_hk(
-        data_dir: str,
-        symbols: Optional[List[str]],
-        update_only: bool,
-    ) -> Dict[str, Any]:
-        """Sync HK market data via yfinance."""
-        import yfinance as yf
-
-        market_dir = os.path.join(data_dir, "hk_data")
-        os.makedirs(market_dir, exist_ok=True)
-
-        if symbols is None:
-            symbols = [
-                "0700.HK", "9988.HK", "0005.HK", "1299.HK", "0941.HK",
-                "2318.HK", "0388.HK", "0027.HK", "1398.HK", "3690.HK",
-            ]
-
-        start_date = DataSyncService._resolve_start_date(
-            market_dir, update_only, default="2000-01-01"
-        )
-
-        logger.info("Syncing %d HK symbols from %s", len(symbols), start_date)
-
-        all_dates: Set[str] = set()
-        errors: List[str] = []
-        success_count = 0
-
-        for sym in symbols:
-            try:
-                ticker = yf.Ticker(sym)
-                df = ticker.history(start=start_date, auto_adjust=True)
-
-                if df.empty:
-                    continue
-
-                df.columns = [c.lower() for c in df.columns]
-                df = df[["open", "high", "low", "close", "volume"]]
-
-                qlib_sym = webstock_to_qlib(sym, "hk")
-                dates = [d.strftime("%Y-%m-%d") for d in df.index]
-                all_dates.update(dates)
-
-                if dataframe_to_bin(df, qlib_sym, market_dir):
-                    update_instruments(market_dir, qlib_sym, dates[0], dates[-1])
-                    success_count += 1
-            except Exception as e:
-                logger.warning("  Failed %s: %s", sym, e)
-                errors.append(f"{sym}: {e}")
-
-            time.sleep(_BATCH_DELAY)
-
-        if all_dates:
-            update_calendar(market_dir, sorted(all_dates))
-
-        return {
-            "symbol_count": success_count,
-            "new_symbols": success_count,
-            "errors": errors,
-        }
-
-    @staticmethod
-    def _sync_cn(
-        data_dir: str,
-        symbols: Optional[List[str]],
-        update_only: bool,
-    ) -> Dict[str, Any]:
-        """Sync A-share market data via akshare."""
-        import akshare as ak
-
-        market_dir = os.path.join(data_dir, "cn_data")
-        os.makedirs(market_dir, exist_ok=True)
-
-        if symbols is None:
-            try:
-                stock_list = ak.stock_zh_a_spot_em()
-                symbols = stock_list["\u4ee3\u7801"].tolist()
-            except Exception:
-                logger.warning("Could not fetch A-share list, using fallback")
-                symbols = ["600000", "000001", "600519", "000858"]
-
-        start_date = DataSyncService._resolve_start_date(
-            market_dir, update_only, default="20000101", date_format="%Y%m%d"
-        )
-
-        logger.info("Syncing %d A-share symbols from %s", len(symbols), start_date)
-
-        all_dates: Set[str] = set()
-        errors: List[str] = []
-        success_count = 0
-
-        for idx, sym in enumerate(symbols, 1):
-            try:
-                df = ak.stock_zh_a_hist(
-                    symbol=sym,
-                    period="daily",
-                    start_date=start_date,
-                    adjust="qfq",
-                )
-
-                if df is None or df.empty:
-                    continue
-
-                col_map = {
-                    "\u65e5\u671f": "date",
-                    "\u5f00\u76d8": "open",
-                    "\u6700\u9ad8": "high",
-                    "\u6700\u4f4e": "low",
-                    "\u6536\u76d8": "close",
-                    "\u6210\u4ea4\u91cf": "volume",
-                }
-                df = df.rename(columns=col_map)
-                df["date"] = pd.to_datetime(df["date"])
-                df = df.set_index("date")
-                df = df[["open", "high", "low", "close", "volume"]]
-
-                if sym.startswith(("6", "9")):
-                    qlib_sym = f"SH{sym}"
-                else:
-                    qlib_sym = f"SZ{sym}"
-
-                dates = [d.strftime("%Y-%m-%d") for d in df.index]
-                all_dates.update(dates)
-
-                if dataframe_to_bin(df, qlib_sym, market_dir):
-                    update_instruments(market_dir, qlib_sym, dates[0], dates[-1])
-                    success_count += 1
-
-            except Exception as e:
-                logger.warning("  Failed %s: %s", sym, e)
-                errors.append(f"{sym}: {e}")
-
-            if idx % _CN_PROGRESS_INTERVAL == 0:
-                logger.info(
-                    "  CN progress: %d/%d (success: %d)", idx, len(symbols), success_count
-                )
-
-            if idx % 10 == 0:
-                time.sleep(_CN_DELAY)
-
-        if all_dates:
-            update_calendar(market_dir, sorted(all_dates))
-
-        return {
-            "symbol_count": success_count,
-            "new_symbols": success_count,
-            "errors": errors,
-        }
-
-    @staticmethod
-    def _sync_metal(
-        data_dir: str,
-        update_only: bool,
-    ) -> Dict[str, Any]:
-        """Sync precious metals data via yfinance."""
-        import yfinance as yf
-
-        market_dir = os.path.join(data_dir, "metal_data")
-        os.makedirs(market_dir, exist_ok=True)
-
-        start_date = DataSyncService._resolve_start_date(
-            market_dir, update_only, default="2000-01-01"
-        )
-
-        logger.info("Syncing %d metal symbols from %s", len(METAL_SYMBOLS), start_date)
-
-        all_dates: Set[str] = set()
-        errors: List[str] = []
-        success_count = 0
-
-        for sym in METAL_SYMBOLS:
-            try:
-                ticker = yf.Ticker(sym)
-                df = ticker.history(start=start_date, auto_adjust=True)
-
-                if df.empty:
-                    continue
-
-                df.columns = [c.lower() for c in df.columns]
-                df = df[["open", "high", "low", "close", "volume"]]
-
-                qlib_sym = webstock_to_qlib(sym, "metal")
-                dates = [d.strftime("%Y-%m-%d") for d in df.index]
-                all_dates.update(dates)
-
-                if dataframe_to_bin(df, qlib_sym, market_dir):
-                    update_instruments(market_dir, qlib_sym, dates[0], dates[-1])
-                    success_count += 1
-            except Exception as e:
-                logger.warning("  Failed %s: %s", sym, e)
-                errors.append(f"{sym}: {e}")
-
-        if all_dates:
-            update_calendar(market_dir, sorted(all_dates))
-
-        return {
-            "symbol_count": success_count,
-            "new_symbols": success_count,
-            "errors": errors,
-        }
-
-    # ------------------------------------------------------------------ #
     # Backend data source sync
     # ------------------------------------------------------------------ #
 
@@ -476,8 +205,16 @@ class DataSyncService:
     ) -> Dict[str, Any]:
         """Sync market data from the main backend's internal API.
 
-        Uses BackendDataClient to fetch daily bars from PostgreSQL,
-        then converts to Qlib .bin format.
+        Two-phase approach to prevent .bin overwrites during incremental sync:
+          Phase 1: Collect all batch data into memory + accumulate new dates
+          Phase 2: Update calendar FIRST, then write .bin files with merge
+
+        IMPORTANT: This method is NOT safe for concurrent execution on the same
+        market. Calendar and .bin writes are not atomic across calls. Safety is
+        ensured by ProcessPoolExecutor(max_workers=1) in executor.py.
+
+        Raises:
+            RuntimeError: If backend returns no symbols or all batches fail.
         """
         from app.services.backend_client import get_backend_client
 
@@ -499,8 +236,8 @@ class DataSyncService:
         if symbols is None:
             symbols = client.get_symbols(market)
             if not symbols:
-                raise ValueError(
-                    f"No symbols returned from backend for market={market}"
+                raise RuntimeError(
+                    f"Backend returned empty symbol list for market={market}"
                 )
 
         # 2. Determine start_date for incremental sync
@@ -512,45 +249,62 @@ class DataSyncService:
 
         logger.info(
             "Syncing %d %s symbols from backend (start_date=%s)",
-            len(symbols),
-            market,
-            start_date,
+            len(symbols), market, start_date,
         )
 
-        # 3. Fetch in batches of 30
+        # -- Phase 1: Collect all data into memory --
+        phase1_start = time.monotonic()
+        sync_started_at = datetime.now().isoformat()
+        collected: Dict[str, pd.DataFrame] = {}
         all_dates: Set[str] = set()
         errors: List[str] = []
-        success_count = 0
         batch_size = 30
+        total_batches = (len(symbols) + batch_size - 1) // batch_size
+
+        # Write initial progress immediately to prevent duplicate triggers
+        _write_sync_progress(data_dir, market, {
+            "status": "syncing",
+            "phase": "collecting",
+            "current": 0,
+            "total": total_batches,
+            "percent": 0,
+            "started_at": sync_started_at,
+        })
 
         for i in range(0, len(symbols), batch_size):
             batch = symbols[i : i + batch_size]
+            batch_num = i // batch_size + 1
             logger.info(
                 "  Backend batch %d/%d (%d symbols)",
-                i // batch_size + 1,
-                (len(symbols) + batch_size - 1) // batch_size,
-                len(batch),
+                batch_num, total_batches, len(batch),
             )
 
-            data = client.get_history_batch(
-                symbols=batch,
-                market=market,
-                start_date=start_date,
-            )
+            try:
+                data = client.get_history_batch(
+                    symbols=batch,
+                    market=market,
+                    start_date=start_date,
+                )
+            except Exception as e:
+                msg = f"batch_{batch_num}: {e}"
+                errors.append(msg)
+                logger.warning("  Batch %d/%d failed: %s", batch_num, total_batches, e)
+                continue
 
             if not data:
-                msg = f"batch_{i}: empty response from backend"
+                msg = f"batch_{batch_num}: empty response from backend"
                 errors.append(msg)
                 logger.warning("  %s (market=%s)", msg, market)
                 continue
 
+            empty_syms = []
             for sym in batch:
                 sym_data = data.get(sym)
                 if not sym_data or not sym_data.get("dates"):
+                    empty_syms.append(sym)
                     continue
 
                 try:
-                    # Convert columnar format to DataFrame
                     df = pd.DataFrame(
                         {
                             "open": sym_data["open"],
@@ -563,29 +317,105 @@ class DataSyncService:
                     )
 
                     if df.empty:
+                        logger.debug("  %s: DataFrame empty after construction, skipping", sym)
                         continue
 
                     qlib_sym = webstock_to_qlib(sym, market)
                     dates = [d.strftime("%Y-%m-%d") for d in df.index]
                     all_dates.update(dates)
-
-                    if dataframe_to_bin(df, qlib_sym, market_dir):
-                        update_instruments(
-                            market_dir, qlib_sym, dates[0], dates[-1]
-                        )
-                        success_count += 1
+                    collected[qlib_sym] = df
                 except Exception as e:
                     logger.warning("  Failed to process %s: %s", sym, e)
                     errors.append(f"{sym}: {e}")
 
-            time.sleep(_BATCH_DELAY)
+            if empty_syms:
+                logger.debug(
+                    "  Batch %d/%d: %d symbols had no/empty data: %s",
+                    batch_num, total_batches, len(empty_syms), empty_syms[:10],
+                )
 
-        if all_dates:
-            update_calendar(market_dir, sorted(all_dates))
+            _write_sync_progress(data_dir, market, {
+                "status": "syncing",
+                "phase": "collecting",
+                "current": batch_num,
+                "total": total_batches,
+                "percent": round(batch_num / total_batches * 50),  # Phase 1 = 0-50%
+                "started_at": sync_started_at,
+            })
 
+        if not collected:
+            raise RuntimeError(
+                f"No data collected for market={market} "
+                f"(start_date={start_date}): "
+                f"{len(errors)} errors, 0 symbols succeeded. "
+                f"Errors: {errors[:5]}"
+            )
+
+        phase1_elapsed = time.monotonic() - phase1_start
         logger.info(
-            "Backend sync data prepared: market=%s, success=%d, errors=%d, dates=%d",
-            market, success_count, len(errors), len(all_dates),
+            "Phase 1 complete: market=%s, collected %d symbols, "
+            "%d new dates (%.1fs)",
+            market, len(collected), len(all_dates), phase1_elapsed,
+        )
+
+        # -- Phase 2: Update calendar, then write .bin files --
+        phase2_start = time.monotonic()
+
+        # 2a. Update calendar FIRST so .bin files can be aligned
+        logger.info(
+            "Phase 2: updating calendar with %d new dates for market=%s",
+            len(all_dates), market,
+        )
+        full_calendar: List[str] = []
+        if all_dates:
+            full_calendar = update_calendar(market_dir, sorted(all_dates))
+        else:
+            full_calendar = read_calendar(market_dir)
+        logger.info(
+            "Calendar updated: %d total dates for market=%s",
+            len(full_calendar), market,
+        )
+
+        # 2b. Write .bin files with merge for incremental sync
+        success_count = 0
+        use_merge = update_only and bool(full_calendar)
+        logger.info(
+            "Phase 2: writing .bin files for %d symbols "
+            "(merge=%s, calendar_size=%d)",
+            len(collected), use_merge, len(full_calendar),
+        )
+
+        for qlib_sym, df in collected.items():
+            try:
+                ok = dataframe_to_bin(
+                    df,
+                    qlib_sym,
+                    market_dir,
+                    calendar=full_calendar if full_calendar else None,
+                    merge=use_merge,
+                )
+                if ok:
+                    dates = sorted(d.strftime("%Y-%m-%d") for d in df.index)
+                    update_instruments(market_dir, qlib_sym, dates[0], dates[-1])
+                    success_count += 1
+                    if success_count % 100 == 0 or success_count == len(collected):
+                        _write_sync_progress(data_dir, market, {
+                            "status": "syncing",
+                            "phase": "writing",
+                            "current": success_count,
+                            "total": len(collected),
+                            "percent": 50 + round(success_count / len(collected) * 50),  # Phase 2 = 50-100%
+                            "started_at": sync_started_at,
+                        })
+            except Exception as e:
+                logger.warning("  Failed to write .bin for %s: %s", qlib_sym, e)
+                errors.append(f"{qlib_sym}: bin write error: {e}")
+
+        phase2_elapsed = time.monotonic() - phase2_start
+        logger.info(
+            "Phase 2 complete: market=%s, wrote %d/%d symbols, "
+            "%d errors (%.1fs)",
+            market, success_count, len(collected), len(errors), phase2_elapsed,
         )
 
         return {
@@ -597,22 +427,6 @@ class DataSyncService:
     # ------------------------------------------------------------------ #
     # Helper methods
     # ------------------------------------------------------------------ #
-
-    @staticmethod
-    def _get_us_symbols() -> List[str]:
-        """Fetch S&P 500 symbols, with fallback."""
-        try:
-            sp500 = pd.read_html(
-                "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies",
-                storage_options={"timeout": 15},
-            )[0]
-            return sp500["Symbol"].str.replace(".", "-").tolist()
-        except Exception as e:
-            logger.warning("Could not fetch S&P 500 list (%s), using fallback", e)
-            return [
-                "AAPL", "MSFT", "GOOGL", "AMZN", "META",
-                "NVDA", "TSLA", "JPM", "V", "WMT",
-            ]
 
     @staticmethod
     def _resolve_start_date(
@@ -691,8 +505,8 @@ class DataSyncService:
             try:
                 with open(meta_path) as f:
                     metadata = json.load(f)
-            except (json.JSONDecodeError, OSError):
-                pass
+            except (json.JSONDecodeError, OSError) as e:
+                logger.warning("Failed to read sync_metadata.json, starting fresh: %s", e)
 
         # Determine market data dir for date range
         subdir = QlibContext.REGION_TO_DATA_DIR.get(market, f"{market}_data")

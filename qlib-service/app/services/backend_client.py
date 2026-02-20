@@ -46,7 +46,7 @@ class BackendDataClient:
     def get_symbols(self, market: str) -> list[str]:
         """Fetch symbol list for a market from the main backend.
 
-        Returns empty list on failure (allows fallback to direct sync).
+        Raises RuntimeError on failure.
         """
         try:
             resp = self._client.get(f"/api/v1/internal/symbols/{market}")
@@ -59,9 +59,16 @@ class BackendDataClient:
                 market,
             )
             return symbols
+        except httpx.HTTPStatusError as e:
+            raise RuntimeError(
+                f"Backend returned HTTP {e.response.status_code} "
+                f"for symbols/{market}"
+            ) from e
         except Exception as e:
-            logger.warning("Failed to fetch symbols for market=%s: %s", market, e)
-            return []
+            raise RuntimeError(
+                f"Failed to fetch symbols for market={market}: "
+                f"[{type(e).__name__}] {e}"
+            ) from e
 
     def get_history_batch(
         self,
@@ -76,7 +83,7 @@ class BackendDataClient:
 
             {"AAPL": {"dates": [...], "open": [...], "high": [...], ...}}
 
-        Returns empty dict on failure.
+        Raises RuntimeError on failure.
         """
         payload: dict = {
             "symbols": symbols,
@@ -108,14 +115,16 @@ class BackendDataClient:
                     len(data), len(symbols), market, list(missing)[:10],
                 )
             return data
+        except httpx.HTTPStatusError as e:
+            raise RuntimeError(
+                f"Backend returned HTTP {e.response.status_code} "
+                f"for history batch ({len(symbols)} symbols, market={market})"
+            ) from e
         except Exception as e:
-            logger.warning(
-                "Failed to fetch history batch for %d symbols (market=%s): %s",
-                len(symbols),
-                market,
-                e,
-            )
-            return {}
+            raise RuntimeError(
+                f"Failed to fetch history batch for {len(symbols)} symbols "
+                f"(market={market}): [{type(e).__name__}] {e}"
+            ) from e
 
     def is_available(self) -> bool:
         """Check if the backend internal API is reachable."""
@@ -147,3 +156,11 @@ def get_backend_client() -> BackendDataClient:
     if _client is None:
         _client = BackendDataClient()
     return _client
+
+
+def reset_backend_client() -> None:
+    """Reset the singleton. Must be called after fork in child processes."""
+    global _client
+    if _client is not None:
+        _client.close()
+    _client = None

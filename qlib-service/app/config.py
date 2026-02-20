@@ -31,7 +31,6 @@ class Settings(BaseSettings):
     # Backend data source configuration
     WEBSTOCK_BACKEND_URL: str = "http://app:80"
     INTERNAL_API_TOKEN: str = ""
-    QLIB_DATA_SOURCE: str = "backend"  # "backend" | "direct"
 
 
 @lru_cache()

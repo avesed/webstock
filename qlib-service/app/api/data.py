@@ -4,14 +4,16 @@ Endpoints:
     POST /data/sync/{market} - Trigger market data sync (runs in ProcessPoolExecutor)
     GET  /data/status         - Get sync status for all markets
 """
+import asyncio
 import logging
 
 from fastapi import APIRouter, HTTPException, Query
 
 from app.config import get_settings
+from app.context import QlibContext
 from app.executor import run_qlib_background
 from app.models.schemas import SyncRequest, SyncStatusResponse
-from app.services.data_sync import DataSyncService
+from app.services.data_sync import DataSyncService, get_sync_progress
 
 logger = logging.getLogger(__name__)
 
@@ -52,6 +54,10 @@ async def sync_market(
             symbols=req.symbols,
             update_only=req.update_only,
         )
+        # Reset QlibContext so next factor/backtest request re-reads
+        # updated calendar + instruments from disk
+        QlibContext.reset()
+        logger.info("QlibContext reset after sync for market=%s", market)
         return result
     except TimeoutError:
         raise HTTPException(
@@ -85,3 +91,58 @@ async def get_data_status():
         raise HTTPException(
             status_code=500, detail=f"Failed to get sync status: {e}"
         )
+
+
+@router.post("/sync/{market}/trigger")
+async def trigger_sync(market: str, req: SyncRequest):
+    """Non-blocking sync trigger. Returns immediately, sync runs in background."""
+    valid_markets = {"us", "hk", "cn", "sh", "sz", "metal"}
+    if market not in valid_markets:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid market: {market}. Valid: {sorted(valid_markets)}",
+        )
+
+    # Check if already running via progress file
+    settings = get_settings()
+    progress = get_sync_progress(settings.QLIB_DATA_DIR)
+    if market in progress and progress[market].get("status") == "syncing":
+        raise HTTPException(
+            status_code=409,
+            detail=f"Sync already running for market={market}",
+        )
+
+    logger.info(
+        "POST /data/sync/%s/trigger update_only=%s",
+        market, req.update_only,
+    )
+
+    async def _run_sync():
+        try:
+            await run_qlib_background(
+                DataSyncService.sync_market,
+                market,
+                symbols=req.symbols,
+                update_only=req.update_only,
+            )
+            QlibContext.reset()
+            logger.info("Background sync complete for market=%s, QlibContext reset", market)
+        except Exception as e:
+            logger.error("Background sync failed for market=%s: %s", market, e, exc_info=True)
+            # Safety net: clear progress on crash to avoid permanently blocking this market
+            from app.services.data_sync import _clear_sync_progress
+            _clear_sync_progress(settings.QLIB_DATA_DIR, market)
+
+    asyncio.ensure_future(_run_sync())
+    return {"message": f"Sync started for market={market}", "status": "started"}
+
+
+@router.get("/sync/progress")
+async def get_progress():
+    """Get sync progress for all markets."""
+    settings = get_settings()
+    progress = get_sync_progress(settings.QLIB_DATA_DIR)
+    # Return null for markets with no active progress
+    all_markets = {"us", "hk", "cn", "metal"}
+    result = {m: progress.get(m) for m in all_markets}
+    return {"markets": result}

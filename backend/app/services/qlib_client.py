@@ -281,6 +281,30 @@ class QlibClient:
             timeout=httpx.Timeout(10.0, connect=5.0),
         )
 
+    # === Data Sync (non-blocking) ===
+
+    async def trigger_sync(
+        self,
+        market: str,
+        update_only: bool = True,
+    ) -> Dict[str, Any]:
+        """Trigger non-blocking data sync for a market."""
+        payload: Dict[str, Any] = {
+            "market": market,
+            "update_only": update_only,
+        }
+        return await self._request(
+            "POST", f"/data/sync/{market}/trigger", json=payload,
+            timeout=httpx.Timeout(10.0, connect=5.0),
+        )
+
+    async def get_sync_progress(self) -> Dict[str, Any]:
+        """Get sync progress for all markets."""
+        return await self._request(
+            "GET", "/data/sync/progress",
+            timeout=httpx.Timeout(10.0, connect=5.0),
+        )
+
 
 async def get_qlib_client() -> "QlibClient":
     """Get the singleton QlibClient instance (async-safe)."""

@@ -1,6 +1,20 @@
-"""Initial EOD data download and conversion to Qlib .bin format.
+"""[DEPRECATED] Initial EOD data download and conversion to Qlib .bin format.
 
-Usage:
+DEPRECATED: This script directly downloads from yfinance/akshare, which are no
+longer installed in the qlib-service Docker image. All data now flows through the
+backend's internal API via DataSyncService. Use the backend sync pipeline instead:
+
+    # Trigger sync via API:
+    POST /data/sync/{market}  {"update_only": false}
+
+    # Or via Celery task:
+    sync_qlib_market.delay(market="us")
+
+If you still need this script for local development or debugging, install the
+required packages manually:
+    pip install yfinance akshare
+
+Original usage:
     python -m scripts.seed_data --market us     # US stocks via yfinance
     python -m scripts.seed_data --market hk     # HK stocks via yfinance
     python -m scripts.seed_data --market cn     # A-shares via akshare

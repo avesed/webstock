@@ -1214,7 +1214,7 @@ async def _analyze_news_async(news_id: str) -> Dict[str, Any]:
 
     from app.config import settings
     from app.models.news import News
-    from app.agents.prompts.news_prompt import (
+    from app.prompts.analysis.news_prompt import (
         build_news_analysis_prompt,
         get_news_analysis_system_prompt,
     )

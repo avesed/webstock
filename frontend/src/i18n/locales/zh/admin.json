@@ -516,6 +516,9 @@
     "queued": "排队中",
     "unlock": "解锁",
     "unlockConfirm": "这将终止{{market}}正在运行的任务并释放锁。确定继续？",
+    "syncQlib": "同步Qlib",
+    "syncQlibPhase1": "采集中 {{current}}/{{total}}",
+    "syncQlibPhase2": "写入中 {{current}}/{{total}}",
     "actionSuccess": "操作成功",
     "error": "操作失败",
 

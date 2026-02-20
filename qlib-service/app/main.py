@@ -5,7 +5,7 @@ This microservice wraps Microsoft Qlib for quantitative data processing:
 - Alpha158/360 factor computation
 - Factor analysis (IC, cross-sectional ranking, industry neutralization)
 - Backtesting (TopK/Dropout, signal-based, long-short strategies)
-- EOD data sync (yfinance for US/HK, akshare for A-shares)
+- EOD data sync (via backend internal API)
 
 Architecture:
 - Single uvicorn worker (Qlib global state not safe for multi-process)

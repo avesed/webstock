@@ -516,6 +516,9 @@
     "queued": "Queued",
     "unlock": "Unlock",
     "unlockConfirm": "This will terminate the running task for {{market}} and release the lock. Continue?",
+    "syncQlib": "Sync Qlib",
+    "syncQlibPhase1": "Collecting {{current}}/{{total}}",
+    "syncQlibPhase2": "Writing {{current}}/{{total}}",
     "actionSuccess": "Action completed successfully",
     "error": "Action failed",
 

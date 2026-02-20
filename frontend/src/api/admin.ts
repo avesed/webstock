@@ -472,6 +472,20 @@ export const adminApi = {
     return response.data
   },
 
+  syncQlib: async (market: string): Promise<{ message: string; status: string }> => {
+    const response = await apiClient.post<{ message: string; status: string }>(
+      `/admin/knowledge-base/daily-bars/${market}/sync-qlib`
+    )
+    return response.data
+  },
+
+  getQlibSyncProgress: async (): Promise<{ markets: Record<string, QlibSyncProgress | null> }> => {
+    const response = await apiClient.get<{ markets: Record<string, QlibSyncProgress | null> }>(
+      '/admin/knowledge-base/qlib-sync/progress'
+    )
+    return response.data
+  },
+
   collectStockProfiles: async (market: string): Promise<{ message: string; taskId: string }> => {
     const response = await apiClient.post<{ message: string; taskId: string }>(
       `/admin/knowledge-base/stock-profiles/${market}/collect`
@@ -804,6 +818,15 @@ interface KBMarketLock {
   locked?: boolean
   queued?: boolean
   ttlSeconds?: number
+}
+
+export interface QlibSyncProgress {
+  status: string
+  phase: string
+  current: number
+  total: number
+  percent: number
+  started_at: string
 }
 
 export interface KnowledgeBaseStatsResponse {

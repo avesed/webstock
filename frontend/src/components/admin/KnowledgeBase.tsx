@@ -3,7 +3,7 @@ import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useTranslation } from 'react-i18next'
 import { Database, Newspaper, FileText, BookOpen, BarChart3, Loader2, RefreshCw, AlertCircle, AlertTriangle, Unlock, List } from 'lucide-react'
 
-import { adminApi, type KnowledgeBaseStatsResponse } from '@/api/admin'
+import { adminApi, type KnowledgeBaseStatsResponse, type QlibSyncProgress } from '@/api/admin'
 import { getErrorMessage } from '@/api/client'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
@@ -405,12 +405,14 @@ function DailyBarsCard({
   dailyBars,
   progress,
   locks,
+  qlibProgress,
   actionLoading,
   onAction,
 }: {
   dailyBars: KnowledgeBaseStats['dailyBars'] | undefined
   progress: KnowledgeBaseStats['progress']['dailyBars'] | undefined
   locks: KnowledgeBaseStats['locks'] | undefined
+  qlibProgress: Record<string, QlibSyncProgress | null> | undefined
   actionLoading: string | null
   onAction: (key: string, action: () => Promise<unknown>, confirmMsg?: string) => void
 }) {
@@ -531,6 +533,22 @@ function DailyBarsCard({
                         <Button
                           size="sm"
                           variant="ghost"
+                          className="h-7 px-2 text-xs"
+                          disabled={actionLoading !== null || qlibProgress?.[market]?.status === 'syncing'}
+                          onClick={() =>
+                            onAction(`sync-qlib-${market}`, () => adminApi.syncQlib(market))
+                          }
+                        >
+                          {actionLoading === `sync-qlib-${market}` || qlibProgress?.[market]?.status === 'syncing' ? (
+                            <Loader2 className="h-3 w-3 animate-spin" />
+                          ) : (
+                            <RefreshCw className="h-3 w-3 mr-1" />
+                          )}
+                          {t('knowledge.syncQlib')}
+                        </Button>
+                        <Button
+                          size="sm"
+                          variant="ghost"
                           className="h-7 px-2 text-xs text-destructive hover:text-destructive"
                           disabled={actionLoading !== null}
                           onClick={() =>
@@ -585,6 +603,16 @@ function DailyBarsCard({
                   <ProgressBar
                     percent={prog.percent}
                     label={`${prog.symbolsDone}/${prog.symbolsTotal} (+${prog.newBars})`}
+                  />
+                )}
+
+                {qlibProgress?.[market] && (
+                  <ProgressBar
+                    percent={qlibProgress[market]!.percent}
+                    label={td(t, qlibProgress[market]!.phase === 'collecting' ? 'knowledge.syncQlibPhase1' : 'knowledge.syncQlibPhase2', {
+                      current: qlibProgress[market]!.current,
+                      total: qlibProgress[market]!.total,
+                    })}
                   />
                 )}
               </div>
@@ -691,6 +719,19 @@ export default function KnowledgeBase() {
     },
   })
 
+  // Qlib sync progress polling
+  const { data: qlibProgress } = useQuery({
+    queryKey: ['admin', 'qlib-sync-progress'],
+    queryFn: () => adminApi.getQlibSyncProgress(),
+    refetchInterval: (query) => {
+      if (Date.now() < fastPollUntilRef.current) return 3000
+      // Check if any market has active progress
+      const markets = query.state.data?.markets
+      const hasActive = markets && Object.values(markets).some((v) => v != null)
+      return hasActive ? 3000 : 30000
+    },
+  })
+
   const [actionLoading, setActionLoading] = useState<string | null>(null)
 
   const handleAction = useCallback(async (
@@ -707,8 +748,9 @@ export default function KnowledgeBase() {
       })
       // Temporarily speed up polling to catch Redis progress quickly
       fastPollUntilRef.current = Date.now() + FAST_POLL_DURATION_MS
-      // Invalidate to refresh stats
+      // Invalidate to refresh stats + qlib progress
       void queryClient.invalidateQueries({ queryKey: ['admin', 'knowledge-base-stats'] })
+      void queryClient.invalidateQueries({ queryKey: ['admin', 'qlib-sync-progress'] })
     } catch (error) {
       toast({
         title: t('knowledge.error'),
@@ -893,6 +935,7 @@ export default function KnowledgeBase() {
         dailyBars={stats?.dailyBars}
         progress={progress?.dailyBars}
         locks={stats?.locks}
+        qlibProgress={qlibProgress?.markets}
         actionLoading={actionLoading}
         onAction={handleAction}
       />
