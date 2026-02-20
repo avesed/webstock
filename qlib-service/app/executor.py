@@ -26,7 +26,7 @@ T = TypeVar("T")
 
 # Default timeouts (seconds)
 QUICK_TIMEOUT = 60  # Expression/factor queries
-BACKGROUND_TIMEOUT = 1800  # Backtests/data sync (30 min)
+BACKGROUND_TIMEOUT = 7200  # Backtests/data sync (2 hours, full US rebuild ~80 min)
 
 # Quick path: expression/factor queries, serialized in one thread (<15s)
 _thread_executor = ThreadPoolExecutor(

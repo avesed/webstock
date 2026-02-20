@@ -292,9 +292,7 @@ class DataSyncService:
                 continue
 
             if not data:
-                msg = f"batch_{batch_num}: empty response from backend"
-                errors.append(msg)
-                logger.warning("  %s (market=%s)", msg, market)
+                logger.debug("  Batch %d/%d: no data for date range (market=%s)", batch_num, total_batches, market)
                 continue
 
             empty_syms = []
@@ -344,12 +342,25 @@ class DataSyncService:
             })
 
         if not collected:
-            raise RuntimeError(
-                f"No data collected for market={market} "
-                f"(start_date={start_date}): "
-                f"{len(errors)} errors, 0 symbols succeeded. "
-                f"Errors: {errors[:5]}"
+            if errors:
+                raise RuntimeError(
+                    f"No data collected for market={market} "
+                    f"(start_date={start_date}): "
+                    f"{len(errors)} errors, 0 symbols succeeded. "
+                    f"Errors: {errors[:5]}"
+                )
+            # All batches returned empty — data is already up to date
+            logger.info(
+                "No new data for market=%s since %s — already up to date (%.1fs)",
+                market, start_date, time.monotonic() - phase1_start,
             )
+            _clear_sync_progress(data_dir, market)
+            return {
+                "symbol_count": 0,
+                "new_symbols": 0,
+                "errors": [],
+                "up_to_date": True,
+            }
 
         phase1_elapsed = time.monotonic() - phase1_start
         logger.info(
