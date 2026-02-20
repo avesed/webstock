@@ -115,6 +115,16 @@ export default function StockChart({
   const bbUpperRef = useRef<ISeriesApi<'Line'> | null>(null)
   const bbMiddleRef = useRef<ISeriesApi<'Line'> | null>(null)
   const bbLowerRef = useRef<ISeriesApi<'Line'> | null>(null)
+  // New indicator series refs
+  const atrSeriesRef = useRef<ISeriesApi<'Line'> | null>(null)
+  const obvSeriesRef = useRef<ISeriesApi<'Line'> | null>(null)
+  const kdjKRef = useRef<ISeriesApi<'Line'> | null>(null)
+  const kdjDRef = useRef<ISeriesApi<'Line'> | null>(null)
+  const kdjJRef = useRef<ISeriesApi<'Line'> | null>(null)
+  const wrSeriesRef = useRef<ISeriesApi<'Line'> | null>(null)
+  const cciSeriesRef = useRef<ISeriesApi<'Line'> | null>(null)
+  const vwapSeriesRef = useRef<ISeriesApi<'Line'> | null>(null)
+  const sarSeriesRef = useRef<ISeriesApi<'Line'> | null>(null)
   const { resolvedTheme } = useThemeStore()
   const [crosshairData, setCrosshairData] = useState<CrosshairData | null>(null)
 
@@ -326,6 +336,141 @@ export default function StockChart({
     bbLower.applyOptions({ visible: false })
     bbLowerRef.current = bbLower
 
+    // ATR series (sub-chart, like RSI)
+    const atrSeries = chart.addLineSeries({
+      color: colors.atrColor,
+      lineWidth: 2,
+      priceScaleId: 'atr',
+      lastValueVisible: false,
+      priceLineVisible: false,
+      crosshairMarkerVisible: false,
+    })
+    atrSeries.priceScale().applyOptions({
+      scaleMargins: { top: 0.8, bottom: 0 },
+      visible: false,
+    })
+    atrSeries.applyOptions({ visible: false })
+    atrSeriesRef.current = atrSeries
+
+    // OBV series (sub-chart)
+    const obvSeries = chart.addLineSeries({
+      color: colors.obvColor,
+      lineWidth: 2,
+      priceScaleId: 'obv',
+      lastValueVisible: false,
+      priceLineVisible: false,
+      crosshairMarkerVisible: false,
+    })
+    obvSeries.priceScale().applyOptions({
+      scaleMargins: { top: 0.8, bottom: 0 },
+      visible: false,
+    })
+    obvSeries.applyOptions({ visible: false })
+    obvSeriesRef.current = obvSeries
+
+    // KDJ series (sub-chart, 3 lines + reference lines)
+    const kdjK = chart.addLineSeries({
+      color: colors.kdjKColor,
+      lineWidth: 2,
+      priceScaleId: 'kdj',
+      lastValueVisible: false,
+      priceLineVisible: false,
+      crosshairMarkerVisible: false,
+    })
+    kdjK.priceScale().applyOptions({
+      scaleMargins: { top: 0.8, bottom: 0 },
+      visible: false,
+    })
+    kdjK.createPriceLine({ price: 80, color: 'rgba(239, 68, 68, 0.5)', lineWidth: 1, lineStyle: LineStyle.Dashed, axisLabelVisible: false })
+    kdjK.createPriceLine({ price: 20, color: 'rgba(34, 197, 94, 0.5)', lineWidth: 1, lineStyle: LineStyle.Dashed, axisLabelVisible: false })
+    kdjK.applyOptions({ visible: false })
+    kdjKRef.current = kdjK
+
+    const kdjD = chart.addLineSeries({
+      color: colors.kdjDColor,
+      lineWidth: 2,
+      priceScaleId: 'kdj',
+      lastValueVisible: false,
+      priceLineVisible: false,
+      crosshairMarkerVisible: false,
+    })
+    kdjD.applyOptions({ visible: false })
+    kdjDRef.current = kdjD
+
+    const kdjJ = chart.addLineSeries({
+      color: colors.kdjJColor,
+      lineWidth: 2,
+      priceScaleId: 'kdj',
+      lastValueVisible: false,
+      priceLineVisible: false,
+      crosshairMarkerVisible: false,
+    })
+    kdjJ.applyOptions({ visible: false })
+    kdjJRef.current = kdjJ
+
+    // Williams %R series (sub-chart)
+    const wrSeries = chart.addLineSeries({
+      color: colors.wrColor,
+      lineWidth: 2,
+      priceScaleId: 'wr',
+      lastValueVisible: false,
+      priceLineVisible: false,
+      crosshairMarkerVisible: false,
+    })
+    wrSeries.priceScale().applyOptions({
+      scaleMargins: { top: 0.8, bottom: 0 },
+      visible: false,
+    })
+    wrSeries.createPriceLine({ price: -20, color: 'rgba(239, 68, 68, 0.5)', lineWidth: 1, lineStyle: LineStyle.Dashed, axisLabelVisible: false })
+    wrSeries.createPriceLine({ price: -80, color: 'rgba(34, 197, 94, 0.5)', lineWidth: 1, lineStyle: LineStyle.Dashed, axisLabelVisible: false })
+    wrSeries.applyOptions({ visible: false })
+    wrSeriesRef.current = wrSeries
+
+    // CCI series (sub-chart)
+    const cciSeries = chart.addLineSeries({
+      color: colors.cciColor,
+      lineWidth: 2,
+      priceScaleId: 'cci',
+      lastValueVisible: false,
+      priceLineVisible: false,
+      crosshairMarkerVisible: false,
+    })
+    cciSeries.priceScale().applyOptions({
+      scaleMargins: { top: 0.8, bottom: 0 },
+      visible: false,
+    })
+    cciSeries.createPriceLine({ price: 100, color: 'rgba(239, 68, 68, 0.5)', lineWidth: 1, lineStyle: LineStyle.Dashed, axisLabelVisible: false })
+    cciSeries.createPriceLine({ price: -100, color: 'rgba(34, 197, 94, 0.5)', lineWidth: 1, lineStyle: LineStyle.Dashed, axisLabelVisible: false })
+    cciSeries.applyOptions({ visible: false })
+    cciSeriesRef.current = cciSeries
+
+    // VWAP series (overlay on main chart, dashed line)
+    const vwapSeries = chart.addLineSeries({
+      color: colors.vwapColor,
+      lineWidth: 2,
+      lineStyle: LineStyle.Dashed,
+      lastValueVisible: false,
+      priceLineVisible: false,
+      crosshairMarkerVisible: false,
+    })
+    vwapSeries.applyOptions({ visible: false })
+    vwapSeriesRef.current = vwapSeries
+
+    // SAR series (overlay on main chart, dot markers)
+    // Use lineWidth: 1 with lineVisible: false to show only point markers
+    const sarSeries = chart.addLineSeries({
+      color: colors.sarColor,
+      lineWidth: 1,
+      lineVisible: false,
+      lastValueVisible: false,
+      priceLineVisible: false,
+      crosshairMarkerVisible: false,
+      pointMarkersVisible: true,
+      pointMarkersRadius: 2,
+    })
+    sarSeries.applyOptions({ visible: false })
+    sarSeriesRef.current = sarSeries
+
     chartRef.current = chart
     candlestickSeriesRef.current = candlestickSeries
     volumeSeriesRef.current = volumeSeries
@@ -393,6 +538,15 @@ export default function StockChart({
       bbUpperRef.current = null
       bbMiddleRef.current = null
       bbLowerRef.current = null
+      atrSeriesRef.current = null
+      obvSeriesRef.current = null
+      kdjKRef.current = null
+      kdjDRef.current = null
+      kdjJRef.current = null
+      wrSeriesRef.current = null
+      cciSeriesRef.current = null
+      vwapSeriesRef.current = null
+      sarSeriesRef.current = null
     }
   }, [height, resolvedTheme])
 
@@ -486,6 +640,13 @@ export default function StockChart({
     const showRSI = !!activeIndicators?.includes('RSI')
     const showMACD = !!activeIndicators?.includes('MACD')
     const showBB = !!activeIndicators?.includes('BB')
+    const showATR = !!activeIndicators?.includes('ATR')
+    const showOBV = !!activeIndicators?.includes('OBV')
+    const showKDJ = !!activeIndicators?.includes('KDJ')
+    const showWR = !!activeIndicators?.includes('WR')
+    const showCCI = !!activeIndicators?.includes('CCI')
+    const showVWAP = !!activeIndicators?.includes('VWAP')
+    const showSAR = !!activeIndicators?.includes('SAR')
 
     // Helper to convert indicator time format to chart time format
     const toChartTime = (point: { time: string | number }) => point.time as Time
@@ -603,24 +764,148 @@ export default function StockChart({
       }
     }
 
+    // --- ATR ---
+    if (atrSeriesRef.current) {
+      const hasATR = showATR && !!indicatorData?.atr?.series?.length
+      atrSeriesRef.current.applyOptions({ visible: hasATR })
+      atrSeriesRef.current.priceScale().applyOptions({ visible: hasATR })
+      if (hasATR) {
+        atrSeriesRef.current.setData(
+          indicatorData!.atr!.series.map(p => ({ time: toChartTime(p), value: p.value }))
+        )
+      } else {
+        atrSeriesRef.current.setData([])
+      }
+    }
+
+    // --- OBV ---
+    if (obvSeriesRef.current) {
+      const hasOBV = showOBV && !!indicatorData?.obv?.series?.length
+      obvSeriesRef.current.applyOptions({ visible: hasOBV })
+      obvSeriesRef.current.priceScale().applyOptions({ visible: hasOBV })
+      if (hasOBV) {
+        obvSeriesRef.current.setData(
+          indicatorData!.obv!.series.map(p => ({ time: toChartTime(p), value: p.value }))
+        )
+      } else {
+        obvSeriesRef.current.setData([])
+      }
+    }
+
+    // --- KDJ ---
+    const hasKDJ = showKDJ && !!indicatorData?.kdj?.kLine?.length
+    if (kdjKRef.current) {
+      kdjKRef.current.applyOptions({ visible: hasKDJ })
+      kdjKRef.current.priceScale().applyOptions({ visible: hasKDJ })
+      if (hasKDJ) {
+        kdjKRef.current.setData(
+          indicatorData!.kdj!.kLine.map(p => ({ time: toChartTime(p), value: p.value }))
+        )
+      } else {
+        kdjKRef.current.setData([])
+      }
+    }
+    if (kdjDRef.current) {
+      kdjDRef.current.applyOptions({ visible: hasKDJ })
+      if (hasKDJ) {
+        kdjDRef.current.setData(
+          indicatorData!.kdj!.dLine.map(p => ({ time: toChartTime(p), value: p.value }))
+        )
+      } else {
+        kdjDRef.current.setData([])
+      }
+    }
+    if (kdjJRef.current) {
+      kdjJRef.current.applyOptions({ visible: hasKDJ })
+      if (hasKDJ) {
+        kdjJRef.current.setData(
+          indicatorData!.kdj!.jLine.map(p => ({ time: toChartTime(p), value: p.value }))
+        )
+      } else {
+        kdjJRef.current.setData([])
+      }
+    }
+
+    // --- Williams %R ---
+    if (wrSeriesRef.current) {
+      const hasWR = showWR && !!indicatorData?.williamsR?.series?.length
+      wrSeriesRef.current.applyOptions({ visible: hasWR })
+      wrSeriesRef.current.priceScale().applyOptions({ visible: hasWR })
+      if (hasWR) {
+        wrSeriesRef.current.setData(
+          indicatorData!.williamsR!.series.map(p => ({ time: toChartTime(p), value: p.value }))
+        )
+      } else {
+        wrSeriesRef.current.setData([])
+      }
+    }
+
+    // --- CCI ---
+    if (cciSeriesRef.current) {
+      const hasCCI = showCCI && !!indicatorData?.cci?.series?.length
+      cciSeriesRef.current.applyOptions({ visible: hasCCI })
+      cciSeriesRef.current.priceScale().applyOptions({ visible: hasCCI })
+      if (hasCCI) {
+        cciSeriesRef.current.setData(
+          indicatorData!.cci!.series.map(p => ({ time: toChartTime(p), value: p.value }))
+        )
+      } else {
+        cciSeriesRef.current.setData([])
+      }
+    }
+
+    // --- VWAP (overlay on main chart) ---
+    if (vwapSeriesRef.current) {
+      const hasVWAP = showVWAP && !!indicatorData?.vwap?.series?.length
+      vwapSeriesRef.current.applyOptions({ visible: hasVWAP })
+      if (hasVWAP) {
+        vwapSeriesRef.current.setData(
+          indicatorData!.vwap!.series.map(p => ({ time: toChartTime(p), value: p.value }))
+        )
+      } else {
+        vwapSeriesRef.current.setData([])
+      }
+    }
+
+    // --- SAR (overlay on main chart, dots) ---
+    if (sarSeriesRef.current) {
+      const hasSAR = showSAR && !!indicatorData?.sar?.series?.length
+      sarSeriesRef.current.applyOptions({ visible: hasSAR })
+      if (hasSAR) {
+        sarSeriesRef.current.setData(
+          indicatorData!.sar!.series.map(p => ({ time: toChartTime(p), value: p.value }))
+        )
+      } else {
+        sarSeriesRef.current.setData([])
+      }
+    }
+
     // --- Dynamic scale margins ---
-    const hasSubIndicator = (showRSI && !!indicatorData?.rsi?.series?.length) ||
-                             (showMACD && !!indicatorData?.macd?.macdLine?.length)
-    const bothSubIndicators = (showRSI && !!indicatorData?.rsi?.series?.length) &&
-                               (showMACD && !!indicatorData?.macd?.macdLine?.length)
+    // Count active sub-chart indicators (excludes VWAP and SAR which overlay on main chart)
+    let activeSubCount = 0
+    if (showRSI && !!indicatorData?.rsi?.series?.length) activeSubCount++
+    if (showMACD && !!indicatorData?.macd?.macdLine?.length) activeSubCount++
+    if (showATR && !!indicatorData?.atr?.series?.length) activeSubCount++
+    if (showOBV && !!indicatorData?.obv?.series?.length) activeSubCount++
+    if (showKDJ && !!indicatorData?.kdj?.kLine?.length) activeSubCount++
+    if (showWR && !!indicatorData?.williamsR?.series?.length) activeSubCount++
+    if (showCCI && !!indicatorData?.cci?.series?.length) activeSubCount++
 
     // Adjust main price scale bottom margin to make room for sub-indicators
-    const mainBottom = bothSubIndicators ? 0.45 : hasSubIndicator ? 0.35 : 0.3
+    // 0 sub-indicators: 0.3, 1: 0.35, 2: 0.45, 3+: 0.55 (capped)
+    const mainBottom = activeSubCount >= 3 ? 0.55 : activeSubCount === 2 ? 0.45 : activeSubCount === 1 ? 0.35 : 0.3
     chart.applyOptions({
       rightPriceScale: {
         scaleMargins: { top: 0.1, bottom: mainBottom },
       },
     })
 
-    // Adjust volume scale
+    // Adjust volume scale — volume bars sit just above the sub-indicator region.
+    // Constraint: top + bottom MUST be < 1.0 (lightweight-charts requirement).
+    // When no subs: volume fills bottom 15%. With subs: 10% band above sub region.
     if (volumeSeriesRef.current) {
-      const volTop = bothSubIndicators ? 0.55 : hasSubIndicator ? 0.65 : 0.8
-      const volBottom = bothSubIndicators ? 0.45 : hasSubIndicator ? 0.35 : 0
+      const volBottom = activeSubCount > 0 ? mainBottom : 0.05
+      const volTop = Math.min(1.0 - volBottom - 0.10, 0.8) // at least 10% height, cap at 0.8
       volumeSeriesRef.current.priceScale().applyOptions({
         scaleMargins: { top: volTop, bottom: volBottom },
       })
@@ -633,20 +918,49 @@ export default function StockChart({
       })
     }
 
-    // RSI scale
-    if (rsiSeriesRef.current && showRSI && indicatorData?.rsi?.series?.length) {
-      const rsiTop = bothSubIndicators ? 0.6 : 0.7
-      const rsiBottom = bothSubIndicators ? 0.25 : 0.05
-      rsiSeriesRef.current.priceScale().applyOptions({
-        scaleMargins: { top: rsiTop, bottom: rsiBottom },
-      })
-    }
+    // Distribute sub-chart indicators evenly in the bottom region
+    // Each sub-indicator gets an equal slice of the bottom area
+    if (activeSubCount > 0) {
+      const subRegionStart = 1.0 - mainBottom  // Where the sub region begins (from top)
+      const sliceHeight = mainBottom / activeSubCount
+      let sliceIndex = 0
 
-    // MACD scale
-    if (macdLineRef.current && showMACD && indicatorData?.macd?.macdLine?.length) {
-      macdLineRef.current.priceScale().applyOptions({
-        scaleMargins: { top: 0.85, bottom: 0 },
-      })
+      // Helper: position a sub-indicator in its allocated slice
+      const positionSubIndicator = (
+        series: ISeriesApi<'Line'> | ISeriesApi<'Histogram'> | null,
+        isActive: boolean
+      ) => {
+        if (!series || !isActive) return
+        const top = subRegionStart + sliceIndex * sliceHeight
+        const bottom = 1.0 - (subRegionStart + (sliceIndex + 1) * sliceHeight)
+        series.priceScale().applyOptions({
+          scaleMargins: { top: Math.min(top, 0.95), bottom: Math.max(bottom, 0) },
+        })
+        sliceIndex++
+      }
+
+      // Position each active sub-indicator in order
+      if (showRSI && !!indicatorData?.rsi?.series?.length) {
+        positionSubIndicator(rsiSeriesRef.current, true)
+      }
+      if (showMACD && !!indicatorData?.macd?.macdLine?.length) {
+        positionSubIndicator(macdLineRef.current, true)
+      }
+      if (showATR && !!indicatorData?.atr?.series?.length) {
+        positionSubIndicator(atrSeriesRef.current, true)
+      }
+      if (showOBV && !!indicatorData?.obv?.series?.length) {
+        positionSubIndicator(obvSeriesRef.current, true)
+      }
+      if (showKDJ && !!indicatorData?.kdj?.kLine?.length) {
+        positionSubIndicator(kdjKRef.current, true)
+      }
+      if (showWR && !!indicatorData?.williamsR?.series?.length) {
+        positionSubIndicator(wrSeriesRef.current, true)
+      }
+      if (showCCI && !!indicatorData?.cci?.series?.length) {
+        positionSubIndicator(cciSeriesRef.current, true)
+      }
     }
   }, [indicatorData, activeIndicators, data, resolvedTheme])
 
@@ -691,6 +1005,17 @@ export default function StockChart({
     // Update MACD colors
     if (macdLineRef.current) macdLineRef.current.applyOptions({ color: themeColors.macdLineColor })
     if (macdSignalRef.current) macdSignalRef.current.applyOptions({ color: themeColors.macdSignalColor })
+
+    // Update new indicator colors
+    if (atrSeriesRef.current) atrSeriesRef.current.applyOptions({ color: themeColors.atrColor })
+    if (obvSeriesRef.current) obvSeriesRef.current.applyOptions({ color: themeColors.obvColor })
+    if (kdjKRef.current) kdjKRef.current.applyOptions({ color: themeColors.kdjKColor })
+    if (kdjDRef.current) kdjDRef.current.applyOptions({ color: themeColors.kdjDColor })
+    if (kdjJRef.current) kdjJRef.current.applyOptions({ color: themeColors.kdjJColor })
+    if (wrSeriesRef.current) wrSeriesRef.current.applyOptions({ color: themeColors.wrColor })
+    if (cciSeriesRef.current) cciSeriesRef.current.applyOptions({ color: themeColors.cciColor })
+    if (vwapSeriesRef.current) vwapSeriesRef.current.applyOptions({ color: themeColors.vwapColor })
+    if (sarSeriesRef.current) sarSeriesRef.current.applyOptions({ color: themeColors.sarColor })
   }, [resolvedTheme])
 
   // Get the last data point for comparison (prefer latestBar for live updates)

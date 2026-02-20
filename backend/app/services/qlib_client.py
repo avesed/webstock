@@ -235,6 +235,59 @@ class QlibClient:
 
         return await self._request("POST", "/factors/cs-rank", json=payload)
 
+    # === Indicators ===
+
+    async def compute_indicators(
+        self,
+        bars: list[dict],
+        indicator_types: list[str],
+        *,
+        ma_periods: list[int] | None = None,
+        rsi_period: int = 14,
+        macd_fast: int = 12,
+        macd_slow: int = 26,
+        macd_signal: int = 9,
+        bb_period: int = 20,
+        bb_std: float = 2.0,
+        atr_period: int = 14,
+        kdj_k_period: int = 9,
+        kdj_d_period: int = 3,
+        williams_r_period: int = 14,
+        cci_period: int = 20,
+        sar_af_start: float = 0.02,
+        sar_af_step: float = 0.02,
+        sar_af_max: float = 0.2,
+        intraday: bool = False,
+    ) -> Dict[str, Any]:
+        """Compute technical indicators from OHLCV bars via qlib-service.
+
+        Returns dict with 'indicators' and 'warnings' keys.
+        """
+        payload: Dict[str, Any] = {
+            "bars": bars,
+            "indicator_types": indicator_types,
+            "ma_periods": ma_periods or [20, 50, 200],
+            "rsi_period": rsi_period,
+            "macd_fast": macd_fast,
+            "macd_slow": macd_slow,
+            "macd_signal": macd_signal,
+            "bb_period": bb_period,
+            "bb_std": bb_std,
+            "atr_period": atr_period,
+            "kdj_k_period": kdj_k_period,
+            "kdj_d_period": kdj_d_period,
+            "williams_r_period": williams_r_period,
+            "cci_period": cci_period,
+            "sar_af_start": sar_af_start,
+            "sar_af_step": sar_af_step,
+            "sar_af_max": sar_af_max,
+            "intraday": intraday,
+        }
+        return await self._request(
+            "POST", "/indicators/compute", json=payload,
+            timeout=httpx.Timeout(35.0, connect=10.0),
+        )
+
     # === Backtests ===
 
     async def create_backtest(self, config: Dict[str, Any]) -> Dict[str, Any]:

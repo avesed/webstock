@@ -93,6 +93,12 @@ class ValidationResultResponse(CamelModel):
 
 # === Factors ===
 
+class TopFactorItem(CamelModel):
+    name: str
+    value: float
+    z_score: float
+
+
 class FactorResultResponse(CamelModel):
     symbol: str
     market: str
@@ -101,14 +107,14 @@ class FactorResultResponse(CamelModel):
     factor_count: int = 0
     dates: List[str] = Field(default_factory=list)
     factors: Dict[str, List[Optional[float]]] = Field(default_factory=dict)
-    top_factors: List[Dict[str, Any]] = Field(default_factory=list)
+    top_factors: List[TopFactorItem] = Field(default_factory=list)
 
 
 class FactorSummaryResponse(CamelModel):
     symbol: str
     market: str
     latest_date: Optional[str] = None
-    top_factors: List[Dict[str, Any]] = Field(default_factory=list)
+    top_factors: List[TopFactorItem] = Field(default_factory=list)
     mode: str = "single"
 
 

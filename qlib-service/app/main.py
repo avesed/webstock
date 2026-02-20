@@ -22,6 +22,7 @@ from fastapi import FastAPI
 
 from app.config import get_settings
 from app.executor import shutdown_executors
+from app.api.indicators import shutdown_indicator_executor
 
 logger = logging.getLogger(__name__)
 settings = get_settings()
@@ -72,6 +73,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
     # Shutdown
     logger.info("Shutting down qlib-service...")
+    shutdown_indicator_executor()
     shutdown_executors()
     logger.info("qlib-service shut down")
 
@@ -89,9 +91,11 @@ from app.api.factors import router as factors_router
 from app.api.data import router as data_router
 from app.api.expression import router as expression_router
 from app.api.backtests import router as backtests_router
+from app.api.indicators import router as indicators_router
 
 app.include_router(health_router)
 app.include_router(factors_router)
 app.include_router(data_router)
 app.include_router(expression_router)
 app.include_router(backtests_router)
+app.include_router(indicators_router)

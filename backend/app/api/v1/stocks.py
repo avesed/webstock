@@ -13,16 +13,21 @@ from app.core.rate_limiter import rate_limit
 from app.core.security import get_current_user
 from app.models.user import User
 from app.schemas.stock import (
+    ATRIndicatorResponse,
     BatchQuoteRequest,
     BatchQuoteResponse,
     BollingerBandsResponse,
+    CCIIndicatorResponse,
     ErrorResponse,
     HistoryInterval,
     HistoryPeriod,
     IndicatorDataPoint,
+    KDJIndicatorResponse,
     MAIndicatorResponse,
     MACDIndicatorResponse,
     MarketType,
+    OBVIndicatorResponse,
+    SARIndicatorResponse,
     SearchResponse,
     SearchResultResponse,
     StockFinancialsResponse,
@@ -30,6 +35,8 @@ from app.schemas.stock import (
     StockInfoResponse,
     StockQuoteResponse,
     TechnicalIndicatorsResponse,
+    VWAPIndicatorResponse,
+    WilliamsRResponse,
 )
 from app.services.indicator_service import compute_indicator_series
 from app.services.canonical_cache_service import (
@@ -84,7 +91,7 @@ PERIOD_DAYS: Dict[str, int] = {
 }
 
 # Valid indicator type identifiers accepted via the `types` query parameter.
-VALID_INDICATOR_TYPES = {"sma", "ema", "rsi", "macd", "bb"}
+VALID_INDICATOR_TYPES = {"sma", "ema", "rsi", "macd", "bb", "atr", "obv", "kdj", "williams_r", "cci", "vwap", "sar"}
 
 # Intraday interval set for detection (indicators now supported for all intervals)
 INTRADAY_INTERVALS = {"1m", "2m", "5m", "15m", "30m", "1h"}
@@ -117,6 +124,13 @@ def _compute_min_warm_up_bars(
     parsed_ma_periods: List[int],
     rsi_period: int = 14,
     bb_period: int = 20,
+    atr_period: int = 14,
+    kdj_k_period: int = 9,
+    kdj_d_period: int = 3,
+    williams_r_period: int = 14,
+    cci_period: int = 20,
+    macd_slow: int = 26,
+    macd_signal: int = 9,
 ) -> int:
     """Compute the minimum bars needed for indicator warm-up across ALL indicator types."""
     ma_max = max(parsed_ma_periods) if parsed_ma_periods else 0
@@ -124,9 +138,20 @@ def _compute_min_warm_up_bars(
     if "rsi" in type_list:
         indicator_minimums.append(rsi_period + 1)
     if "macd" in type_list:
-        indicator_minimums.append(26 + 9)  # macd_slow + macd_signal defaults
+        indicator_minimums.append(macd_slow + macd_signal)
     if "bb" in type_list:
         indicator_minimums.append(bb_period)
+    if "atr" in type_list:
+        indicator_minimums.append(atr_period + 1)
+    if "kdj" in type_list:
+        indicator_minimums.append(kdj_k_period + kdj_d_period)
+    if "williams_r" in type_list:
+        indicator_minimums.append(williams_r_period + 1)
+    if "cci" in type_list:
+        indicator_minimums.append(cci_period + 1)
+    # obv, vwap, sar need minimal warm-up (2 bars)
+    if any(t in type_list for t in ("obv", "vwap", "sar")):
+        indicator_minimums.append(2)
     result = max(indicator_minimums) if indicator_minimums else 200
     return result if result > 0 else 200
 
@@ -151,6 +176,17 @@ async def _compute_indicators_for_symbol(
     rsi_period: int,
     bb_period: int,
     bb_std: float,
+    atr_period: int = 14,
+    kdj_k_period: int = 9,
+    kdj_d_period: int = 3,
+    williams_r_period: int = 14,
+    cci_period: int = 20,
+    macd_fast: int = 12,
+    macd_slow: int = 26,
+    macd_signal: int = 9,
+    sar_af_start: float = 0.02,
+    sar_af_step: float = 0.02,
+    sar_af_max: float = 0.2,
     start: Optional[str] = None,
     end: Optional[str] = None,
 ) -> TechnicalIndicatorsResponse:
@@ -208,7 +244,7 @@ async def _compute_indicators_for_symbol(
         # Start/end mode: extend start backwards for indicator warm-up
         original_start_str = start
         interval_mins = INTERVAL_MINUTES.get(interval.value, 1440)
-        max_period = _compute_min_warm_up_bars(type_list, parsed_ma_periods, rsi_period, bb_period)
+        max_period = _compute_min_warm_up_bars(type_list, parsed_ma_periods, rsi_period, bb_period, atr_period, kdj_k_period, kdj_d_period, williams_r_period, cci_period, macd_slow, macd_signal)
         # warm_up_bars * interval_minutes / minutes_per_day
         # Use 240 min (A-shares) for intraday to be conservative across all markets
         mins_per_day = 240 if is_intraday else (60 * 24)
@@ -254,7 +290,7 @@ async def _compute_indicators_for_symbol(
     else:
         # Period mode: try original period first to reuse history endpoint's cache,
         # then expand only if bars are insufficient for indicator warm-up.
-        max_period_val = _compute_min_warm_up_bars(type_list, parsed_ma_periods, rsi_period, bb_period)
+        max_period_val = _compute_min_warm_up_bars(type_list, parsed_ma_periods, rsi_period, bb_period, atr_period, kdj_k_period, kdj_d_period, williams_r_period, cci_period, macd_slow, macd_signal)
         min_bars_needed = max_period_val + 10  # warm-up + small buffer
 
         # Step 1: fetch with original period (same params_hash as history endpoint)
@@ -339,15 +375,25 @@ async def _compute_indicators_for_symbol(
         for bar in bars
     ]
 
-    # 5. Compute indicators on the full dataset
-    raw = await asyncio.to_thread(
-        compute_indicator_series,
+    # 5. Compute indicators via qlib-service
+    raw = await compute_indicator_series(
         bars=bar_dicts,
         indicator_types=type_list,
         ma_periods=parsed_ma_periods,
         rsi_period=rsi_period,
+        macd_fast=macd_fast,
+        macd_slow=macd_slow,
+        macd_signal=macd_signal,
         bb_period=bb_period,
         bb_std=bb_std,
+        atr_period=atr_period,
+        kdj_k_period=kdj_k_period,
+        kdj_d_period=kdj_d_period,
+        williams_r_period=williams_r_period,
+        cci_period=cci_period,
+        sar_af_start=sar_af_start,
+        sar_af_step=sar_af_step,
+        sar_af_max=sar_af_max,
         intraday=is_intraday,
     )
 
@@ -369,6 +415,13 @@ async def _compute_indicators_for_symbol(
     rsi_resp: Optional[MAIndicatorResponse] = None
     macd_resp: Optional[MACDIndicatorResponse] = None
     bb_resp: Optional[BollingerBandsResponse] = None
+    atr_resp: Optional[ATRIndicatorResponse] = None
+    obv_resp: Optional[OBVIndicatorResponse] = None
+    kdj_resp: Optional[KDJIndicatorResponse] = None
+    wr_resp: Optional[WilliamsRResponse] = None
+    cci_resp: Optional[CCIIndicatorResponse] = None
+    vwap_resp: Optional[VWAPIndicatorResponse] = None
+    sar_resp: Optional[SARIndicatorResponse] = None
     warnings: List[str] = raw.get("warnings", [])
 
     # Collect MA indicators (sma_* and ema_*)
@@ -418,6 +471,74 @@ async def _compute_indicators_for_symbol(
                 metadata=bb_data["metadata"],
             )
 
+    # ATR
+    if "atr" in raw and isinstance(raw["atr"], dict) and "series" in raw["atr"]:
+        trimmed = _trim_series(raw["atr"]["series"], cutoff_str)
+        if trimmed:
+            atr_resp = ATRIndicatorResponse(
+                series=[IndicatorDataPoint(**p) for p in trimmed],
+                metadata=raw["atr"]["metadata"],
+            )
+
+    # OBV
+    if "obv" in raw and isinstance(raw["obv"], dict) and "series" in raw["obv"]:
+        trimmed = _trim_series(raw["obv"]["series"], cutoff_str)
+        if trimmed:
+            obv_resp = OBVIndicatorResponse(
+                series=[IndicatorDataPoint(**p) for p in trimmed],
+                metadata=raw["obv"]["metadata"],
+            )
+
+    # KDJ
+    if "kdj" in raw and isinstance(raw["kdj"], dict) and "k_line" in raw["kdj"]:
+        kdj_data = raw["kdj"]
+        trimmed_k = _trim_series(kdj_data["k_line"], cutoff_str)
+        trimmed_d = _trim_series(kdj_data["d_line"], cutoff_str)
+        trimmed_j = _trim_series(kdj_data["j_line"], cutoff_str)
+        if trimmed_k and trimmed_d and trimmed_j:
+            kdj_resp = KDJIndicatorResponse(
+                k_line=[IndicatorDataPoint(**p) for p in trimmed_k],
+                d_line=[IndicatorDataPoint(**p) for p in trimmed_d],
+                j_line=[IndicatorDataPoint(**p) for p in trimmed_j],
+                metadata=kdj_data["metadata"],
+            )
+
+    # Williams %R
+    if "williams_r" in raw and isinstance(raw["williams_r"], dict) and "series" in raw["williams_r"]:
+        trimmed = _trim_series(raw["williams_r"]["series"], cutoff_str)
+        if trimmed:
+            wr_resp = WilliamsRResponse(
+                series=[IndicatorDataPoint(**p) for p in trimmed],
+                metadata=raw["williams_r"]["metadata"],
+            )
+
+    # CCI
+    if "cci" in raw and isinstance(raw["cci"], dict) and "series" in raw["cci"]:
+        trimmed = _trim_series(raw["cci"]["series"], cutoff_str)
+        if trimmed:
+            cci_resp = CCIIndicatorResponse(
+                series=[IndicatorDataPoint(**p) for p in trimmed],
+                metadata=raw["cci"]["metadata"],
+            )
+
+    # VWAP
+    if "vwap" in raw and isinstance(raw["vwap"], dict) and "series" in raw["vwap"]:
+        trimmed = _trim_series(raw["vwap"]["series"], cutoff_str)
+        if trimmed:
+            vwap_resp = VWAPIndicatorResponse(
+                series=[IndicatorDataPoint(**p) for p in trimmed],
+                metadata=raw["vwap"]["metadata"],
+            )
+
+    # SAR
+    if "sar" in raw and isinstance(raw["sar"], dict) and "series" in raw["sar"]:
+        trimmed = _trim_series(raw["sar"]["series"], cutoff_str)
+        if trimmed:
+            sar_resp = SARIndicatorResponse(
+                series=[IndicatorDataPoint(**p) for p in trimmed],
+                metadata=raw["sar"]["metadata"],
+            )
+
     elapsed_ms = (time.monotonic() - start_time) * 1000
     logger.info(
         "Indicator endpoint for %s completed in %.1fms (interval=%s, cutoff=%s, intraday=%s)",
@@ -431,6 +552,13 @@ async def _compute_indicators_for_symbol(
         rsi=rsi_resp,
         macd=macd_resp,
         bb=bb_resp,
+        atr=atr_resp,
+        obv=obv_resp,
+        kdj=kdj_resp,
+        williams_r=wr_resp,
+        cci=cci_resp,
+        vwap=vwap_resp,
+        sar=sar_resp,
         warnings=warnings,
     )
 
@@ -669,13 +797,14 @@ async def get_stock_financials_query(
     },
     summary="Get technical indicators (query param)",
     description=(
-        "Compute technical indicators (SMA, EMA, RSI, MACD, Bollinger Bands) "
-        "for a stock. Use this endpoint for symbols with special characters (e.g., GC=F)."
+        "Compute technical indicators (SMA, EMA, RSI, MACD, Bollinger Bands, ATR, OBV, KDJ, "
+        "Williams %R, CCI, VWAP, SAR) for a stock. Use this endpoint for symbols with special "
+        "characters (e.g., GC=F)."
     ),
 )
 async def get_stock_indicators_query(
     symbol: str = Query(..., description="Stock symbol (e.g., AAPL, 0700.HK, GC=F)"),
-    types: str = Query("sma", description="Comma-separated: sma,ema,rsi,macd,bb"),
+    types: str = Query("sma", description="Comma-separated: sma,ema,rsi,macd,bb,atr,obv,kdj,williams_r,cci,vwap,sar"),
     period: HistoryPeriod = Query(
         HistoryPeriod.ONE_YEAR,
         description="Time period for the indicator display window",
@@ -691,6 +820,17 @@ async def get_stock_indicators_query(
     rsi_period: int = Query(14, ge=2, le=100, description="RSI period"),
     bb_period: int = Query(20, ge=2, le=100, description="Bollinger Bands period"),
     bb_std: float = Query(2.0, ge=0.5, le=5.0, description="Bollinger Bands std dev"),
+    atr_period: int = Query(14, ge=2, le=100, description="ATR period"),
+    kdj_k_period: int = Query(9, ge=2, le=100, description="KDJ %K period"),
+    kdj_d_period: int = Query(3, ge=2, le=100, description="KDJ %D smoothing period"),
+    williams_r_period: int = Query(14, ge=2, le=100, description="Williams %R period"),
+    cci_period: int = Query(20, ge=2, le=100, description="CCI period"),
+    macd_fast: int = Query(12, ge=2, le=100, description="MACD fast EMA period"),
+    macd_slow: int = Query(26, ge=2, le=200, description="MACD slow EMA period"),
+    macd_signal: int = Query(9, ge=2, le=100, description="MACD signal line period"),
+    sar_af_start: float = Query(0.02, ge=0.001, le=0.5, description="SAR acceleration factor start"),
+    sar_af_step: float = Query(0.02, ge=0.001, le=0.5, description="SAR acceleration factor step"),
+    sar_af_max: float = Query(0.2, ge=0.01, le=1.0, description="SAR acceleration factor max"),
     start: Optional[str] = Query(None, description="Start date (e.g. 2025-03-01 or 2025-03-01T09:30:00)"),
     end: Optional[str] = Query(None, description="End date (e.g. 2025-03-15 or 2025-03-15T15:00:00)"),
     current_user: User = Depends(get_current_user),
@@ -709,6 +849,17 @@ async def get_stock_indicators_query(
         rsi_period=rsi_period,
         bb_period=bb_period,
         bb_std=bb_std,
+        atr_period=atr_period,
+        kdj_k_period=kdj_k_period,
+        kdj_d_period=kdj_d_period,
+        williams_r_period=williams_r_period,
+        cci_period=cci_period,
+        macd_fast=macd_fast,
+        macd_slow=macd_slow,
+        macd_signal=macd_signal,
+        sar_af_start=sar_af_start,
+        sar_af_step=sar_af_step,
+        sar_af_max=sar_af_max,
         start=start if start and end else None,
         end=end if start and end else None,
     )
@@ -1179,13 +1330,13 @@ async def get_batch_quotes(
     },
     summary="Get technical indicators",
     description=(
-        "Compute technical indicators (SMA, EMA, RSI, MACD, Bollinger Bands) "
-        "for a stock."
+        "Compute technical indicators (SMA, EMA, RSI, MACD, Bollinger Bands, ATR, OBV, KDJ, "
+        "Williams %R, CCI, VWAP, SAR) for a stock."
     ),
 )
 async def get_stock_indicators(
     symbol: str,
-    types: str = Query("sma", description="Comma-separated: sma,ema,rsi,macd,bb"),
+    types: str = Query("sma", description="Comma-separated: sma,ema,rsi,macd,bb,atr,obv,kdj,williams_r,cci,vwap,sar"),
     period: HistoryPeriod = Query(
         HistoryPeriod.ONE_YEAR,
         description="Time period for the indicator display window",
@@ -1201,6 +1352,17 @@ async def get_stock_indicators(
     rsi_period: int = Query(14, ge=2, le=100, description="RSI period"),
     bb_period: int = Query(20, ge=2, le=100, description="Bollinger Bands period"),
     bb_std: float = Query(2.0, ge=0.5, le=5.0, description="Bollinger Bands std dev"),
+    atr_period: int = Query(14, ge=2, le=100, description="ATR period"),
+    kdj_k_period: int = Query(9, ge=2, le=100, description="KDJ %K period"),
+    kdj_d_period: int = Query(3, ge=2, le=100, description="KDJ %D smoothing period"),
+    williams_r_period: int = Query(14, ge=2, le=100, description="Williams %R period"),
+    cci_period: int = Query(20, ge=2, le=100, description="CCI period"),
+    macd_fast: int = Query(12, ge=2, le=100, description="MACD fast EMA period"),
+    macd_slow: int = Query(26, ge=2, le=200, description="MACD slow EMA period"),
+    macd_signal: int = Query(9, ge=2, le=100, description="MACD signal line period"),
+    sar_af_start: float = Query(0.02, ge=0.001, le=0.5, description="SAR acceleration factor start"),
+    sar_af_step: float = Query(0.02, ge=0.001, le=0.5, description="SAR acceleration factor step"),
+    sar_af_max: float = Query(0.2, ge=0.01, le=1.0, description="SAR acceleration factor max"),
     start: Optional[str] = Query(None, description="Start date (e.g. 2025-03-01 or 2025-03-01T09:30:00)"),
     end: Optional[str] = Query(None, description="End date (e.g. 2025-03-15 or 2025-03-15T15:00:00)"),
     current_user: User = Depends(get_current_user),
@@ -1210,13 +1372,24 @@ async def get_stock_indicators(
     Get technical indicators for a stock.
 
     - **symbol**: Stock symbol (AAPL, 0700.HK, 600519.SS, 000001.SZ)
-    - **types**: Comma-separated indicator types: sma, ema, rsi, macd, bb
+    - **types**: Comma-separated indicator types: sma, ema, rsi, macd, bb, atr, obv, kdj, williams_r, cci, vwap, sar
     - **period**: Display window for results (1d, 5d, 1mo, 3mo, 6mo, 1y, 2y, 5y, max)
     - **interval**: Data interval (1m, 2m, 5m, 15m, 30m, 1h, 1d, 1wk, 1mo)
     - **ma_periods**: Comma-separated moving average periods (max 5, each 2-500)
     - **rsi_period**: RSI period (2-100, default 14)
     - **bb_period**: Bollinger Bands period (2-100, default 20)
     - **bb_std**: Bollinger Bands standard deviation (0.5-5.0, default 2.0)
+    - **atr_period**: ATR period (2-100, default 14)
+    - **kdj_k_period**: KDJ %K period (2-100, default 9)
+    - **kdj_d_period**: KDJ %D smoothing period (2-100, default 3)
+    - **williams_r_period**: Williams %R period (2-100, default 14)
+    - **cci_period**: CCI period (2-100, default 20)
+    - **macd_fast**: MACD fast EMA period (2-100, default 12)
+    - **macd_slow**: MACD slow EMA period (2-200, default 26)
+    - **macd_signal**: MACD signal line period (2-100, default 9)
+    - **sar_af_start**: SAR acceleration factor start (0.001-0.5, default 0.02)
+    - **sar_af_step**: SAR acceleration factor step (0.001-0.5, default 0.02)
+    - **sar_af_max**: SAR acceleration factor max (0.01-1.0, default 0.2)
     - **start**: Optional start date/datetime for indicator window
     - **end**: Optional end date/datetime for indicator window
 
@@ -1235,6 +1408,17 @@ async def get_stock_indicators(
         rsi_period=rsi_period,
         bb_period=bb_period,
         bb_std=bb_std,
+        atr_period=atr_period,
+        kdj_k_period=kdj_k_period,
+        kdj_d_period=kdj_d_period,
+        williams_r_period=williams_r_period,
+        cci_period=cci_period,
+        macd_fast=macd_fast,
+        macd_slow=macd_slow,
+        macd_signal=macd_signal,
+        sar_af_start=sar_af_start,
+        sar_af_step=sar_af_step,
+        sar_af_max=sar_af_max,
         start=start if start and end else None,
         end=end if start and end else None,
     )

@@ -28,7 +28,7 @@ interface ChartControlsProps {
 const INTRADAY_TIMEFRAMES: ChartTimeframe[] = ['1H', '1D', '1W']
 
 export type ChartInterval = '1m' | '2m' | '5m' | '15m' | '30m' | '1h' | '1d' | '1wk' | '1mo'
-export type ChartIndicator = 'MA' | 'RSI' | 'MACD' | 'BB' | 'VOL' | 'SENT'
+export type ChartIndicator = 'MA' | 'RSI' | 'MACD' | 'BB' | 'VOL' | 'SENT' | 'ATR' | 'OBV' | 'KDJ' | 'WR' | 'CCI' | 'VWAP' | 'SAR'
 
 const timeframes: { value: ChartTimeframe; label: string }[] = [
   { value: '1H', label: '1H' },
@@ -69,11 +69,18 @@ const VALID_INTERVALS: Record<ChartTimeframe, Set<ChartInterval>> = {
 }
 
 // i18n keys for each indicator (must be literal strings for type-safe i18n)
-export const indicatorDefs: { value: ChartIndicator; labelKey: 'stock.indicators.ma' | 'stock.indicators.rsi' | 'stock.indicators.macd' | 'stock.indicators.bb' | 'stock.indicators.volume' | 'stock.indicators.sentiment'; descKey: 'stock.indicators.maDesc' | 'stock.indicators.rsiDesc' | 'stock.indicators.macdDesc' | 'stock.indicators.bbDesc' | 'stock.indicators.volumeDesc' | 'stock.indicators.sentimentDesc'; implemented: boolean }[] = [
+export const indicatorDefs: { value: ChartIndicator; labelKey: string; descKey: string; implemented: boolean }[] = [
   { value: 'MA', labelKey: 'stock.indicators.ma', descKey: 'stock.indicators.maDesc', implemented: true },
   { value: 'RSI', labelKey: 'stock.indicators.rsi', descKey: 'stock.indicators.rsiDesc', implemented: true },
   { value: 'MACD', labelKey: 'stock.indicators.macd', descKey: 'stock.indicators.macdDesc', implemented: true },
   { value: 'BB', labelKey: 'stock.indicators.bb', descKey: 'stock.indicators.bbDesc', implemented: true },
+  { value: 'ATR', labelKey: 'stock.indicators.atr', descKey: 'stock.indicators.atrDesc', implemented: true },
+  { value: 'OBV', labelKey: 'stock.indicators.obv', descKey: 'stock.indicators.obvDesc', implemented: true },
+  { value: 'KDJ', labelKey: 'stock.indicators.kdj', descKey: 'stock.indicators.kdjDesc', implemented: true },
+  { value: 'WR', labelKey: 'stock.indicators.wr', descKey: 'stock.indicators.wrDesc', implemented: true },
+  { value: 'CCI', labelKey: 'stock.indicators.cci', descKey: 'stock.indicators.cciDesc', implemented: true },
+  { value: 'VWAP', labelKey: 'stock.indicators.vwap', descKey: 'stock.indicators.vwapDesc', implemented: true },
+  { value: 'SAR', labelKey: 'stock.indicators.sar', descKey: 'stock.indicators.sarDesc', implemented: true },
   { value: 'VOL', labelKey: 'stock.indicators.volume', descKey: 'stock.indicators.volumeDesc', implemented: true },
   { value: 'SENT', labelKey: 'stock.indicators.sentiment', descKey: 'stock.indicators.sentimentDesc', implemented: true },
 ]
@@ -208,11 +215,11 @@ export default function ChartControls({
                   </div>
                   <div className="flex flex-col">
                     <span className={cn('font-medium', isDisabled && 'text-muted-foreground')}>
-                      {t(indicator.labelKey)}
+                      {t(indicator.labelKey as never)}
                       {isDisabled && <span className="ml-1 text-[10px] font-normal">({t('stock.indicators.comingSoon')})</span>}
                     </span>
                     <span className="text-xs text-muted-foreground">
-                      {t(indicator.descKey)}
+                      {t(indicator.descKey as never)}
                       {isSentIntraday && isActive && (
                         <span className="ml-1 text-amber-500">({t('stock.indicators.dailyOnly')})</span>
                       )}

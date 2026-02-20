@@ -73,16 +73,16 @@ function FactorTable({ factors }: { factors: QlibTopFactor[] }) {
                 {factor.name}
               </td>
               <td className="py-2 pr-4 text-right tabular-nums">
-                {formatFactorValue(factor.value)}
+                {formatFactorValue(factor.value ?? 0)}
               </td>
               <td
                 className={cn(
                   'py-2 text-right font-medium tabular-nums',
-                  getZScoreColor(factor.zScore),
+                  getZScoreColor(factor.zScore ?? 0),
                 )}
               >
-                {factor.zScore >= 0 ? '+' : ''}
-                {factor.zScore.toFixed(2)}
+                {(factor.zScore ?? 0) >= 0 ? '+' : ''}
+                {(factor.zScore ?? 0).toFixed(2)}
               </td>
             </tr>
           ))}

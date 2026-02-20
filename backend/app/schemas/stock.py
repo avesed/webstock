@@ -206,6 +206,50 @@ class BollingerBandsResponse(CamelModel):
     metadata: Dict[str, Any]
 
 
+class ATRIndicatorResponse(CamelModel):
+    """Response for ATR indicator."""
+    series: List[IndicatorDataPoint]
+    metadata: Dict[str, Any]
+
+
+class OBVIndicatorResponse(CamelModel):
+    """Response for On-Balance Volume indicator."""
+    series: List[IndicatorDataPoint]
+    metadata: Dict[str, Any]
+
+
+class KDJIndicatorResponse(CamelModel):
+    """Response for KDJ (Stochastic) indicator with three lines."""
+    k_line: List[IndicatorDataPoint]
+    d_line: List[IndicatorDataPoint]
+    j_line: List[IndicatorDataPoint]
+    metadata: Dict[str, Any]
+
+
+class WilliamsRResponse(CamelModel):
+    """Response for Williams %R indicator."""
+    series: List[IndicatorDataPoint]
+    metadata: Dict[str, Any]
+
+
+class CCIIndicatorResponse(CamelModel):
+    """Response for CCI indicator."""
+    series: List[IndicatorDataPoint]
+    metadata: Dict[str, Any]
+
+
+class VWAPIndicatorResponse(CamelModel):
+    """Response for VWAP indicator."""
+    series: List[IndicatorDataPoint]
+    metadata: Dict[str, Any]
+
+
+class SARIndicatorResponse(CamelModel):
+    """Response for Parabolic SAR indicator."""
+    series: List[IndicatorDataPoint]
+    metadata: Dict[str, Any]
+
+
 class TechnicalIndicatorsResponse(CamelModel):
     """Full technical indicators response for a symbol."""
 
@@ -215,4 +259,11 @@ class TechnicalIndicatorsResponse(CamelModel):
     rsi: Optional[MAIndicatorResponse] = None
     macd: Optional[MACDIndicatorResponse] = None
     bb: Optional[BollingerBandsResponse] = None
+    atr: Optional[ATRIndicatorResponse] = None
+    obv: Optional[OBVIndicatorResponse] = None
+    kdj: Optional[KDJIndicatorResponse] = None
+    williams_r: Optional[WilliamsRResponse] = None
+    cci: Optional[CCIIndicatorResponse] = None
+    vwap: Optional[VWAPIndicatorResponse] = None
+    sar: Optional[SARIndicatorResponse] = None
     warnings: List[str] = []

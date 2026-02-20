@@ -109,6 +109,20 @@ function convertIndicatorTimesToTimestamps(data: TechnicalIndicatorsData): void 
     convertPoints(data.bb.middle)
     convertPoints(data.bb.lower)
   }
+
+  // Single-series indicators (ATR, OBV, Williams %R, CCI, VWAP, SAR)
+  for (const key of ['atr', 'obv', 'williamsR', 'cci', 'vwap', 'sar'] as const) {
+    if (data[key]) {
+      convertPoints(data[key].series)
+    }
+  }
+
+  // KDJ (three lines)
+  if (data.kdj) {
+    convertPoints(data.kdj.kLine)
+    convertPoints(data.kdj.dLine)
+    convertPoints(data.kdj.jLine)
+  }
 }
 
 // Auth API
@@ -433,6 +447,11 @@ export const stockApi = {
       rsiPeriod?: number
       bbPeriod?: number
       bbStd?: number
+      atrPeriod?: number
+      kdjKPeriod?: number
+      kdjDPeriod?: number
+      williamsRPeriod?: number
+      cciPeriod?: number
       intervalOverride?: string
       start?: string
       end?: string
@@ -458,8 +477,13 @@ export const stockApi = {
     if (options?.rsiPeriod != null) params.rsi_period = options.rsiPeriod
     if (options?.bbPeriod != null) params.bb_period = options.bbPeriod
     if (options?.bbStd != null) params.bb_std = options.bbStd
+    if (options?.atrPeriod != null) params.atr_period = options.atrPeriod
+    if (options?.kdjKPeriod != null) params.kdj_k_period = options.kdjKPeriod
+    if (options?.kdjDPeriod != null) params.kdj_d_period = options.kdjDPeriod
+    if (options?.williamsRPeriod != null) params.williams_r_period = options.williamsRPeriod
+    if (options?.cciPeriod != null) params.cci_period = options.cciPeriod
 
-    const response = await apiClient.get<TechnicalIndicatorsData>('/stocks/indicators', { params })
+    const response = await apiClient.get<TechnicalIndicatorsData>('/stocks/indicators', { params, timeout: 45000 })
 
     // For intraday intervals, indicator time values come as "YYYY-MM-DD HH:MM:SS"
     // and need to be converted to Unix timestamps for lightweight-charts

@@ -450,6 +450,13 @@ export interface BollingerBandsData {
   metadata: Record<string, unknown>
 }
 
+export interface KDJIndicatorData {
+  kLine: IndicatorDataPoint[]
+  dLine: IndicatorDataPoint[]
+  jLine: IndicatorDataPoint[]
+  metadata: Record<string, unknown>
+}
+
 export interface TechnicalIndicatorsData {
   symbol: string
   interval: string
@@ -457,6 +464,13 @@ export interface TechnicalIndicatorsData {
   rsi?: MAIndicatorData
   macd?: MACDIndicatorData
   bb?: BollingerBandsData
+  atr?: MAIndicatorData
+  obv?: MAIndicatorData
+  kdj?: KDJIndicatorData
+  williamsR?: MAIndicatorData
+  cci?: MAIndicatorData
+  vwap?: MAIndicatorData
+  sar?: MAIndicatorData
   warnings: string[]
 }
 

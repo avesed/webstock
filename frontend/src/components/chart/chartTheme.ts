@@ -103,5 +103,16 @@ export function getChartColors(theme: 'light' | 'dark') {
     // RSI reference lines — higher opacity in dark mode
     rsiOverbought: isLight ? 'rgba(239, 68, 68, 0.4)' : 'rgba(248, 113, 113, 0.6)',
     rsiOversold: isLight ? 'rgba(34, 197, 94, 0.4)' : 'rgba(74, 222, 128, 0.6)',
+
+    // New indicators — vibrant in light, brighter in dark
+    atrColor: isLight ? '#EF4444' : '#FCA5A5',           // red-500 / red-300
+    obvColor: isLight ? '#0D9488' : '#5EEAD4',           // teal-600 / teal-300
+    kdjKColor: isLight ? '#2563EB' : '#93C5FD',          // blue-600 / blue-300
+    kdjDColor: isLight ? '#EA580C' : '#FDBA74',          // orange-600 / orange-300
+    kdjJColor: isLight ? '#7C3AED' : '#C4B5FD',          // violet-600 / violet-300
+    wrColor: isLight ? '#DB2777' : '#F9A8D4',            // pink-600 / pink-300
+    cciColor: isLight ? '#0891B2' : '#67E8F9',           // cyan-600 / cyan-200
+    vwapColor: isLight ? '#DC2626' : '#FCA5A5',          // red-600 / red-300
+    sarColor: isLight ? '#78716C' : '#D6D3D1',           // stone-500 / stone-300
   }
 }

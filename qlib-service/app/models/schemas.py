@@ -230,6 +230,41 @@ class SyncStatusResponse(BaseModel):
 # === Common ===
 
 
+# === Indicators ===
+
+
+class IndicatorComputeRequest(BaseModel):
+    """Request body for POST /indicators/compute."""
+    bars: List[Dict[str, Any]] = Field(
+        ..., description="OHLCV bars: [{date, open, high, low, close, volume}]"
+    )
+    indicator_types: List[str] = Field(
+        ..., description="Indicator types: sma, ema, rsi, macd, bb, atr, obv, kdj, williams_r, cci, vwap, sar"
+    )
+    ma_periods: List[int] = Field(default=[20, 50, 200])
+    rsi_period: int = Field(14, ge=2, le=100)
+    macd_fast: int = Field(12, ge=2, le=100)
+    macd_slow: int = Field(26, ge=2, le=100)
+    macd_signal: int = Field(9, ge=2, le=100)
+    bb_period: int = Field(20, ge=2, le=100)
+    bb_std: float = Field(2.0, ge=0.5, le=5.0)
+    atr_period: int = Field(14, ge=2, le=100)
+    kdj_k_period: int = Field(9, ge=2, le=100)
+    kdj_d_period: int = Field(3, ge=2, le=100)
+    williams_r_period: int = Field(14, ge=2, le=100)
+    cci_period: int = Field(20, ge=2, le=100)
+    sar_af_start: float = Field(0.02, ge=0.001, le=0.1)
+    sar_af_step: float = Field(0.02, ge=0.001, le=0.1)
+    sar_af_max: float = Field(0.2, ge=0.05, le=1.0)
+    intraday: bool = False
+
+
+class IndicatorComputeResponse(BaseModel):
+    """Response for POST /indicators/compute."""
+    indicators: Dict[str, Any] = Field(default_factory=dict)
+    warnings: List[str] = Field(default_factory=list)
+
+
 class ErrorResponse(BaseModel):
     detail: str
     code: Optional[str] = None

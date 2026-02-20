@@ -167,13 +167,27 @@ export default function StockChartPage() {
   const showRSI = chartControls.activeIndicators.includes('RSI')
   const showMACD = chartControls.activeIndicators.includes('MACD')
   const showBB = chartControls.activeIndicators.includes('BB')
-  const hasAnyTechnicalIndicator = showMA || showRSI || showMACD || showBB
+  const showATR = chartControls.activeIndicators.includes('ATR')
+  const showOBV = chartControls.activeIndicators.includes('OBV')
+  const showKDJ = chartControls.activeIndicators.includes('KDJ')
+  const showWR = chartControls.activeIndicators.includes('WR')
+  const showCCI = chartControls.activeIndicators.includes('CCI')
+  const showVWAP = chartControls.activeIndicators.includes('VWAP')
+  const showSAR = chartControls.activeIndicators.includes('SAR')
+  const hasAnyTechnicalIndicator = showMA || showRSI || showMACD || showBB || showATR || showOBV || showKDJ || showWR || showCCI || showVWAP || showSAR
 
   const indicatorTypes = [
     ...(showMA ? ['sma'] : []),
     ...(showRSI ? ['rsi'] : []),
     ...(showMACD ? ['macd'] : []),
     ...(showBB ? ['bb'] : []),
+    ...(showATR ? ['atr'] : []),
+    ...(showOBV ? ['obv'] : []),
+    ...(showKDJ ? ['kdj'] : []),
+    ...(showWR ? ['williams_r'] : []),
+    ...(showCCI ? ['cci'] : []),
+    ...(showVWAP ? ['vwap'] : []),
+    ...(showSAR ? ['sar'] : []),
   ]
 
   const { data: indicatorData } = useQuery({
