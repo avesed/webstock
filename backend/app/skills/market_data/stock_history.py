@@ -32,8 +32,10 @@ class GetStockHistorySkill(BaseSkill):
         return SkillDefinition(
             name="get_stock_history",
             description=(
-                "Get historical OHLCV price data. Use for trend analysis "
-                "or when the user asks about past performance."
+                "Get historical OHLCV price data for individual stocks. "
+                "Use for trend analysis or past performance. "
+                "Only supports stock tickers (e.g. AAPL, 1810.HK, 600519.SS), "
+                "NOT index symbols like ^HSI or ^GSPC."
             ),
             category="market_data",
             parameters=[

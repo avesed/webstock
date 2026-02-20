@@ -115,6 +115,7 @@ def _register_all_skills(registry: SkillRegistry) -> None:
     from app.skills.qlib.factor_skill import QlibFactorSkill
     from app.skills.qlib.expression_skill import QlibExpressionSkill
     from app.skills.qlib.backtest_skill import QlibBacktestSkill
+    from app.skills.qlib.get_backtest_skill import QlibGetBacktestSkill
     from app.skills.qlib.portfolio_skill import PortfolioOptimizationSkill
 
     for skill_class in [
@@ -150,6 +151,7 @@ def _register_all_skills(registry: SkillRegistry) -> None:
         QlibFactorSkill,
         QlibExpressionSkill,
         QlibBacktestSkill,
+        QlibGetBacktestSkill,
         PortfolioOptimizationSkill,
     ]:
         registry.register(skill_class())

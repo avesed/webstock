@@ -26,8 +26,11 @@ class QlibBacktestSkill(BaseSkill):
             description=(
                 "Create a quantitative backtest using Qlib. "
                 "Runs a strategy (top-K stock selection, signal-based, or long-short) "
-                "over a stock pool for a given date range. Returns a backtest id "
-                "that can be polled for progress and results."
+                "over a stock pool for a given date range. Returns a backtest_id. "
+                "IMPORTANT: TopK strategy requires at least 3 symbols — use "
+                "search_related_stocks to find sector peers if the user only "
+                "mentions one stock. "
+                "After creation, use qlib_get_backtest to poll status and retrieve results."
             ),
             category="quantitative",
             parameters=[
@@ -106,10 +109,31 @@ class QlibBacktestSkill(BaseSkill):
             return SkillResult(success=False, error="db session is required (internal)")
 
         try:
+            # Auto-clamp topk to pool size so the strategy is meaningful
+            topk = int(topk)
+            if strategy_type == "topk":
+                pool_size = len(symbols)
+                if pool_size < 3:
+                    return SkillResult(
+                        success=False,
+                        error=(
+                            f"TopK strategy needs at least 3 symbols to be "
+                            f"meaningful, but only {pool_size} provided. "
+                            f"Please add more symbols to the pool, or use "
+                            f"search_related_stocks / search_stocks to find "
+                            f"peers in the same sector."
+                        ),
+                    )
+                if topk >= pool_size:
+                    topk = max(1, pool_size // 2)
+                    logger.info(
+                        "Clamped topk to %d (pool size %d)", topk, pool_size,
+                    )
+
             # Build strategy_config from shorthand params
             strategy_config = {}
             if strategy_type == "topk" and topk:
-                strategy_config["k"] = int(topk)
+                strategy_config["k"] = topk
 
             request = BacktestCreateRequest(
                 name=name,

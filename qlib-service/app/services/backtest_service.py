@@ -15,6 +15,7 @@ Strategy types:
 - LongShort: Long top decile, short bottom decile by factor score.
 """
 import asyncio
+import json
 import logging
 import math
 import threading
@@ -25,7 +26,24 @@ from dataclasses import dataclass, field
 from datetime import datetime, date
 from typing import Any, Dict, List, Optional
 
+import numpy as np
+
 logger = logging.getLogger(__name__)
+
+
+def _numpy_default(obj: Any) -> Any:
+    """JSON serializer fallback for numpy types."""
+    if isinstance(obj, (np.integer,)):
+        return int(obj)
+    if isinstance(obj, (np.floating,)):
+        v = float(obj)
+        return None if math.isnan(v) or math.isinf(v) else v
+    if isinstance(obj, np.ndarray):
+        return obj.tolist()
+    if isinstance(obj, (np.bool_,)):
+        return bool(obj)
+    raise TypeError(f"Object of type {type(obj)} is not JSON serializable")
+
 
 # Default strategy configurations
 DEFAULT_TOPK_CONFIG = {
@@ -74,8 +92,12 @@ class BacktestTask:
     completed_at: Optional[datetime] = None
 
     def to_dict(self) -> dict:
-        """Serialize to API-compatible dict (excludes future)."""
-        return {
+        """Serialize to API-compatible dict (excludes future).
+
+        Uses a JSON roundtrip to convert numpy types (float32, int64, etc.)
+        to native Python types that Pydantic can serialize.
+        """
+        d = {
             "task_id": self.task_id,
             "name": self.name,
             "status": self.status,
@@ -87,6 +109,8 @@ class BacktestTask:
             "created_at": self.created_at.isoformat() if self.created_at else None,
             "completed_at": self.completed_at.isoformat() if self.completed_at else None,
         }
+        # JSON roundtrip to convert numpy types to native Python
+        return json.loads(json.dumps(d, default=_numpy_default))
 
 
 class BacktestService:
@@ -595,6 +619,11 @@ def _simulate_topk(
     n_drop = int(strategy_config.get("n_drop", defaults["n_drop"]))
     rebalance_days = int(strategy_config.get("rebalance_days", defaults["rebalance_days"]))
 
+    # Clamp n_drop so the strategy can actually rotate when k is small.
+    # If n_drop >= k, every rebalance should re-select from scratch.
+    if n_drop >= k:
+        n_drop = k
+
     dates = close_matrix.index.tolist()
     symbols = close_matrix.columns.tolist()
 
@@ -660,8 +689,8 @@ def _simulate_topk(
         # Determine target portfolio
         current_held = set(positions.keys())
 
-        if current_held:
-            # Score current holdings, drop N worst
+        if current_held and n_drop < k:
+            # Incremental rotation: drop N worst, fill from top-ranked newcomers
             held_scores = scores[scores.index.isin(current_held)]
             non_held_scores = scores[~scores.index.isin(current_held)]
 
@@ -676,6 +705,7 @@ def _simulate_topk(
             new_symbols = non_held_scores.head(max(0, slots_available)).index.tolist()
             target_symbols = keep_symbols + new_symbols
         else:
+            # Full re-selection: pick the top-k from the entire pool
             target_symbols = scores.head(k).index.tolist()
 
         if not target_symbols:

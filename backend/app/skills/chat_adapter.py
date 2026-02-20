@@ -32,6 +32,7 @@ CHAT_SKILL_NAMES = [
     "get_stock_info",
     "get_stock_financials",
     "search_stocks",
+    "search_related_stocks",
     "get_news",
     "get_portfolio",
     "get_watchlist",
@@ -39,6 +40,7 @@ CHAT_SKILL_NAMES = [
     "qlib_compute_factors",
     "qlib_evaluate_expression",
     "qlib_create_backtest",
+    "qlib_get_backtest",
     "optimize_portfolio",
     "get_analyst_ratings",
     "get_market_context",
@@ -51,6 +53,7 @@ TOOL_LABELS = {
     "get_stock_info": "获取公司信息",
     "get_stock_financials": "获取财务数据",
     "search_stocks": "搜索股票",
+    "search_related_stocks": "搜索相关股票",
     "get_news": "获取新闻",
     "get_portfolio": "查看投资组合",
     "get_watchlist": "查看关注列表",
@@ -58,14 +61,15 @@ TOOL_LABELS = {
     "qlib_compute_factors": "计算量化因子",
     "qlib_evaluate_expression": "计算量化表达式",
     "qlib_create_backtest": "创建量化回测",
+    "qlib_get_backtest": "获取回测结果",
     "optimize_portfolio": "优化投资组合",
     "get_analyst_ratings": "获取分析师评级",
     "get_market_context": "获取市场概况",
 }
 
 # Skills that need user_id and db injection
-_USER_SCOPED_SKILLS = {"get_portfolio", "get_watchlist", "qlib_create_backtest"}
-_DB_SCOPED_SKILLS = {"get_portfolio", "get_watchlist", "search_knowledge_base", "search_related_stocks", "get_news", "qlib_create_backtest"}
+_USER_SCOPED_SKILLS = {"get_portfolio", "get_watchlist", "qlib_create_backtest", "qlib_get_backtest"}
+_DB_SCOPED_SKILLS = {"get_portfolio", "get_watchlist", "search_knowledge_base", "search_related_stocks", "get_news", "qlib_create_backtest", "qlib_get_backtest"}
 
 
 def skill_to_tool_definition(skill: BaseSkill) -> ToolDefinition:

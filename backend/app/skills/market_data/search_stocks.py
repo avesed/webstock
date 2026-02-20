@@ -1,4 +1,4 @@
-"""Skill: search for stocks by name or ticker."""
+"""Skill: search for stocks by name or ticker using local in-memory index."""
 
 from __future__ import annotations
 
@@ -17,8 +17,10 @@ class SearchStocksSkill(BaseSkill):
         return SkillDefinition(
             name="search_stocks",
             description=(
-                "Search for stocks by name or ticker across US, HK, "
-                "and China A-share markets."
+                "Search for stocks by exact name or ticker symbol (e.g. 'AAPL', '小米', '0700'). "
+                "Only matches stock names and ticker codes — cannot search by concept, industry, "
+                "index constituents, or peer relationships. "
+                "For those, use search_related_stocks instead."
             ),
             category="market_data",
             parameters=[
@@ -41,14 +43,9 @@ class SearchStocksSkill(BaseSkill):
                 error="Search query is required",
             )
 
-        from app.services.stock_service import get_stock_service
+        from app.services.stock_list_service import get_stock_list_service
 
-        service = await get_stock_service()
-        results = await service.search(query)
+        service = await get_stock_list_service()
+        results = service.search(query, limit=10)
 
-        items = [
-            r.to_dict() if hasattr(r, "to_dict") else r
-            for r in results[:10]
-        ]
-
-        return SkillResult(success=True, data=items)
+        return SkillResult(success=True, data=results)
