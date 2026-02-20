@@ -102,7 +102,12 @@
     "unauthorized": "您没有权限执行此操作。",
     "notFound": "请求的资源未找到。",
     "timeout": "请求超时，请重试。",
-    "unknown": "发生未知错误。"
+    "unknown": "发生未知错误。",
+    "renderError": "页面出现错误",
+    "renderErrorDescription": "渲染此页面时发生了意外错误。",
+    "chunkLoadError": "发现新版本",
+    "chunkLoadErrorDescription": "应用有新版本可用，请刷新页面以继续使用。",
+    "reloadPage": "刷新页面"
   },
   "confirmation": {
     "deleteTitle": "确认删除",

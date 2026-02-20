@@ -31,7 +31,7 @@ http {
 
     log_format main '$remote_addr - $remote_user [$time_local] "$request" '
                     '$status $body_bytes_sent "$http_referer" '
-                    '"$http_user_agent" rt=$request_time';
+                    '"$http_user_agent" rt=$request_time rid=$request_id';
 
     access_log /dev/stdout main;
 
@@ -86,6 +86,7 @@ http {
             proxy_set_header X-Real-IP $remote_addr;
             proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
             proxy_set_header X-Forwarded-Proto $scheme;
+            proxy_set_header X-Request-ID $request_id;
             proxy_set_header Connection "";
 
             proxy_connect_timeout 30s;
@@ -103,6 +104,7 @@ http {
             proxy_set_header X-Real-IP $remote_addr;
             proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
             proxy_set_header X-Forwarded-Proto $scheme;
+            proxy_set_header X-Request-ID $request_id;
             proxy_set_header Connection "";
 
             proxy_connect_timeout 30s;
@@ -120,6 +122,7 @@ http {
             proxy_set_header X-Real-IP $remote_addr;
             proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
             proxy_set_header X-Forwarded-Proto $scheme;
+            proxy_set_header X-Request-ID $request_id;
             proxy_set_header Connection "";
         }
 
@@ -131,6 +134,7 @@ http {
             proxy_set_header X-Real-IP $remote_addr;
             proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
             proxy_set_header X-Forwarded-Proto $scheme;
+            proxy_set_header X-Request-ID $request_id;
             proxy_set_header Connection "";
             proxy_buffering off;
             proxy_cache off;
@@ -155,6 +159,7 @@ http {
             proxy_set_header X-Real-IP $remote_addr;
             proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
             proxy_set_header X-Forwarded-Proto $scheme;
+            proxy_set_header X-Request-ID $request_id;
             proxy_set_header Connection "";
             proxy_buffering off;
             proxy_cache off;
@@ -179,6 +184,7 @@ http {
             proxy_set_header X-Real-IP $remote_addr;
             proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
             proxy_set_header X-Forwarded-Proto $scheme;
+            proxy_set_header X-Request-ID $request_id;
             proxy_set_header Connection "";
             proxy_connect_timeout 60s;
             proxy_send_timeout 60s;

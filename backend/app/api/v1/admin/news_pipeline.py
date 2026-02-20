@@ -163,7 +163,7 @@ async def get_monitor_status(
         try:
             progress = json.loads(progress_raw)
         except Exception:
-            pass
+            logger.debug("Failed to parse monitor progress JSON", exc_info=True)
 
     # Get last run info
     last_run = None
@@ -172,7 +172,7 @@ async def get_monitor_status(
         try:
             last_run = json.loads(last_run_raw)
         except Exception:
-            pass
+            logger.debug("Failed to parse last run info JSON", exc_info=True)
 
     # Calculate next run time (every 15 minutes from last run)
     next_run_at = None
@@ -181,7 +181,7 @@ async def get_monitor_status(
             finished = datetime.fromisoformat(last_run["finished_at"])
             next_run_at = (finished + timedelta(minutes=15)).isoformat()
         except Exception:
-            pass
+            logger.debug("Failed to calculate next run time", exc_info=True)
 
     return {
         "status": status,
@@ -327,7 +327,7 @@ async def get_article_timeline(
             title = row.title
             symbol = row.symbol
     except Exception:
-        pass  # News may have been deleted
+        logger.debug("Failed to fetch article metadata for %s", news_id, exc_info=True)
 
     # Calculate total duration
     total_duration_ms = None

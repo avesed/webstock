@@ -2,12 +2,12 @@
 
 import logging
 import os
-import sys
 from contextlib import asynccontextmanager
 from typing import AsyncGenerator
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 
 from app.api.v1.router import api_router
 from app.config import settings
@@ -19,16 +19,10 @@ from app.services.data_service_client import close_data_service_client
 from app.services.qlib_client import close_qlib_client
 from app.services.stock_service import cleanup_stock_service
 
-_TAG = os.environ.get("LOG_TAG", "web")
-logging.basicConfig(
-    level=logging.INFO,
-    format=f"%(asctime)s [{_TAG}] %(levelname).1s %(message)s",
-    datefmt="%H:%M:%S",
-    stream=sys.stdout,
-    force=True,
-)
-for _name in ("httpx", "httpcore", "urllib3", "asyncio", "watchfiles", "multipart"):
-    logging.getLogger(_name).setLevel(logging.WARNING)
+os.environ.setdefault("LOG_TAG", "web")
+from worker.log_config import setup_logging  # noqa: E402
+
+setup_logging()
 
 logger = logging.getLogger(__name__)
 
@@ -325,8 +319,25 @@ def create_app() -> FastAPI:
         allow_headers=["*"],
     )
 
+    from app.core.middleware import RequestIdMiddleware
+
+    app.add_middleware(RequestIdMiddleware)
+
     # Include API router
     app.include_router(api_router)
+
+    @app.exception_handler(Exception)
+    async def unhandled_exception_handler(request: Request, exc: Exception):
+        from app.core.request_id import get_request_id
+
+        rid = get_request_id()
+        logger.exception(
+            "Unhandled exception [%s] %s %s", rid, request.method, request.url.path
+        )
+        return JSONResponse(
+            status_code=500,
+            content={"detail": "Internal server error", "requestId": rid},
+        )
 
     # Root endpoint
     @app.get("/", tags=["Root"])

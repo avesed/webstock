@@ -6,20 +6,9 @@ import logging
 from typing import Any
 
 from app.skills.base import BaseSkill, SkillDefinition, SkillParameter, SkillResult
+from app.skills.utils import normalize_symbol
 
 logger = logging.getLogger(__name__)
-
-
-def _normalize_symbol(raw: Any) -> str:
-    """Sanitize and normalize a stock symbol."""
-    from app.prompts.analysis.sanitizer import sanitize_symbol
-    from app.utils.symbol_validation import validate_symbol
-
-    sanitized = sanitize_symbol(raw)
-    try:
-        return validate_symbol(sanitized)
-    except Exception:
-        return sanitized
 
 
 class GetFundHoldingsCnSkill(BaseSkill):
@@ -48,7 +37,7 @@ class GetFundHoldingsCnSkill(BaseSkill):
         )
 
     async def execute(self, **kwargs: Any) -> SkillResult:
-        symbol = _normalize_symbol(kwargs.get("symbol"))
+        symbol = normalize_symbol(kwargs.get("symbol"))
 
         # Extract the bare 6-digit stock code for akshare
         stock_code = symbol.split(".")[0]

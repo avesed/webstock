@@ -6,23 +6,12 @@ import logging
 from typing import Any
 
 from app.skills.base import BaseSkill, SkillDefinition, SkillParameter, SkillResult
+from app.skills.utils import normalize_symbol
 
 logger = logging.getLogger(__name__)
 
 VALID_PERIODS = {"1d", "5d", "1mo", "3mo", "6mo", "1y", "2y", "5y", "max"}
 VALID_INTERVALS = {"1m", "5m", "15m", "1h", "1d", "1wk", "1mo"}
-
-
-def _normalize_symbol(raw: Any) -> str:
-    """Sanitize and normalize a stock symbol."""
-    from app.prompts.analysis.sanitizer import sanitize_symbol
-    from app.utils.symbol_validation import validate_symbol
-
-    sanitized = sanitize_symbol(raw)
-    try:
-        return validate_symbol(sanitized)
-    except Exception:
-        return sanitized
 
 
 class GetStockHistorySkill(BaseSkill):
@@ -71,7 +60,7 @@ class GetStockHistorySkill(BaseSkill):
             get_stock_service,
         )
 
-        symbol = _normalize_symbol(kwargs.get("symbol"))
+        symbol = normalize_symbol(kwargs.get("symbol"))
         period_str = kwargs.get("period", "1y")
         interval_str = kwargs.get("interval", "1d")
 

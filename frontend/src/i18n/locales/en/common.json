@@ -102,7 +102,12 @@
     "unauthorized": "You are not authorized to perform this action.",
     "notFound": "The requested resource was not found.",
     "timeout": "Request timed out. Please try again.",
-    "unknown": "An unexpected error occurred."
+    "unknown": "An unexpected error occurred.",
+    "renderError": "Something went wrong",
+    "renderErrorDescription": "An unexpected error occurred while rendering this page.",
+    "chunkLoadError": "Update Available",
+    "chunkLoadErrorDescription": "A new version of the app is available. Please reload to continue.",
+    "reloadPage": "Reload Page"
   },
   "confirmation": {
     "deleteTitle": "Confirm Delete",

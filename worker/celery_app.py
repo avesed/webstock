@@ -244,10 +244,11 @@ def _check_stock_knowledge_base(sender, **kwargs):
 @after_setup_logger.connect
 def _configure_celery_logger(logger, loglevel, **kwargs):
     """Override Celery's default log format for Docker stdout."""
-    from worker.log_config import LOG_FORMAT, LOG_DATEFMT
+    from worker.log_config import LOG_FORMAT, LOG_DATEFMT, RequestIdFilter
     for h in logger.handlers[:]:
         logger.removeHandler(h)
     handler = logging.StreamHandler(sys.stdout)
+    handler.addFilter(RequestIdFilter())
     handler.setFormatter(logging.Formatter(LOG_FORMAT, datefmt=LOG_DATEFMT))
     logger.addHandler(handler)
     logger.setLevel(loglevel)
@@ -259,13 +260,49 @@ def _configure_celery_logger(logger, loglevel, **kwargs):
 @after_setup_task_logger.connect
 def _configure_task_logger(logger, loglevel, **kwargs):
     """Override Celery's task logger format for Docker stdout."""
-    from worker.log_config import LOG_FORMAT, LOG_DATEFMT
+    from worker.log_config import LOG_FORMAT, LOG_DATEFMT, RequestIdFilter
     for h in logger.handlers[:]:
         logger.removeHandler(h)
     handler = logging.StreamHandler(sys.stdout)
+    handler.addFilter(RequestIdFilter())
     handler.setFormatter(logging.Formatter(LOG_FORMAT, datefmt=LOG_DATEFMT))
     logger.addHandler(handler)
     logger.setLevel(loglevel)
+
+
+# ---------------------------------------------------------------------------
+# Request ID propagation: web → Celery task → log output
+# ---------------------------------------------------------------------------
+
+from celery.signals import before_task_publish, task_prerun, task_postrun
+
+
+@before_task_publish.connect
+def _inject_request_id(headers=None, **kwargs):
+    """Propagate request ID from web process to task headers."""
+    if headers is not None:
+        from app.core.request_id import get_request_id
+        rid = get_request_id()
+        if rid:
+            headers["x_request_id"] = rid
+
+
+@task_prerun.connect
+def _extract_request_id(task=None, **kwargs):
+    """Extract request ID from task headers into context var."""
+    from app.core.request_id import request_id_var, generate_request_id
+    rid = getattr(task.request, "x_request_id", None)
+    if not rid:
+        # Beat-scheduled tasks or tasks without a request ID get a fresh one
+        rid = generate_request_id()
+    request_id_var.set(rid)
+
+
+@task_postrun.connect
+def _clear_request_id(**kwargs):
+    """Clear request ID after task completes."""
+    from app.core.request_id import request_id_var
+    request_id_var.set(None)
 
 
 if __name__ == "__main__":

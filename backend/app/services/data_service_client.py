@@ -31,6 +31,7 @@ from typing import Any, Dict, List, Optional
 import httpx
 
 from app.config import settings
+from app.core.request_id import get_request_id
 
 logger = logging.getLogger(__name__)
 
@@ -86,8 +87,15 @@ class DataServiceClient:
         """
         t0 = time.monotonic()
         try:
+            # Forward request ID to downstream service for distributed tracing
+            extra_headers: Dict[str, str] = {}
+            rid = get_request_id()
+            if rid:
+                extra_headers["X-Request-ID"] = rid
+
             resp = await self._client.request(
                 method, path, json=json, params=params, timeout=timeout,
+                headers=extra_headers,
             )
             elapsed = time.monotonic() - t0
             resp.raise_for_status()
@@ -127,11 +135,11 @@ class DataServiceClient:
                 e.response.status_code, method.upper(), path, elapsed, body_text,
             )
             return None
-        except Exception as e:
+        except Exception:
             elapsed = time.monotonic() - t0
-            logger.error(
-                "data-service unexpected error: %s %s (%.2fs) — %s",
-                method.upper(), path, elapsed, e,
+            logger.exception(
+                "data-service unexpected error: %s %s (%.2fs)",
+                method.upper(), path, elapsed,
             )
             return None
 

@@ -15,6 +15,7 @@ Architecture:
 """
 import logging
 import os
+import sys
 from contextlib import asynccontextmanager
 from typing import AsyncGenerator
 
@@ -23,20 +24,31 @@ from fastapi import FastAPI
 from app.config import get_settings
 from app.executor import shutdown_executors
 from app.api.indicators import shutdown_indicator_executor
+from app.core.request_id import RequestIdFilter, RequestIdMiddleware
+
+settings = get_settings()
+
+# Configure logging with request ID injection
+LOG_FORMAT = "%(asctime)s [qlib] %(levelname).1s [%(request_id)s] %(message)s"
+LOG_DATEFMT = "%H:%M:%S"
+
+_root = logging.getLogger()
+_root.setLevel(getattr(logging, settings.LOG_LEVEL.upper(), logging.INFO))
+for _h in _root.handlers[:]:
+    _root.removeHandler(_h)
+_handler = logging.StreamHandler(sys.stdout)
+_handler.addFilter(RequestIdFilter())
+_handler.setFormatter(logging.Formatter(LOG_FORMAT, datefmt=LOG_DATEFMT))
+_root.addHandler(_handler)
+for _name in ("httpx", "httpcore", "urllib3", "asyncio", "watchfiles"):
+    logging.getLogger(_name).setLevel(logging.WARNING)
 
 logger = logging.getLogger(__name__)
-settings = get_settings()
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     """Application lifespan: init Qlib + Redis, cleanup on shutdown."""
-    # Configure logging
-    logging.basicConfig(
-        level=getattr(logging, settings.LOG_LEVEL.upper(), logging.INFO),
-        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-    )
-
     logger.info("Starting qlib-service...")
 
     # Check if Qlib data directory exists
@@ -84,6 +96,9 @@ app = FastAPI(
     description="Quantitative data processing microservice powered by Microsoft Qlib",
     lifespan=lifespan,
 )
+
+# Request ID middleware (reads X-Request-ID from upstream or generates a new one)
+app.add_middleware(RequestIdMiddleware)
 
 # Register routers
 from app.api.health import router as health_router

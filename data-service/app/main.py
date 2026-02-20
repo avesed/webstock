@@ -18,6 +18,7 @@ Architecture:
 from __future__ import annotations
 
 import logging
+import sys
 from contextlib import asynccontextmanager
 from typing import AsyncGenerator
 
@@ -26,18 +27,31 @@ from fastapi import FastAPI
 from app.config import get_settings
 from app.core.cache import close_redis
 from app.core.executor import shutdown_executor
+from app.core.request_id import RequestIdFilter, RequestIdMiddleware
+
+settings = get_settings()
+
+# Configure logging with request ID injection
+LOG_FORMAT = "%(asctime)s [data] %(levelname).1s [%(request_id)s] %(message)s"
+LOG_DATEFMT = "%H:%M:%S"
+
+_root = logging.getLogger()
+_root.setLevel(getattr(logging, settings.LOG_LEVEL.upper(), logging.INFO))
+for _h in _root.handlers[:]:
+    _root.removeHandler(_h)
+_handler = logging.StreamHandler(sys.stdout)
+_handler.addFilter(RequestIdFilter())
+_handler.setFormatter(logging.Formatter(LOG_FORMAT, datefmt=LOG_DATEFMT))
+_root.addHandler(_handler)
+for _name in ("httpx", "httpcore", "urllib3", "asyncio", "watchfiles"):
+    logging.getLogger(_name).setLevel(logging.WARNING)
 
 logger = logging.getLogger(__name__)
-settings = get_settings()
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
-    """Application lifespan: configure logging, load keys, cleanup on shutdown."""
-    logging.basicConfig(
-        level=getattr(logging, settings.LOG_LEVEL.upper(), logging.INFO),
-        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-    )
+    """Application lifespan: load keys, cleanup on shutdown."""
     logger.info("Starting data-service...")
 
     # Load API keys from DB and start Redis subscriber for live updates
@@ -60,6 +74,9 @@ app = FastAPI(
     description="Stateless data provider microservice for WebStock",
     lifespan=lifespan,
 )
+
+# Request ID middleware (reads X-Request-ID from upstream or generates a new one)
+app.add_middleware(RequestIdMiddleware)
 
 # Register routers
 from app.api.health import router as health_router  # noqa: E402

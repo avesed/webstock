@@ -23,6 +23,7 @@ import {
 import { useState, useEffect } from 'react'
 import { useTranslation } from 'react-i18next'
 import { BottomNav } from '@/components/layout/BottomNav'
+import { ErrorBoundary } from '@/components/layout/ErrorBoundary'
 
 import { cn } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
@@ -410,15 +411,17 @@ export default function MainLayout() {
 
           {/* Page content */}
           <main className="flex-1 overflow-y-auto overflow-x-hidden min-h-0 p-4 pb-[calc(80px_+_var(--safe-area-bottom))] lg:p-6 lg:pb-6">
-            <Suspense
-              fallback={
-                <div className="flex h-full items-center justify-center">
-                  <div className="h-8 w-8 animate-spin rounded-full border-4 border-primary border-t-transparent" />
-                </div>
-              }
-            >
-              <Outlet />
-            </Suspense>
+            <ErrorBoundary key={location.pathname}>
+              <Suspense
+                fallback={
+                  <div className="flex h-full items-center justify-center">
+                    <div className="h-8 w-8 animate-spin rounded-full border-4 border-primary border-t-transparent" />
+                  </div>
+                }
+              >
+                <Outlet />
+              </Suspense>
+            </ErrorBoundary>
           </main>
         </div>
         <BottomNav />
