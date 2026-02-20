@@ -517,6 +517,8 @@
     "unlock": "Unlock",
     "unlockConfirm": "This will terminate the running task for {{market}} and release the lock. Continue?",
     "syncQlib": "Sync Qlib",
+    "rebuildQlib": "Rebuild Qlib",
+    "rebuildQlibConfirm": "This will rebuild ALL Qlib .bin files for {{market}} from scratch. US market may take ~80 minutes. Continue?",
     "syncQlibPhase1": "Collecting {{current}}/{{total}}",
     "syncQlibPhase2": "Writing {{current}}/{{total}}",
     "actionSuccess": "Action completed successfully",

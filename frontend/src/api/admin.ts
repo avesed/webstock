@@ -472,9 +472,11 @@ export const adminApi = {
     return response.data
   },
 
-  syncQlib: async (market: string): Promise<{ message: string; status: string }> => {
+  syncQlib: async (market: string, full?: boolean): Promise<{ message: string; status: string }> => {
     const response = await apiClient.post<{ message: string; status: string }>(
-      `/admin/knowledge-base/daily-bars/${market}/sync-qlib`
+      `/admin/knowledge-base/daily-bars/${market}/sync-qlib`,
+      undefined,
+      full ? { params: { full: true } } : undefined,
     )
     return response.data
   },

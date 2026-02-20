@@ -944,6 +944,7 @@ async def unlock_daily_bars(
 )
 async def sync_qlib(
     market: str,
+    full: bool = False,
     current_user: User = Depends(require_admin),
 ) -> Dict[str, Any]:
     """Trigger Qlib sync for a single market (non-blocking)."""
@@ -954,12 +955,13 @@ async def sync_qlib(
             detail=f"Invalid market '{market}'. Must be one of: {', '.join(sorted(VALID_MARKETS))}",
         )
 
-    logger.info("Admin %s triggered Qlib sync for market=%s", current_user.email, market)
+    mode = "full rebuild" if full else "incremental"
+    logger.info("Admin %s triggered Qlib sync for market=%s (%s)", current_user.email, market, mode)
 
     try:
         from app.services.qlib_client import get_qlib_client
         client = await get_qlib_client()
-        result = await client.trigger_sync(market=market, update_only=True)
+        result = await client.trigger_sync(market=market, update_only=not full)
         return result
     except Exception as e:
         from app.services.qlib_client import QlibServiceError

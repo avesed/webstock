@@ -467,7 +467,7 @@ function DailyBarsCard({
         </div>
       </CardHeader>
       <CardContent>
-        <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+        <div className="grid gap-4 sm:grid-cols-2">
           {markets.map((market) => {
             const stats = dailyBars?.[market]
             const prog = progress?.[market]
@@ -545,6 +545,25 @@ function DailyBarsCard({
                             <RefreshCw className="h-3 w-3 mr-1" />
                           )}
                           {t('knowledge.syncQlib')}
+                        </Button>
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          className="h-7 px-2 text-xs text-destructive hover:text-destructive"
+                          disabled={actionLoading !== null || qlibProgress?.[market]?.status === 'syncing'}
+                          onClick={() =>
+                            onAction(
+                              `rebuild-qlib-${market}`,
+                              () => adminApi.syncQlib(market, true),
+                              td(t, 'knowledge.rebuildQlibConfirm', { market: td(t, `knowledge.market_${market}`) }),
+                            )
+                          }
+                        >
+                          {actionLoading === `rebuild-qlib-${market}` || qlibProgress?.[market]?.status === 'syncing' ? (
+                            <Loader2 className="h-3 w-3 animate-spin" />
+                          ) : (
+                            t('knowledge.rebuildQlib')
+                          )}
                         </Button>
                         <Button
                           size="sm"
@@ -669,7 +688,7 @@ function LoadingSkeleton() {
           <Skeleton className="h-5 w-40" />
         </CardHeader>
         <CardContent>
-          <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+          <div className="grid gap-4 sm:grid-cols-2">
             {Array.from({ length: 4 }).map((_, i) => (
               <Skeleton key={i} className="h-24 rounded-md" />
             ))}

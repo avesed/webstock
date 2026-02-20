@@ -517,6 +517,8 @@
     "unlock": "解锁",
     "unlockConfirm": "这将终止{{market}}正在运行的任务并释放锁。确定继续？",
     "syncQlib": "同步Qlib",
+    "rebuildQlib": "重建Qlib",
+    "rebuildQlibConfirm": "这将从头重建{{market}}的所有Qlib二进制文件（完整同步）。美股市场可能需要约80分钟。确定继续？",
     "syncQlibPhase1": "采集中 {{current}}/{{total}}",
     "syncQlibPhase2": "写入中 {{current}}/{{total}}",
     "actionSuccess": "操作成功",
