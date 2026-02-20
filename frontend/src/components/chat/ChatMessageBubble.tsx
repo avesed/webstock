@@ -1,3 +1,6 @@
+import { memo, useMemo } from 'react'
+import ReactMarkdown from 'react-markdown'
+import remarkGfm from 'remark-gfm'
 import { Bot, User } from 'lucide-react'
 
 import { cn } from '@/lib/utils'
@@ -10,170 +13,93 @@ interface ChatMessageBubbleProps {
 }
 
 /**
- * Renders basic markdown formatting for assistant messages.
- * Supports paragraphs, code blocks, bold, italic, and source references.
+ * Custom renderers for ReactMarkdown inside chat bubbles.
+ * Keeps code blocks styled with a language label and ensures
+ * tables, inline code, etc. fit the chat aesthetic.
  */
-function renderMarkdown(content: string): React.ReactNode[] {
-  const blocks: React.ReactNode[] = []
-  const lines = content.split('\n')
-  let currentBlock: string[] = []
-  let inCodeBlock = false
-  let codeLanguage = ''
-  let codeLines: string[] = []
-
-  const flushParagraph = () => {
-    if (currentBlock.length > 0) {
-      const text = currentBlock.join('\n')
-      if (text.trim()) {
-        blocks.push(
-          <p key={blocks.length} className="mb-2 last:mb-0 leading-relaxed">
-            {renderInlineFormatting(text)}
-          </p>
-        )
-      }
-      currentBlock = []
+const markdownComponents: React.ComponentProps<typeof ReactMarkdown>['components'] = {
+  // Code blocks with optional language label
+  pre({ children }) {
+    return <div className="mb-2 last:mb-0">{children}</div>
+  },
+  code({ className, children, ...props }) {
+    const match = /language-(\w+)/.exec(className ?? '')
+    const isBlock = Boolean(match) || (typeof children === 'string' && children.includes('\n'))
+    if (isBlock) {
+      return (
+        <>
+          {match?.[1] && (
+            <div className="rounded-t-md bg-background/50 px-3 py-1 text-[10px] font-mono text-muted-foreground">
+              {match[1]}
+            </div>
+          )}
+          <pre className={cn(
+            'overflow-x-auto bg-background/30 p-3 font-mono text-xs leading-relaxed',
+            match?.[1] ? 'rounded-b-md' : 'rounded-md'
+          )}>
+            <code>{children}</code>
+          </pre>
+        </>
+      )
     }
-  }
-
-  for (let i = 0; i < lines.length; i++) {
-    const line = lines[i]!
-
-    if (line.startsWith('```')) {
-      if (inCodeBlock) {
-        // End code block
-        blocks.push(
-          <div key={blocks.length} className="mb-2 last:mb-0">
-            {codeLanguage && (
-              <div className="rounded-t-md bg-muted/80 px-3 py-1 text-[10px] font-mono text-muted-foreground">
-                {codeLanguage}
-              </div>
-            )}
-            <pre
-              className={cn(
-                'overflow-x-auto bg-muted/50 p-3 font-mono text-xs leading-relaxed',
-                codeLanguage ? 'rounded-b-md' : 'rounded-md'
-              )}
-            >
-              <code>{codeLines.join('\n')}</code>
-            </pre>
-          </div>
-        )
-        inCodeBlock = false
-        codeLines = []
-        codeLanguage = ''
-      } else {
-        // Start code block
-        flushParagraph()
-        inCodeBlock = true
-        codeLanguage = line.slice(3).trim()
-      }
-    } else if (inCodeBlock) {
-      codeLines.push(line)
-    } else if (line.trim() === '') {
-      flushParagraph()
-    } else if (line.startsWith('# ')) {
-      flushParagraph()
-      blocks.push(
-        <h3 key={blocks.length} className="mb-2 text-base font-bold">
-          {renderInlineFormatting(line.slice(2))}
-        </h3>
-      )
-    } else if (line.startsWith('## ')) {
-      flushParagraph()
-      blocks.push(
-        <h4 key={blocks.length} className="mb-2 text-sm font-bold">
-          {renderInlineFormatting(line.slice(3))}
-        </h4>
-      )
-    } else if (line.startsWith('- ') || line.startsWith('* ')) {
-      flushParagraph()
-      blocks.push(
-        <li key={blocks.length} className="mb-1 ml-4 list-disc text-sm last:mb-0">
-          {renderInlineFormatting(line.slice(2))}
-        </li>
-      )
-    } else if (/^\d+\.\s/.test(line)) {
-      flushParagraph()
-      const matchResult = line.match(/^\d+\.\s(.*)/)
-      blocks.push(
-        <li key={blocks.length} className="mb-1 ml-4 list-decimal text-sm last:mb-0">
-          {renderInlineFormatting(matchResult?.[1] ?? line)}
-        </li>
-      )
-    } else {
-      currentBlock.push(line)
-    }
-  }
-
-  // Flush remaining content
-  if (inCodeBlock && codeLines.length > 0) {
-    blocks.push(
-      <pre key={blocks.length} className="mb-2 overflow-x-auto rounded-md bg-muted/50 p-3 font-mono text-xs leading-relaxed last:mb-0">
-        <code>{codeLines.join('\n')}</code>
-      </pre>
+    // Inline code
+    return (
+      <code className="rounded bg-background/40 px-1 py-0.5 font-mono text-xs" {...props}>
+        {children}
+      </code>
     )
-  }
-  flushParagraph()
-
-  return blocks
+  },
+  // Tables
+  table({ children }) {
+    return (
+      <div className="mb-2 overflow-x-auto last:mb-0">
+        <table className="min-w-full text-xs">{children}</table>
+      </div>
+    )
+  },
+  th({ children }) {
+    return (
+      <th className="border-b border-foreground/20 px-2 py-1.5 text-left font-semibold whitespace-nowrap">
+        {children}
+      </th>
+    )
+  },
+  td({ children }) {
+    return (
+      <td className="border-b border-foreground/10 px-2 py-1 whitespace-nowrap">
+        {children}
+      </td>
+    )
+  },
 }
 
-function renderInlineFormatting(text: string): React.ReactNode[] {
-  const nodes: React.ReactNode[] = []
-  // Match bold, italic, inline code, and source references
-  const regex = /(\*\*(.+?)\*\*)|(\*(.+?)\*)|(`(.+?)`)|(\[Source\s+(\d+)\])/g
-  let lastIndex = 0
-  let match: RegExpExecArray | null
+const remarkPlugins = [remarkGfm]
 
-  while ((match = regex.exec(text)) !== null) {
-    // Push text before match
-    if (match.index > lastIndex) {
-      nodes.push(text.slice(lastIndex, match.index))
-    }
-
-    if (match[1]) {
-      // Bold
-      nodes.push(
-        <strong key={`b-${match.index}`} className="font-semibold">
-          {match[2]}
-        </strong>
-      )
-    } else if (match[3]) {
-      // Italic
-      nodes.push(
-        <em key={`i-${match.index}`}>
-          {match[4]}
-        </em>
-      )
-    } else if (match[5]) {
-      // Inline code
-      nodes.push(
-        <code key={`c-${match.index}`} className="rounded bg-muted/70 px-1 py-0.5 font-mono text-xs">
-          {match[6]}
-        </code>
-      )
-    } else if (match[7]) {
-      // Source reference
-      nodes.push(
-        <span
-          key={`s-${match.index}`}
-          className="inline-flex h-5 w-5 items-center justify-center rounded-full bg-primary/20 text-[10px] font-medium text-primary align-text-top ml-0.5"
-        >
-          {match[8]}
-        </span>
-      )
-    }
-
-    lastIndex = match.index + match[0].length
-  }
-
-  // Push remaining text
-  if (lastIndex < text.length) {
-    nodes.push(text.slice(lastIndex))
-  }
-
-  return nodes.length > 0 ? nodes : [text]
-}
+const AssistantContent = memo(function AssistantContent({
+  content,
+  isStreaming,
+}: {
+  content: string
+  isStreaming: boolean
+}) {
+  const memoizedContent = useMemo(() => content, [content])
+  return (
+    <div className="prose prose-sm dark:prose-invert max-w-none min-w-0 break-words
+      prose-p:mb-2 prose-p:last:mb-0 prose-p:leading-relaxed
+      prose-headings:mb-2 prose-headings:font-bold
+      prose-li:mb-1
+      prose-pre:bg-transparent prose-pre:p-0
+      [&_ul]:my-1 [&_ol]:my-1"
+    >
+      <ReactMarkdown remarkPlugins={remarkPlugins} components={markdownComponents}>
+        {memoizedContent}
+      </ReactMarkdown>
+      {isStreaming && (
+        <span className="inline-block h-4 w-1.5 animate-pulse bg-foreground/70 ml-0.5 align-text-bottom rounded-sm" />
+      )}
+    </div>
+  )
+})
 
 export function ChatMessageBubble({ message, isStreaming = false }: ChatMessageBubbleProps) {
   const isUser = message.role === 'user'
@@ -200,12 +126,7 @@ export function ChatMessageBubble({ message, isStreaming = false }: ChatMessageB
           {isUser ? (
             <p className="whitespace-pre-wrap break-words">{message.content}</p>
           ) : (
-            <div className="min-w-0 break-words">
-              {renderMarkdown(message.content)}
-              {isStreaming && (
-                <span className="inline-block h-4 w-1.5 animate-pulse bg-foreground/70 ml-0.5 align-text-bottom rounded-sm" />
-              )}
-            </div>
+            <AssistantContent content={message.content} isStreaming={isStreaming} />
           )}
         </div>
 

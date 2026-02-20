@@ -28,16 +28,29 @@ class QlibContext:
     _initialized: bool = False
 
     # Market codes used by WebStock -> Qlib region mapping
+    # Qlib only supports two built-in regions: "cn" and "us".
+    # HK and metals use "us" region for init (actual calendar comes from provider_uri).
     MARKET_TO_REGION = {
         "us": "us",
-        "hk": "hk",
+        "hk": "us",
         "sh": "cn",
         "sz": "cn",
         "cn": "cn",
-        "metal": "us",  # Metals use US market calendar
+        "metal": "us",
     }
 
-    REGION_TO_DATA_DIR = {
+    # Data directory per market (not per region, since multiple markets share a region)
+    MARKET_TO_DATA_DIR = {
+        "us": "us_data",
+        "hk": "hk_data",
+        "sh": "cn_data",
+        "sz": "cn_data",
+        "cn": "cn_data",
+        "metal": "metal_data",
+    }
+
+    # Canonical markets with distinct data directories (for status reporting)
+    STATUS_MARKETS = {
         "us": "us_data",
         "hk": "hk_data",
         "cn": "cn_data",
@@ -59,12 +72,7 @@ class QlibContext:
             )
 
         base_dir = data_dir or os.environ.get("QLIB_DATA_DIR", "/app/data/qlib")
-
-        # For metals, use "us" region but "metal_data" directory
-        if market == "metal":
-            provider_uri = os.path.join(base_dir, "metal_data")
-        else:
-            provider_uri = os.path.join(base_dir, cls.REGION_TO_DATA_DIR[region])
+        provider_uri = os.path.join(base_dir, cls.MARKET_TO_DATA_DIR[market])
 
         with cls._lock:
             if cls._current_provider_uri == provider_uri and cls._initialized:

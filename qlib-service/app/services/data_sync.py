@@ -171,7 +171,7 @@ class DataSyncService:
                 logger.warning("Failed to read sync_metadata.json: %s", e)
 
         markets: Dict[str, Dict[str, Any]] = {}
-        for market, subdir in QlibContext.REGION_TO_DATA_DIR.items():
+        for market, subdir in QlibContext.STATUS_MARKETS.items():
             market_dir = os.path.join(data_dir, subdir)
             data_exists = os.path.isdir(market_dir) and bool(os.listdir(market_dir))
 
@@ -520,7 +520,7 @@ class DataSyncService:
                 logger.warning("Failed to read sync_metadata.json, starting fresh: %s", e)
 
         # Determine market data dir for date range
-        subdir = QlibContext.REGION_TO_DATA_DIR.get(market, f"{market}_data")
+        subdir = QlibContext.MARKET_TO_DATA_DIR.get(market, f"{market}_data")
         market_dir = os.path.join(data_dir, subdir)
         date_range = DataSyncService._get_date_range(market_dir)
 

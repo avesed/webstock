@@ -460,7 +460,7 @@ class ChatService:
                     results = await asyncio.gather(*tasks, return_exceptions=True)
 
                     for idx, res in enumerate(results):
-                        if isinstance(res, Exception):
+                        if isinstance(res, BaseException):
                             tc = collected_tool_calls[idx]
                             logger.exception(
                                 "Tool execution raised for %s (id=%s): %s",

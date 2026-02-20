@@ -20,7 +20,7 @@ from app.skills.base import BaseSkill, SkillResult
 logger = logging.getLogger(__name__)
 
 # Maximum characters per tool result to prevent context explosion
-MAX_TOOL_RESULT_CHARS = 500
+MAX_TOOL_RESULT_CHARS = 2000
 
 # Per-tool execution timeout in seconds
 TOOL_TIMEOUT_SECONDS = 15
@@ -336,6 +336,9 @@ async def execute_chat_tool(
     except asyncio.TimeoutError:
         logger.warning("Tool %s timed out after %ds", tool_name, TOOL_TIMEOUT_SECONDS)
         return {"error": f"Tool {tool_name} timed out"}
+    except asyncio.CancelledError:
+        logger.warning("Tool %s was cancelled", tool_name)
+        return {"error": f"Tool {tool_name} was cancelled"}
     except Exception as e:
         logger.exception("Tool %s execution failed: %s", tool_name, e)
         return {"error": f"Tool {tool_name} failed"}

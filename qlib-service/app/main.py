@@ -53,7 +53,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
         market_data_dir = os.path.join(
             data_dir,
-            QlibContext.REGION_TO_DATA_DIR.get(settings.DEFAULT_MARKET, "us_data"),
+            QlibContext.MARKET_TO_DATA_DIR.get(settings.DEFAULT_MARKET, "us_data"),
         )
         if os.path.exists(market_data_dir) and os.listdir(market_data_dir):
             QlibContext.ensure_init(settings.DEFAULT_MARKET, data_dir)
