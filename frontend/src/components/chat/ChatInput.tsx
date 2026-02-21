@@ -76,7 +76,7 @@ export function ChatInput({ onSend, isStreaming, onCancel }: ChatInputProps) {
           placeholder={t('input.placeholder')}
           rows={1}
           className={cn(
-            'flex-1 resize-none rounded-lg border bg-background px-3 py-2 text-sm min-h-10',
+            'flex-1 resize-none rounded-lg border bg-background px-3 py-2 text-base min-h-10',
             'placeholder:text-muted-foreground',
             'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2',
             'ring-offset-background',

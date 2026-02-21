@@ -20,7 +20,7 @@ interface ChatMessageBubbleProps {
 const markdownComponents: React.ComponentProps<typeof ReactMarkdown>['components'] = {
   // Code blocks with optional language label
   pre({ children }) {
-    return <div className="mb-2 last:mb-0">{children}</div>
+    return <div className="mb-2 overflow-hidden last:mb-0">{children}</div>
   },
   code({ className, children, ...props }) {
     const match = /language-(\w+)/.exec(className ?? '')
@@ -84,11 +84,11 @@ const AssistantContent = memo(function AssistantContent({
 }) {
   const memoizedContent = useMemo(() => content, [content])
   return (
-    <div className="prose prose-sm dark:prose-invert max-w-none min-w-0 break-words
+    <div className="prose prose-sm dark:prose-invert max-w-none min-w-0 break-words [overflow-wrap:anywhere]
       prose-p:mb-2 prose-p:last:mb-0 prose-p:leading-relaxed
       prose-headings:mb-2 prose-headings:font-bold
       prose-li:mb-1
-      prose-pre:bg-transparent prose-pre:p-0
+      prose-pre:bg-transparent prose-pre:p-0 prose-pre:max-w-full
       [&_ul]:my-1 [&_ol]:my-1"
     >
       <ReactMarkdown remarkPlugins={remarkPlugins} components={markdownComponents}>
@@ -113,11 +113,11 @@ export function ChatMessageBubble({ message, isStreaming = false }: ChatMessageB
         </div>
       )}
 
-      <div className={cn('flex max-w-[80%] flex-col', isUser ? 'items-end' : 'items-start')}>
+      <div className={cn('flex max-w-[80%] min-w-0 flex-col', isUser ? 'items-end' : 'items-start')}>
         {/* Message bubble */}
         <div
           className={cn(
-            'rounded-2xl px-4 py-2.5 text-sm',
+            'rounded-2xl px-4 py-2.5 text-sm max-w-full overflow-hidden',
             isUser
               ? 'bg-primary text-primary-foreground rounded-br-md'
               : 'bg-muted rounded-bl-md'

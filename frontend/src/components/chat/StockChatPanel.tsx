@@ -118,7 +118,7 @@ export function StockChatPanel({
       )}
 
       {/* Scrollable messages area */}
-      <div ref={scrollRef} className="flex-1 overflow-y-auto" aria-live="polite">
+      <div ref={scrollRef} className="flex-1 overflow-y-auto overflow-x-hidden" aria-live="polite">
         <div className="px-4 py-4 space-y-4">
           {/* Loading spinner */}
           {isLoading && messages.length === 0 && (

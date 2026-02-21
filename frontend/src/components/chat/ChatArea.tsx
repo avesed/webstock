@@ -87,7 +87,7 @@ export function ChatArea() {
       )}
 
       {/* Message list */}
-      <div ref={scrollRef} className="flex-1 overflow-y-auto">
+      <div ref={scrollRef} className="flex-1 overflow-y-auto overflow-x-hidden">
         <div className="mx-auto max-w-3xl px-4 py-6 space-y-4">
           {isLoadingMessages && messages.length === 0 && (
             <div className="flex items-center justify-center py-12">
