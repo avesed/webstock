@@ -519,7 +519,6 @@ export default function AnalysisPanel({ symbol, className }: AnalysisPanelProps)
           agentStatuses,
           completedAt: Date.now(),
         })
-        queryClient.invalidateQueries({ queryKey: ['analysis-sessions', symbol] })
         break
       }
 
@@ -729,6 +728,7 @@ export default function AnalysisPanel({ symbol, className }: AnalysisPanelProps)
   const backToHistory = useCallback(() => {
     dispatch({ type: 'BACK_TO_HISTORY' })
     queryClient.removeQueries({ queryKey: ['analysis-result', symbol] })
+    queryClient.invalidateQueries({ queryKey: ['analysis-sessions', symbol] })
   }, [symbol, queryClient])
 
   const handleDeleteSession = useCallback(async (sessionId: string, e: React.MouseEvent) => {

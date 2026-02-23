@@ -103,29 +103,30 @@ class DiscussionService:
 
     async def _persist_message(
         self,
+        db: AsyncSession,
         session_id: uuid.UUID,
         msg_data: Dict[str, Any],
     ) -> None:
         """Persist a single discussion message to DB immediately.
 
-        Each message gets its own session+commit so that messages survive
-        even if the stream is interrupted (e.g. client disconnect on mobile).
+        Uses a shared DB session from the caller to avoid connection pool
+        exhaustion (NullPool opens a fresh connection per context manager).
+        Each message is committed individually so partial results survive
+        client disconnects.
         """
-        from app.db.task_session import get_task_session
-
         try:
-            async with get_task_session() as db:
-                msg = DiscussionMessageModel(
-                    id=uuid.uuid4(),
-                    session_id=session_id,
-                    round=msg_data["round"],
-                    agent_type=msg_data["agent_type"],
-                    content=msg_data["content"],
-                    latency_ms=msg_data.get("latency_ms"),
-                )
-                db.add(msg)
-                await db.commit()
+            msg = DiscussionMessageModel(
+                id=uuid.uuid4(),
+                session_id=session_id,
+                round=msg_data["round"],
+                agent_type=msg_data["agent_type"],
+                content=msg_data["content"],
+                latency_ms=msg_data.get("latency_ms"),
+            )
+            db.add(msg)
+            await db.commit()
         except Exception:
+            await db.rollback()
             logger.warning(
                 "讨论组: 消息持久化失败 session=%s agent=%s",
                 session_id, msg_data.get("agent_type", "unknown"),
@@ -142,12 +143,17 @@ class DiscussionService:
         Messages are persisted incrementally as each agent completes, so
         that partial results survive client disconnects (e.g. mobile users
         navigating away mid-stream).
+
+        Uses a single shared NullPool DB session for the entire stream to
+        avoid connection exhaustion (previously each _persist_message opened
+        its own connection, ~20 per discussion).
         """
         from app.agents.langgraph.discussion_workflow import stream_discussion
         from app.db.task_session import get_task_session
 
-        # Load session
+        # Single DB session for the entire stream lifecycle
         async with get_task_session() as db:
+            # Load session
             result = await db.execute(
                 select(DiscussionSession).where(
                     DiscussionSession.id == session_id,
@@ -168,87 +174,88 @@ class DiscussionService:
             session.status = "discussing"
             await db.commit()
 
-        total_tokens = 0
-        total_latency_ms = 0
-        current_round = 0
-        compact_context = ""
-        message_count = 0
+            total_tokens = 0
+            total_latency_ms = 0
+            current_round = 0
+            compact_context = ""
+            message_count = 0
 
-        try:
-            async for event in stream_discussion(
-                symbol=symbol,
-                market=market,
-                language=language,
-                session_id=str(session_id),
-                max_rounds=max_rounds,
-            ):
-                event_type = event.get("type", "")
+            try:
+                async for event in stream_discussion(
+                    symbol=symbol,
+                    market=market,
+                    language=language,
+                    session_id=str(session_id),
+                    max_rounds=max_rounds,
+                ):
+                    event_type = event.get("type", "")
 
-                # Persist completed agent messages immediately
-                if event_type in ("agent_statement_complete", "agent_response_complete"):
-                    data = event.get("data", {})
-                    msg_round = data.get("round", current_round)
-                    if event_type == "agent_statement_complete":
-                        msg_round = 0
-                    await self._persist_message(session_id, {
-                        "round": msg_round,
-                        "agent_type": data.get("agent_type", "unknown"),
-                        "content": data.get("content", ""),
-                        "latency_ms": data.get("latency_ms", 0),
-                    })
-                    message_count += 1
-                    total_latency_ms += data.get("latency_ms", 0)
+                    # Persist completed agent messages immediately
+                    if event_type in ("agent_statement_complete", "agent_response_complete"):
+                        data = event.get("data", {})
+                        msg_round = data.get("round", current_round)
+                        if event_type == "agent_statement_complete":
+                            msg_round = 0
+                        await self._persist_message(db, session_id, {
+                            "round": msg_round,
+                            "agent_type": data.get("agent_type", "unknown"),
+                            "content": data.get("content", ""),
+                            "latency_ms": data.get("latency_ms", 0),
+                        })
+                        message_count += 1
+                        total_latency_ms += data.get("latency_ms", 0)
 
-                elif event_type == "moderator_guidance":
-                    data = event.get("data", {})
-                    await self._persist_message(session_id, {
-                        "round": current_round,
-                        "agent_type": "moderator",
-                        "content": data.get("content", ""),
-                    })
-                    message_count += 1
+                    elif event_type == "moderator_guidance":
+                        data = event.get("data", {})
+                        await self._persist_message(db, session_id, {
+                            "round": current_round,
+                            "agent_type": "moderator",
+                            "content": data.get("content", ""),
+                        })
+                        message_count += 1
 
-                elif event_type == "debate_round_start":
-                    current_round += 1
+                    elif event_type == "debate_round_start":
+                        current_round += 1
 
-                elif event_type == "synthesis_complete":
-                    data = event.get("data", {})
-                    # Capture compact_context from synthesis node
-                    compact = data.get("compact_context", "")
-                    if compact:
-                        compact_context = compact
-                    await self._persist_message(session_id, {
-                        "round": -1,
-                        "agent_type": "synthesis",
-                        "content": data.get("content", ""),
-                    })
-                    message_count += 1
+                    elif event_type == "synthesis_complete":
+                        data = event.get("data", {})
+                        # Capture compact_context from synthesis node
+                        compact = data.get("compact_context", "")
+                        if compact:
+                            compact_context = compact
+                        await self._persist_message(db, session_id, {
+                            "round": -1,
+                            "agent_type": "synthesis",
+                            "content": data.get("content", ""),
+                        })
+                        message_count += 1
 
-                elif event_type == "discussion_complete":
-                    data = event.get("data", {})
-                    current_round = data.get("total_rounds", current_round)
-                    total_tokens = data.get("total_tokens", total_tokens)
-                    # Use workflow-generated compact_context if available
-                    wf_compact = data.get("compact_context", "")
-                    if wf_compact:
-                        compact_context = wf_compact
+                    elif event_type == "discussion_complete":
+                        data = event.get("data", {})
+                        current_round = data.get("total_rounds", current_round)
+                        total_tokens = data.get("total_tokens", total_tokens)
+                        # Use workflow-generated compact_context if available
+                        wf_compact = data.get("compact_context", "")
+                        if wf_compact:
+                            compact_context = wf_compact
 
-                    # Update session metadata (messages already persisted incrementally)
-                    async with get_task_session() as db:
+                        # Update session metadata (messages already persisted)
+                        # Expire cached ORM objects so we get a fresh read
+                        db.expire_all()
                         result = await db.execute(
                             select(DiscussionSession).where(
                                 DiscussionSession.id == session_id
                             )
                         )
-                        session = result.scalar_one_or_none()
-                        if session:
-                            session.status = "completed"
-                            session.discussion_rounds = current_round
-                            session.synthesis_report = data.get("synthesis_report", "")
-                            session.total_tokens = total_tokens
-                            session.total_latency_ms = total_latency_ms
-                            session.completed_at = datetime.now(timezone.utc)
-                            session.compact_context = compact_context or (
+                        sess = result.scalar_one_or_none()
+                        if sess:
+                            sess.status = "completed"
+                            sess.discussion_rounds = current_round
+                            sess.synthesis_report = data.get("synthesis_report", "")
+                            sess.total_tokens = total_tokens
+                            sess.total_latency_ms = total_latency_ms
+                            sess.completed_at = datetime.now(timezone.utc)
+                            sess.compact_context = compact_context or (
                                 data.get("synthesis_report", "")[:4000]
                             )
 
@@ -258,42 +265,43 @@ class DiscussionService:
                             session_id, current_round, message_count, total_tokens,
                         )
 
-                elif event_type == "error":
-                    # Mark session as failed
-                    async with get_task_session() as db:
+                    elif event_type == "error":
+                        # Mark session as failed
+                        db.expire_all()
                         result = await db.execute(
                             select(DiscussionSession).where(
                                 DiscussionSession.id == session_id
                             )
                         )
-                        session = result.scalar_one_or_none()
-                        if session:
-                            session.status = "failed"
-                            session.error = event.get("data", {}).get("message", "Unknown error")
+                        sess = result.scalar_one_or_none()
+                        if sess:
+                            sess.status = "failed"
+                            sess.error = event.get("data", {}).get("message", "Unknown error")
                             await db.commit()
 
-                # Yield all events to the API layer
-                yield event
+                    # Yield all events to the API layer
+                    yield event
 
-        except Exception as e:
-            logger.exception("讨论组: 流式讨论服务错误 session=%s: %s", session_id, e)
-            # Mark session as failed
-            try:
-                async with get_task_session() as db:
+            except Exception as e:
+                logger.exception("讨论组: 流式讨论服务错误 session=%s: %s", session_id, e)
+                # Mark session as failed using the shared session
+                try:
+                    await db.rollback()
+                    db.expire_all()
                     result = await db.execute(
                         select(DiscussionSession).where(
                             DiscussionSession.id == session_id
                         )
                     )
-                    session = result.scalar_one_or_none()
-                    if session:
-                        session.status = "failed"
-                        session.error = str(e)[:500]
+                    sess = result.scalar_one_or_none()
+                    if sess:
+                        sess.status = "failed"
+                        sess.error = str(e)[:500]
                         await db.commit()
-            except Exception:
-                logger.error("讨论组: 无法标记会话失败 session=%s", session_id, exc_info=True)
+                except Exception:
+                    logger.error("讨论组: 无法标记会话失败 session=%s", session_id, exc_info=True)
 
-            yield {"type": "error", "data": {"message": f"Discussion service error: {str(e)[:200]}"}}
+                yield {"type": "error", "data": {"message": f"Discussion service error: {str(e)[:200]}"}}
 
     async def mark_orphaned_session(self, session_id: uuid.UUID) -> None:
         """Mark a session as failed if it's still in 'discussing' or 'synthesizing' status.

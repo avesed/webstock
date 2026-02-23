@@ -171,6 +171,30 @@ async def stream_discussion(
     market = session.market
     language = session.language
 
+    task_manager = get_task_manager()
+
+    # Detect orphaned sessions: status is "discussing"/"synthesizing" but no
+    # *running* Redis task exists.  This happens when a previous stream failed
+    # (e.g. TooManyConnectionsError) or the task completed but the DB status
+    # wasn't updated.  Without this check, every page load would re-start or
+    # replay the entire workflow while the session stays stuck in "discussing".
+    if session.status in ("discussing", "synthesizing"):
+        running_task = await task_manager.find_active_task(
+            "discussion", current_user.id, symbol,
+        )
+        if not running_task:
+            logger.warning(
+                "讨论组: 会话 %s 状态为 %s 但无活跃任务, 标记为失败",
+                str(session_id)[:8], session.status,
+            )
+            session.status = "failed"
+            session.error = "Session orphaned (no active task)"
+            await db.commit()
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Session already failed",
+            )
+
     logger.info(
         "讨论组: 流式请求 session=%s symbol=%s user=%d lastEventId=%s",
         str(session_id)[:8], symbol, current_user.id, last_event_id,
@@ -200,7 +224,6 @@ async def stream_discussion(
             if token is not None:
                 current_user_ai_config.reset(token)
 
-    task_manager = get_task_manager()
     task_id, _is_new = await task_manager.get_or_create_task(
         task_type="discussion",
         user_id=current_user.id,

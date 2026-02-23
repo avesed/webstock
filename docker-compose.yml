@@ -46,7 +46,7 @@ services:
       - "-c"
       - "max_parallel_workers=4"
       - "-c"
-      - "max_connections=150"
+      - "max_connections=200"
       - "-c"
       - "jit=off"
       - "-c"
