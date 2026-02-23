@@ -15,7 +15,7 @@ import re
 import time
 from typing import Any, Dict, List, Optional, Tuple
 
-from app.core.executor import run_in_executor
+from app.core.executor import get_executor, run_in_executor
 
 logger = logging.getLogger(__name__)
 
@@ -189,7 +189,7 @@ class TrafilaturaContentProvider:
                 return result_json, image_urls
 
             result = await asyncio.wait_for(
-                loop.run_in_executor(None, _fetch_and_extract),
+                loop.run_in_executor(get_executor(), _fetch_and_extract),
                 timeout=FETCH_TIMEOUT + 5,
             )
             result_json, image_urls = result

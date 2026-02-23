@@ -7,6 +7,7 @@ from fastapi import APIRouter, Response
 
 from app.config import get_settings
 from app.core.cache import get_redis
+from app.core.executor import check_executor_health
 
 logger = logging.getLogger(__name__)
 router = APIRouter(tags=["health"])
@@ -14,7 +15,7 @@ router = APIRouter(tags=["health"])
 
 @router.get("/health")
 async def health_check(response: Response):
-    """Health check with Redis connectivity and provider key status.
+    """Health check with Redis connectivity, executor health, and provider key status.
 
     Returns HTTP 503 when degraded so that Docker health checks
     (``curl -f``) correctly report the container as unhealthy and
@@ -31,6 +32,18 @@ async def health_check(response: Response):
     except Exception as e:
         logger.warning("Redis health check failed: %s", e)
         checks["redis"] = f"error: {e}"
+        checks["status"] = "degraded"
+
+    # Check ThreadPoolExecutor health (can all threads be stuck?)
+    try:
+        executor_ok = await check_executor_health()
+        checks["executor"] = "ok" if executor_ok else "stuck"
+        if not executor_ok:
+            logger.warning("Executor health check failed: thread pool may be exhausted")
+            checks["status"] = "degraded"
+    except Exception as e:
+        logger.warning("Executor health check error: %s", e)
+        checks["executor"] = f"error: {e}"
         checks["status"] = "degraded"
 
     # Report which API keys are configured (DB + env, never expose actual keys)

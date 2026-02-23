@@ -26,7 +26,7 @@ from fastapi import FastAPI
 
 from app.config import get_settings
 from app.core.cache import close_redis
-from app.core.executor import shutdown_executor
+from app.core.executor import shutdown_executor, start_watchdog, stop_watchdog
 from app.core.request_id import RequestIdFilter, RequestIdMiddleware
 
 settings = get_settings()
@@ -58,10 +58,12 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     from app.core.api_keys import load_api_keys_from_db, start_subscriber, stop_subscriber
     await load_api_keys_from_db()
     start_subscriber()
+    start_watchdog()
 
     yield
 
     logger.info("Shutting down data-service...")
+    await stop_watchdog()
     await stop_subscriber()
     shutdown_executor()
     await close_redis()
