@@ -17,6 +17,8 @@ from app.models.report import (
 )
 from app.models.document_embedding import DocumentEmbedding
 from app.models.chat import Conversation, ChatMessage
+from app.models.discussion import DiscussionSession, DiscussionMessage
+from app.models.analysis_session import AnalysisSession
 from app.models.llm_provider import LlmProvider
 from app.models.pipeline_event import PipelineEvent
 from app.models.qlib_backtest import QlibBacktest, BacktestStatus
@@ -50,6 +52,9 @@ __all__ = [
     "DocumentEmbedding",
     "Conversation",
     "ChatMessage",
+    "DiscussionSession",
+    "DiscussionMessage",
+    "AnalysisSession",
     "LlmProvider",
     "PipelineEvent",
     "QlibBacktest",

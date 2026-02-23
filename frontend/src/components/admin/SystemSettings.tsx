@@ -20,7 +20,7 @@ import { ModelAssignments } from './ModelAssignments'
 import { useToast } from '@/hooks'
 import { adminApi } from '@/api/admin'
 import { cn } from '@/lib/utils'
-import type { SystemConfig, ModelAssignmentsConfig, LlmProvider, Phase2Config } from '@/types'
+import type { SystemConfig, ModelAssignmentsConfig, LlmProvider, Phase2Config, DiscussionConfig } from '@/types'
 
 const DEFAULT_MODEL_ASSIGNMENTS: ModelAssignmentsConfig = {
   chat: { providerId: null, model: 'gpt-4o-mini' },
@@ -41,6 +41,13 @@ const DEFAULT_PHASE2_CONFIG: Phase2Config = {
   layer2Lightweight: { providerId: null, model: 'gpt-4o-mini' },
   cacheEnabled: true,
   cacheTtlMinutes: 60,
+}
+
+const DEFAULT_DISCUSSION_CONFIG: DiscussionConfig = {
+  enabled: false,
+  maxRounds: 3,
+  providerId: null,
+  model: 'gpt-4o',
 }
 
 const DEFAULT_CONFIG: SystemConfig = {
@@ -76,6 +83,7 @@ const DEFAULT_CONFIG: SystemConfig = {
   },
   modelAssignments: DEFAULT_MODEL_ASSIGNMENTS,
   phase2: DEFAULT_PHASE2_CONFIG,
+  discussion: DEFAULT_DISCUSSION_CONFIG,
 }
 
 interface ToggleSwitchProps {
@@ -203,6 +211,7 @@ export function SystemSettings() {
         ...config,
         modelAssignments: config.modelAssignments ?? DEFAULT_MODEL_ASSIGNMENTS,
         phase2: config.phase2 ?? DEFAULT_PHASE2_CONFIG,
+        discussion: config.discussion ?? DEFAULT_DISCUSSION_CONFIG,
       })
       setHasNewsChanges(false)
       setHasFeaturesChanges(false)
@@ -298,6 +307,18 @@ export function SystemSettings() {
     setHasNewsChanges(true)
   }, [])
 
+  // Discussion config changes (from Features tab)
+  const handleDiscussionChange = useCallback(<K extends keyof DiscussionConfig>(key: K, value: DiscussionConfig[K]) => {
+    setFormData((prev) => ({
+      ...prev,
+      discussion: {
+        ...(prev.discussion ?? DEFAULT_DISCUSSION_CONFIG),
+        [key]: value,
+      },
+    }))
+    setHasFeaturesChanges(true)
+  }, [])
+
   // Cache changes (from Models tab)
   const handleCacheChange = useCallback(<K extends 'cacheEnabled' | 'cacheTtlMinutes'>(key: K, value: Phase2Config[K]) => {
     setFormData((prev) => ({
@@ -340,7 +361,7 @@ export function SystemSettings() {
   }
 
   const handleSaveFeatures = () => {
-    updateMutation.mutate({ features: formData.features } as Partial<SystemConfig>, {
+    updateMutation.mutate({ features: formData.features, discussion: formData.discussion } as Partial<SystemConfig>, {
       onSuccess: () => {
         queryClient.invalidateQueries({ queryKey: ['admin-system-config'] })
         toast({ title: t('settings.saved') })
@@ -396,6 +417,7 @@ export function SystemSettings() {
       setFormData((prev) => ({
         ...prev,
         features: config.features,
+        discussion: config.discussion ?? DEFAULT_DISCUSSION_CONFIG,
       }))
       setHasFeaturesChanges(false)
     }
@@ -813,6 +835,54 @@ export function SystemSettings() {
                     checked={formData.features.requireRegistrationApproval}
                     onCheckedChange={(checked) => handleChange('features', 'requireRegistrationApproval', checked)}
                   />
+                </div>
+
+                <Separator />
+
+                {/* Discussion Group Settings */}
+                <div className="space-y-4">
+                  <div className="space-y-1">
+                    <h4 className="text-sm font-medium">{t('settings.discussion.title')}</h4>
+                    <p className="text-sm text-muted-foreground">{t('settings.discussion.description')}</p>
+                  </div>
+
+                  <div className="flex items-center justify-between">
+                    <div className="space-y-0.5">
+                      <Label>{t('settings.discussion.enabled')}</Label>
+                      <p className="text-sm text-muted-foreground">{t('settings.discussion.enabledDescription')}</p>
+                    </div>
+                    <ToggleSwitch
+                      checked={(formData.discussion ?? DEFAULT_DISCUSSION_CONFIG).enabled}
+                      onCheckedChange={(checked) => handleDiscussionChange('enabled', checked)}
+                    />
+                  </div>
+
+                  <div className={cn('space-y-4 transition-opacity', !(formData.discussion ?? DEFAULT_DISCUSSION_CONFIG).enabled && 'opacity-50 pointer-events-none')}>
+                    <div className="space-y-2">
+                      <Label htmlFor="discussion-max-rounds">{t('settings.discussion.maxRounds')}</Label>
+                      <Input
+                        id="discussion-max-rounds"
+                        type="number"
+                        min={1}
+                        max={5}
+                        value={(formData.discussion ?? DEFAULT_DISCUSSION_CONFIG).maxRounds}
+                        onChange={(e) => handleDiscussionChange('maxRounds', parseInt(e.target.value) || 3)}
+                      />
+                      <p className="text-xs text-muted-foreground">{t('settings.discussion.maxRoundsHint')}</p>
+                    </div>
+
+                    {enabledProviders.length > 0 && (
+                      <ModelSelectorRow
+                        label={t('settings.discussion.model')}
+                        providerId={(formData.discussion ?? DEFAULT_DISCUSSION_CONFIG).providerId}
+                        model={(formData.discussion ?? DEFAULT_DISCUSSION_CONFIG).model}
+                        providers={enabledProviders}
+                        onProviderChange={(id) => handleDiscussionChange('providerId', id)}
+                        onModelChange={(m) => handleDiscussionChange('model', m)}
+                        t={t}
+                      />
+                    )}
+                  </div>
                 </div>
 
               </CardContent>

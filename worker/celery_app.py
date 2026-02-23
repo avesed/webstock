@@ -33,6 +33,7 @@ celery_app = Celery(
         "worker.tasks.daily_bar_tasks",
         "worker.tasks.qlib_sync",
         "worker.tasks.stock_profile_tasks",
+        "worker.tasks.session_cleanup",
     ],
 )
 
@@ -88,6 +89,10 @@ celery_app.conf.update(
         "cleanup-expired-tokens": {
             "task": "worker.tasks.cleanup_expired_tokens",
             "schedule": 3600.0,  # Every hour
+        },
+        "cleanup-stuck-discussions": {
+            "task": "worker.tasks.cleanup_stuck_discussions",
+            "schedule": crontab(minute="*/10"),  # Every 10 minutes
         },
         "monitor-news": {
             "task": "worker.tasks.news_monitor.monitor_news",
@@ -164,6 +169,10 @@ celery_app.conf.update(
         "build-stock-knowledge-base": {
             "task": "worker.tasks.stock_profile_tasks.build_stock_knowledge_base",
             "schedule": crontab(day_of_week=0, hour=6, minute=0),  # Weekly Sunday 6:00 AM UTC
+        },
+        "cleanup-old-sessions": {
+            "task": "worker.tasks.session_cleanup.cleanup_old_sessions",
+            "schedule": crontab(hour=5, minute=30),  # Daily at 5:30 AM UTC
         },
         # JWT Key Rotation - DISABLED by default
         # Manual rotation recommended: python worker/scripts/manage_keys.py rotate

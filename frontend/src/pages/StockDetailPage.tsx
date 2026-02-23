@@ -76,6 +76,13 @@ export default function StockDetailPage() {
     setSubTab,
   } = useTabNavigation()
 
+  // Track first activation of AI tab — once visited, forceMount keeps it alive
+  // across primary tab switches so the discussion SSE stream isn't interrupted.
+  const [aiTabActivated, setAiTabActivated] = useState(primaryTab === 'ai')
+  useEffect(() => {
+    if (primaryTab === 'ai') setAiTabActivated(true)
+  }, [primaryTab])
+
   const upperSymbol = symbol?.toUpperCase() ?? ''
   const isMetalAsset = isMetal(upperSymbol)
 
@@ -591,13 +598,15 @@ export default function StockDetailPage() {
             </div>
           </TabsContent>
 
-          {/* AI Tab - 全宽单列布局 */}
-          <TabsContent value="ai">
-            <AITab
-              symbol={upperSymbol}
-              subTab={subTab as AISubTab}
-              onSubTabChange={(tab) => setSubTab(tab)}
-            />
+          {/* AI Tab - 全宽单列布局, forceMount after first visit to preserve discussion stream */}
+          <TabsContent value="ai" {...(aiTabActivated ? { forceMount: true as const } : {})} className={aiTabActivated ? 'data-[state=inactive]:hidden' : ''}>
+            {aiTabActivated && (
+              <AITab
+                symbol={upperSymbol}
+                subTab={subTab as AISubTab}
+                onSubTabChange={(tab) => setSubTab(tab)}
+              />
+            )}
           </TabsContent>
 
           {/* Quant Tab - 量化因子 */}

@@ -118,6 +118,15 @@ def _register_all_skills(registry: SkillRegistry) -> None:
     from app.skills.qlib.get_backtest_skill import QlibGetBacktestSkill
     from app.skills.qlib.portfolio_skill import PortfolioOptimizationSkill
 
+    # Discussion (agent-as-skill)
+    from app.skills.discussion_skills import (
+        AskFundamentalExpertSkill,
+        AskTechnicalExpertSkill,
+        AskSentimentExpertSkill,
+        AskNewsExpertSkill,
+        DispatchRoundSkill,
+    )
+
     for skill_class in [
         # Market data
         GetStockQuoteSkill,
@@ -153,6 +162,12 @@ def _register_all_skills(registry: SkillRegistry) -> None:
         QlibBacktestSkill,
         QlibGetBacktestSkill,
         PortfolioOptimizationSkill,
+        # Discussion (agent-as-skill + moderator dispatch)
+        AskFundamentalExpertSkill,
+        AskTechnicalExpertSkill,
+        AskSentimentExpertSkill,
+        AskNewsExpertSkill,
+        DispatchRoundSkill,
     ]:
         registry.register(skill_class())
 

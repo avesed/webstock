@@ -33,6 +33,8 @@ class LlmUsageCallbackHandler(AsyncCallbackHandler):
         self.purpose = purpose
         self.user_id = user_id
         self.metadata = metadata
+        # Accumulated token count for callers that need it (e.g. discussion nodes)
+        self.total_tokens: int = 0
 
     async def on_llm_end(
         self,
@@ -43,10 +45,6 @@ class LlmUsageCallbackHandler(AsyncCallbackHandler):
         **kwargs: Any,
     ) -> None:
         """Extract usage from LLM response and record it."""
-        from app.core.llm.gateway import _usage_recorder
-        if not _usage_recorder:
-            return
-
         try:
             # Extract usage from LLMResult.llm_output
             llm_output = response.llm_output or {}
@@ -56,6 +54,13 @@ class LlmUsageCallbackHandler(AsyncCallbackHandler):
             completion_tokens = token_usage.get("completion_tokens", 0) or 0
             cached_tokens = token_usage.get("cached_tokens", 0) or 0
 
+            # Always accumulate for callers that read total_tokens directly
+            self.total_tokens += prompt_tokens + completion_tokens
+
+            if not (prompt_tokens or completion_tokens):
+                logger.debug("No token usage in LLM response for purpose=%s", self.purpose)
+                return
+
             # Model name from llm_output or generations
             model = llm_output.get("model_name", "")
             if not model and response.generations:
@@ -64,7 +69,8 @@ class LlmUsageCallbackHandler(AsyncCallbackHandler):
                     info = gen[0].generation_info or {}
                     model = info.get("model", "")
 
-            if not (prompt_tokens or completion_tokens):
+            from app.core.llm.gateway import _usage_recorder
+            if not _usage_recorder:
                 return
 
             await _usage_recorder(

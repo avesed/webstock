@@ -14,7 +14,7 @@ export type TraditionalSubTab = 'financials' | 'news'
 /**
  * Sub-tab values for AI tab
  */
-export type AISubTab = 'analysis' | 'extension'
+export type AISubTab = 'analysis' | 'extension' | 'discussion'
 
 /**
  * Sub-tab values for Quant tab
@@ -36,7 +36,7 @@ const VALID_PRIMARY_TABS: PrimaryTab[] = ['traditional', 'ai', 'quant']
  */
 const VALID_SUB_TABS: Record<PrimaryTab, SubTab[]> = {
   traditional: ['financials', 'news'],
-  ai: ['analysis', 'extension'],
+  ai: ['analysis', 'discussion', 'extension'],
   quant: ['factors'],
 }
 

@@ -234,5 +234,39 @@
     "swipeToDelete": "滑动删除",
     "undoDelete": "撤销",
     "itemDeleted": "已删除"
+  },
+  "discussion": {
+    "title": "讨论组",
+    "startDiscussion": "开始讨论",
+    "startDiscussionDesc": "启动多专家圆桌讨论，由综合专家主持",
+    "status": {
+      "idle": "就绪",
+      "loading": "准备中",
+      "fetchingData": "获取市场数据...",
+      "discussing": "讨论中",
+      "synthesizing": "生成综合报告...",
+      "completed": "已完成",
+      "failed": "讨论失败"
+    },
+    "agents": {
+      "moderator": "综合专家",
+      "fundamental": "基本面专家",
+      "technical": "技术面专家",
+      "sentiment": "情绪面专家",
+      "news": "新闻面专家",
+      "synthesis": "综合报告"
+    },
+    "roundsLabel": "轮",
+    "continueChat": "继续对话",
+    "continueChatDesc": "基于讨论内容向专家提问",
+    "noSessions": "暂无讨论记录",
+    "pastSessions": "历史讨论",
+    "viewSession": "查看讨论",
+    "hideThread": "收起讨论过程",
+    "showThread": "展开讨论过程",
+    "error": "讨论出错",
+    "typing": "输入中...",
+    "featureDisabled": "讨论组功能未启用",
+    "featureDisabledDesc": "请联系管理员在系统设置中启用讨论组功能"
   }
 }

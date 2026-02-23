@@ -664,6 +664,105 @@ export interface SystemConfig {
   }
   modelAssignments?: ModelAssignmentsConfig
   phase2?: Phase2Config
+  discussion?: DiscussionConfig
+}
+
+// Discussion group configuration
+export interface DiscussionConfig {
+  enabled: boolean
+  maxRounds: number
+  providerId: string | null
+  model: string
+}
+
+// Discussion group types
+export type DiscussionStatus = 'pending' | 'discussing' | 'synthesizing' | 'completed' | 'failed'
+
+export interface DiscussionSession {
+  id: string
+  symbol: string
+  market: string
+  language: string
+  status: DiscussionStatus
+  synthesisReport: string | null
+  compactContext: string | null
+  discussionRounds: number
+  maxRounds: number
+  totalTokens: number | null
+  totalLatencyMs: number | null
+  createdAt: string
+  completedAt: string | null
+}
+
+export interface DiscussionMessage {
+  id: string
+  round: number
+  agentType: string
+  content: string
+  structuredData: Record<string, unknown> | null
+  toolCalls: Record<string, unknown>[] | null
+  createdAt: string
+}
+
+export interface DiscussionSessionDetail extends DiscussionSession {
+  messages: DiscussionMessage[]
+}
+
+// Analysis session types
+export interface AnalysisSession {
+  id: string
+  symbol: string
+  market: string
+  language: string
+  status: 'running' | 'completed' | 'failed'
+  createdAt: string
+  completedAt: string | null
+}
+
+export interface AnalysisSessionDetail extends AnalysisSession {
+  agentResults: Array<{
+    agent: string
+    summary: string
+    keyInsights: Array<{ title: string; description: string; importance: string }>
+    latencyMs: number | null
+  }> | null
+  synthesisContent: string | null
+  clarificationRounds: number
+  totalTokens: number | null
+  totalLatencyMs: number | null
+  error: string | null
+}
+
+export type DiscussionStreamEventType =
+  | 'heartbeat'
+  | 'discussion_start'
+  | 'data_fetch_start'
+  | 'data_fetch_complete'
+  | 'agent_statement_start'
+  | 'agent_statement_chunk'
+  | 'agent_statement_complete'
+  | 'agent_response_start'
+  | 'agent_response_chunk'
+  | 'agent_response_complete'
+  | 'agent_tool_call'
+  | 'debate_round_start'
+  | 'moderator_review_start'
+  | 'moderator_chunk'
+  | 'moderator_guidance'
+  | 'synthesis_start'
+  | 'synthesis_chunk'
+  | 'synthesis_complete'
+  | 'discussion_complete'
+  | 'timeout'
+  | 'error'
+
+export interface DiscussionStreamEvent {
+  type: DiscussionStreamEventType
+  agent_type?: string
+  content?: string
+  round?: number
+  error?: string
+  [key: string]: unknown
 }
 
 // Phase 2 multi-agent pipeline types

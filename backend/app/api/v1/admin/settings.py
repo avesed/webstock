@@ -18,6 +18,7 @@ from app.schemas.admin import (
     ActivityStats,
     ApiCallStats,
     ApiStats,
+    DiscussionConfig,
     FeaturesConfig,
     LangGraphConfig,
     LlmConfig,
@@ -427,6 +428,12 @@ async def get_system_config(
             cache_enabled=getattr(settings, 'phase2_cache_enabled', True),
             cache_ttl_minutes=getattr(settings, 'phase2_cache_ttl_minutes', 60),
         ),
+        discussion=DiscussionConfig(
+            enabled=settings.discussion_enabled,
+            max_rounds=settings.discussion_max_rounds,
+            provider_id=str(settings.discussion_provider_id) if settings.discussion_provider_id else None,
+            model=settings.discussion_model or "gpt-4o",
+        ),
     )
 
 
@@ -556,6 +563,18 @@ async def update_system_config(
             settings.phase2_cache_enabled = p2.cache_enabled
         if p2.cache_ttl_minutes is not None:
             settings.phase2_cache_ttl_minutes = p2.cache_ttl_minutes
+
+    # Update discussion settings
+    if data.discussion:
+        d = data.discussion
+        if d.enabled is not None:
+            settings.discussion_enabled = d.enabled
+        if d.max_rounds is not None:
+            settings.discussion_max_rounds = d.max_rounds
+        if d.model is not None:
+            settings.discussion_model = d.model or None
+        if d.provider_id is not None:
+            settings.discussion_provider_id = UUID(d.provider_id) if d.provider_id else None
 
     settings.updated_at = datetime.now(timezone.utc)
     settings.updated_by = admin.id
@@ -835,6 +854,8 @@ async def delete_llm_provider(
         active_assignments.append("news_filter")
     if settings.content_extraction_provider_id == provider_id:
         active_assignments.append("content_extraction")
+    if settings.discussion_provider_id == provider_id:
+        active_assignments.append("discussion")
 
     if active_assignments:
         raise HTTPException(

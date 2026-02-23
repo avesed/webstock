@@ -222,7 +222,8 @@
     "aiTab": "AI",
     "tabs": {
       "chat": "Chat",
-      "extension": "Extensions"
+      "extension": "Extensions",
+      "discussion": "Discussion"
     },
     "extensionComingSoon": "Advanced AI features coming soon. Stay tuned for portfolio optimization, risk analysis, and more.",
     "price": "Price",
@@ -404,5 +405,39 @@
     "noHoldings": "No holdings in portfolio",
     "noData": "No chart data available",
     "monthChange": "1M Change"
+  },
+  "analysis": {
+    "title": "AI Analysis",
+    "description": "Comprehensive AI-powered stock analysis",
+    "idlePrompt": "Click \"Analyze\" to generate AI-powered comprehensive analysis",
+    "btnAnalyze": "Analyze",
+    "btnReanalyze": "Re-analyze",
+    "btnCancel": "Cancel",
+    "btnHistory": "History",
+    "btnGenerating": "Generating...",
+    "agentFundamental": "Fundamental",
+    "agentTechnical": "Technical",
+    "agentSentiment": "Sentiment",
+    "agentNews": "News",
+    "progressInitializing": "Initializing analysis...",
+    "progressAnalyzing": "Analyzing with AI agents...",
+    "progressFetching": "Fetching market data...",
+    "progressRunning": "Running AI analysis...",
+    "progressSynthesizing": "Synthesizing results...",
+    "progressGeneratingSynthesis": "Generating synthesis...",
+    "progressClarifying": "Clarifying analysis...",
+    "progressClarifyingRound": "Running clarification round...",
+    "progressClarifyingComplete": "Clarification complete, refining synthesis...",
+    "progressReconnecting": "Reconnecting...",
+    "progressConnectionLost": "Connection lost. Reconnecting ({{current}}/{{max}})...",
+    "errorTimeout": "Analysis timeout. Please try again.",
+    "errorStreamEnded": "Analysis stream ended unexpectedly",
+    "errorFailed": "Analysis failed",
+    "errorGeneric": "An error occurred during analysis",
+    "clarificationBadge": "+{{count}} clarification",
+    "historyTitle": "Past analyses",
+    "deleteSession": "Delete",
+    "historyEmpty": "No analysis history yet",
+    "historyLoading": "Loading history..."
   }
 }

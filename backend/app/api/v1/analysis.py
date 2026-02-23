@@ -4,7 +4,8 @@ import asyncio
 import json
 import logging
 import time
-from typing import Optional
+import uuid
+from typing import List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from fastapi.responses import StreamingResponse
@@ -23,9 +24,12 @@ from app.schemas.analysis import (
     AgentResultResponse,
     AgentTypeEnum,
     AnalysisErrorResponse,
+    AnalysisSessionDetailResponse,
+    AnalysisSessionResponse,
     FullAnalysisResponse,
     SingleAnalysisResponse,
 )
+from app.services.analysis_session_service import AnalysisSessionService
 from app.services.stock_service import detect_market
 from app.utils.symbol_validation import validate_symbol
 
@@ -121,6 +125,26 @@ AI_ANALYSIS_RATE_LIMIT = rate_limit(
     key_prefix="ai_analysis",
 )
 
+
+async def analysis_stream_rate_limit(
+    request: Request,
+    last_event_id: str = Query("0-0", alias="lastEventId"),
+    force_new: bool = Query(False, alias="forceNew"),
+):
+    """Only rate-limit genuinely new analysis requests, not SSE reconnections.
+
+    When a client reconnects after a network hiccup it sends the last
+    received Redis Stream ID via ``lastEventId``.  A non-default value
+    (anything other than "0-0") combined with ``forceNew=False`` means
+    the client is merely resuming an existing stream and should not
+    consume a rate-limit token.
+    """
+    is_new_request = (last_event_id == "0-0") or force_new
+    if is_new_request:
+        limiter = rate_limit(max_requests=10, window_seconds=60, key_prefix="ai_analysis")
+        await limiter(request)
+
+
 async def apply_user_ai_config(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
@@ -170,6 +194,80 @@ async def apply_user_ai_config(
         )
     except Exception as e:
         logger.warning(f"Failed to load user AI config: {e}")
+
+
+# ============== Analysis Session History Endpoints ==============
+# NOTE: These MUST be declared before /{symbol} routes, otherwise
+# FastAPI matches "/sessions" as a {symbol} path parameter.
+
+
+@router.get(
+    "/sessions",
+    response_model=List[AnalysisSessionResponse],
+    summary="List analysis sessions",
+    description="List past analysis sessions for a symbol.",
+)
+async def list_analysis_sessions(
+    symbol: str = Query(..., description="Stock symbol"),
+    limit: int = Query(10, ge=1, le=50, description="Max results"),
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """List past analysis sessions for a symbol (most recent first)."""
+    sessions = await AnalysisSessionService.list_sessions(
+        db, current_user.id, symbol, limit
+    )
+    return [AnalysisSessionResponse.model_validate(s) for s in sessions]
+
+
+@router.get(
+    "/sessions/{session_id}",
+    response_model=AnalysisSessionDetailResponse,
+    summary="Get analysis session detail",
+    description="Get a single analysis session with full results.",
+)
+async def get_analysis_session_detail(
+    session_id: uuid.UUID,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Get a single analysis session with full results."""
+    session = await AnalysisSessionService.get_session(
+        db, session_id, current_user.id
+    )
+    if not session:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Analysis session not found",
+        )
+    return AnalysisSessionDetailResponse.model_validate(session)
+
+
+@router.delete(
+    "/sessions/{session_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    summary="Delete analysis session",
+    description="Delete a past analysis session.",
+)
+async def delete_analysis_session(
+    session_id: uuid.UUID,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Delete an analysis session owned by the current user."""
+    deleted = await AnalysisSessionService.delete_session(
+        db, session_id, current_user.id
+    )
+    if not deleted:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Analysis session not found",
+        )
+    await db.commit()
+    return None
+
+
+# ============== Per-Symbol Analysis Endpoints ==============
 
 
 @router.get(
@@ -628,6 +726,30 @@ async def get_analysis_status(
 
 
 @router.get(
+    "/{symbol}/task-status",
+    summary="Check analysis task status",
+    description="Check if there's a running analysis background task for this symbol.",
+)
+async def get_analysis_task_status(
+    symbol: str,
+    current_user: User = Depends(get_current_user),
+):
+    """Check for an active analysis task. Returns taskId + status, or 404."""
+    from app.services.task_manager import get_task_manager
+
+    symbol = validate_symbol(symbol)
+    task_manager = get_task_manager()
+    task_id = await task_manager.find_active_task(
+        "analysis", current_user.id, symbol,
+        include_completed=True,
+    )
+    if not task_id:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
+    meta = await task_manager.get_task_status(task_id)
+    return {"taskId": task_id, "status": meta.get("status") if meta else "unknown"}
+
+
+@router.get(
     "/{symbol}/stream/v2",
     responses={
         400: {"model": AnalysisErrorResponse, "description": "Invalid symbol"},
@@ -637,144 +759,149 @@ async def get_analysis_status(
     description="Get streaming AI analysis using LangGraph workflow with Server-Sent Events (SSE).",
 )
 async def get_langgraph_streaming_analysis(
-    request: Request,
     symbol: str,
     language: str = Query("en", description="Language for analysis output (en or zh)"),
+    last_event_id: str = Query("0-0", alias="lastEventId"),
+    force_new: bool = Query(False, alias="forceNew"),
     current_user: User = Depends(get_current_user),
-    _rate_limit: None = Depends(AI_ANALYSIS_RATE_LIMIT),
+    _rate_limit: None = Depends(analysis_stream_rate_limit),
     _ai_config: None = Depends(apply_user_ai_config),
 ):
     """
     Get streaming AI analysis using LangGraph workflow.
 
-    This endpoint uses the new layered LLM architecture with LangGraph:
-    - Analysis layer: 4 parallel agents (fundamental, technical, sentiment, news)
-    - Synthesis layer: Combines results and can request clarifications
-    - Supports up to 2 clarification rounds for better accuracy
+    The workflow runs as a background task and publishes events to Redis
+    Streams. Clients can reconnect via `lastEventId` to replay missed events.
 
-    Returns a stream of SSE events:
-    - `start`: Analysis workflow started
-    - `analysis_phase_start`: Analysis agents starting
-    - `agent_start`: Individual agent started
-    - `agent_complete`: Agent finished with results
-    - `analysis_phase_complete`: All agents finished
-    - `synthesis_phase_start`: Synthesis layer starting
-    - `synthesis_chunk`: Streaming synthesis output
-    - `clarification_needed`: Clarification requested (optional)
-    - `clarification_start`: Clarification in progress (optional)
-    - `clarification_complete`: Clarification done (optional)
-    - `synthesis_complete`: Final synthesis done
-    - `complete`: Workflow completed
-    - `error`: Error occurred
-    - `heartbeat`: Keep-alive signal
+    Query params:
+    - `lastEventId`: Redis Stream ID to resume from (default "0-0" = start)
+    - `forceNew`: Cancel any existing task and start fresh (for re-analyze)
+
+    Returns a stream of SSE events with `id:` field for reconnection.
 
     **Rate Limit**: 10 requests per minute per user
     """
+    from app.services.sse_helpers import reconnectable_sse_generator
+    from app.services.task_manager import get_task_manager
+
     symbol = validate_symbol(symbol)
     market = detect_market(symbol)
     lang = "zh" if language.lower().startswith("zh") else "en"
 
     logger.info(
-        f"LangGraph streaming analysis requested for {symbol} by user {current_user.id} (lang={lang})"
+        "分析: 流式请求 symbol=%s user=%d lang=%s lastEventId=%s forceNew=%s",
+        symbol, current_user.id, lang, last_event_id, force_new,
     )
 
-    async def event_generator():
-        """Generate SSE events from LangGraph workflow."""
-        start_time = time.time()
-        last_event_time = time.time()
-        heartbeat_task = None
-        analysis_complete = False
+    task_manager = get_task_manager()
 
-        # Queue for heartbeat events
-        heartbeat_queue: asyncio.Queue = asyncio.Queue()
+    # Force new: cancel existing task first (for "Re-analyze" button)
+    if force_new:
+        existing = await task_manager.find_active_task(
+            "analysis", current_user.id, symbol,
+            include_completed=True,
+        )
+        if existing:
+            await task_manager.cancel_task(existing)
+            await asyncio.sleep(0.3)  # let cancellation propagate
 
-        async def heartbeat_sender():
-            """Send periodic heartbeat events."""
-            nonlocal last_event_time
-            try:
-                while not analysis_complete:
-                    await asyncio.sleep(HEARTBEAT_INTERVAL_SECONDS)
-                    if not analysis_complete:
-                        if time.time() - last_event_time >= HEARTBEAT_INTERVAL_SECONDS:
-                            await heartbeat_queue.put(
-                                f'data: {json.dumps({"type": "heartbeat", "timestamp": time.time()})}\n\n'
-                            )
-            except asyncio.CancelledError:
-                pass
+    # Capture ContextVar before background task creation
+    captured_config = current_user_ai_config.get()
+
+    async def workflow_factory():
+        """Workflow generator that runs in a background asyncio.Task."""
+        from app.db.task_session import get_task_session
+        from app.services.analysis_session_service import AnalysisSessionService
+
+        token = None
+        if captured_config:
+            token = current_user_ai_config.set(captured_config)
+
+        # Persistence state
+        db_session_id = None
+        agent_data: list = []
+        synthesis_text = ""
+        clarification = 0
 
         try:
-            from app.agents.langgraph import stream_analysis
-
-            # Start heartbeat task
-            heartbeat_task = asyncio.create_task(heartbeat_sender())
-
-            # Emit analysis_phase_start wrapper
-            yield f'data: {json.dumps({"type": "analysis_phase_start", "timestamp": time.time()})}\n\n'
-            last_event_time = time.time()
-
+            # Create DB session row
             try:
-                async with asyncio.timeout(STREAMING_TIMEOUT_SECONDS):
-                    async for event in stream_analysis(symbol, market.value, lang):
-                        # Check for client disconnect
-                        if await request.is_disconnected():
-                            logger.info(f"Client disconnected during LangGraph streaming for {symbol}")
-                            break
+                async with get_task_session() as db:
+                    s = await AnalysisSessionService.create_session(
+                        db, current_user.id, symbol, market.value, lang,
+                    )
+                    db_session_id = s.id
+                    await db.commit()
+                logger.debug("分析持久化: 创建会话 %s", str(db_session_id)[:8])
+            except Exception:
+                logger.warning("分析持久化: 创建会话失败, 继续无持久化分析", exc_info=True)
 
-                        # Check for overall timeout
-                        if time.time() - start_time > STREAMING_TIMEOUT_SECONDS:
-                            logger.warning(f"LangGraph streaming timeout for {symbol}")
-                            yield f'data: {json.dumps({"type": "timeout", "message": "Analysis timeout reached", "timestamp": time.time()})}\n\n'
-                            break
+            yield {"type": "analysis_phase_start", "timestamp": time.time()}
+            async for event in stream_analysis(symbol, market.value, lang):
+                event_type = event.get("type", "unknown")
+                event_data = event.get("data", {})
 
-                        # Format event as SSE
-                        event_type = event.get("type", "unknown")
-                        event_data = event.get("data", {})
+                # Accumulate for persistence
+                if event_type == "agent_complete":
+                    agent_data.append({
+                        "agent": event_data.get("agent"),
+                        "summary": event_data.get("summary"),
+                        "key_insights": event_data.get("key_insights"),
+                        "latency_ms": event_data.get("latency_ms"),
+                    })
+                elif event_type == "complete":
+                    synthesis_text = event_data.get("synthesis_output", "")
+                    clarification = event_data.get("clarification_round", 0)
 
-                        sse_event = {
-                            "type": event_type,
-                            "timestamp": time.time(),
-                            **event_data,
-                        }
+                yield {
+                    "type": event_type,
+                    "timestamp": time.time(),
+                    **event_data,
+                }
 
-                        yield f'data: {json.dumps(sse_event)}\n\n'
-                        last_event_time = time.time()
-
-                        # Yield any pending heartbeat events
-                        while not heartbeat_queue.empty():
-                            try:
-                                hb_event = heartbeat_queue.get_nowait()
-                                yield hb_event
-                                last_event_time = time.time()
-                            except asyncio.QueueEmpty:
-                                break
-
-            except asyncio.TimeoutError:
-                logger.warning(f"LangGraph streaming timeout for {symbol}")
-                yield f'data: {json.dumps({"type": "timeout", "message": "Analysis timeout reached", "timestamp": time.time()})}\n\n'
-
-            # Note: analysis_phase_complete is now emitted by LangGraph workflow
-            # when collect_results completes, before synthesis starts
-
-        except ImportError as e:
-            logger.error(f"LangGraph not available: {e}")
-            yield f'data: {json.dumps({"type": "error", "error": "LangGraph workflow not available. Please check server configuration.", "timestamp": time.time()})}\n\n'
+            # Persist completed result
+            if db_session_id:
+                try:
+                    async with get_task_session() as db:
+                        await AnalysisSessionService.complete_session(
+                            db, db_session_id, agent_data, synthesis_text,
+                            clarification,
+                        )
+                        await db.commit()
+                    logger.info("分析持久化: 会话完成 %s", str(db_session_id)[:8])
+                except Exception:
+                    logger.warning("分析持久化: 保存完成结果失败", exc_info=True)
 
         except Exception as e:
-            logger.exception(f"LangGraph streaming error for {symbol}: {e}")
-            yield f'data: {json.dumps({"type": "error", "error": "Analysis service error. Please try again later.", "timestamp": time.time()})}\n\n'
-
-        finally:
-            analysis_complete = True
-            if heartbeat_task and not heartbeat_task.done():
-                heartbeat_task.cancel()
+            # Mark session as failed
+            if db_session_id:
                 try:
-                    await heartbeat_task
-                except asyncio.CancelledError:
-                    pass
-            logger.debug(f"LangGraph streaming cleanup completed for {symbol}")
+                    async with get_task_session() as db:
+                        await AnalysisSessionService.fail_session(
+                            db, db_session_id, str(e),
+                        )
+                        await db.commit()
+                except Exception:
+                    logger.warning("分析持久化: 标记失败状态异常", exc_info=True)
+            raise
+        finally:
+            if token is not None:
+                current_user_ai_config.reset(token)
+
+    task_id, _is_new = await task_manager.get_or_create_task(
+        task_type="analysis",
+        user_id=current_user.id,
+        symbol=symbol,
+        market=market.value if hasattr(market, "value") else str(market),
+        language=lang,
+        workflow_factory=workflow_factory,
+    )
 
     return StreamingResponse(
-        event_generator(),
+        reconnectable_sse_generator(
+            task_id, last_event_id,
+            timeout_seconds=STREAMING_TIMEOUT_SECONDS,
+        ),
         media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache",
@@ -782,84 +909,6 @@ async def get_langgraph_streaming_analysis(
             "X-Accel-Buffering": "no",
         },
     )
-
-
-@router.get(
-    "/{symbol}/langgraph",
-    summary="LangGraph full analysis",
-    description="Get full AI analysis using LangGraph workflow (non-streaming).",
-)
-async def get_langgraph_analysis(
-    symbol: str,
-    language: str = Query("en", description="Language for analysis output (en or zh)"),
-    current_user: User = Depends(get_current_user),
-    _rate_limit: None = Depends(AI_ANALYSIS_RATE_LIMIT),
-    _ai_config: None = Depends(apply_user_ai_config),
-):
-    """
-    Get full AI analysis using LangGraph workflow.
-
-    This endpoint uses the new layered LLM architecture with LangGraph.
-    Unlike the streaming endpoint, this returns the complete analysis
-    once all agents and synthesis are finished.
-
-    **Rate Limit**: 10 requests per minute per user
-
-    **Note**: This endpoint may take 30-60 seconds as it runs the complete
-    LangGraph workflow including potential clarification rounds.
-    """
-    symbol = validate_symbol(symbol)
-    market = detect_market(symbol)
-    lang = "zh" if language.lower().startswith("zh") else "en"
-
-    logger.info(
-        f"LangGraph full analysis requested for {symbol} by user {current_user.id} (lang={lang})"
-    )
-
-    try:
-        from app.agents.langgraph import run_analysis
-
-        result = await run_analysis(symbol, market.value, lang)
-
-        # Extract agent results
-        agent_results = {}
-        for agent_type in ["fundamental", "technical", "sentiment", "news"]:
-            agent_result = result.get(agent_type)
-            if agent_result:
-                agent_results[agent_type] = {
-                    "success": agent_result.success,
-                    "content": agent_result.content if agent_result.success else None,
-                    "structured_data": agent_result.structured_data if hasattr(agent_result, 'structured_data') else None,
-                    "error": agent_result.error if not agent_result.success else None,
-                    "confidence": agent_result.confidence if hasattr(agent_result, 'confidence') else None,
-                    "tokens_used": agent_result.tokens_used if hasattr(agent_result, 'tokens_used') else None,
-                    "latency_ms": agent_result.latency_ms if hasattr(agent_result, 'latency_ms') else None,
-                }
-
-        return {
-            "symbol": symbol,
-            "market": market.value,
-            "language": lang,
-            "agents": agent_results,
-            "synthesis": result.get("synthesis_output", ""),
-            "clarification_rounds": result.get("clarification_round", 0),
-            "errors": result.get("errors", []),
-            "timestamp": time.time(),
-        }
-
-    except ImportError as e:
-        logger.error(f"LangGraph not available: {e}")
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="LangGraph workflow not available. Please check server configuration.",
-        )
-
-    except Exception as e:
-        logger.exception(f"LangGraph analysis error for {symbol}: {e}")
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="Analysis service temporarily unavailable. Please try again later.",
-        )
 
 
 @router.get(
@@ -933,3 +982,83 @@ async def get_langgraph_info(
             "status": "unavailable",
             "error": "LangGraph dependencies not installed",
         }
+
+
+@router.get(
+    "/{symbol}/langgraph",
+    summary="LangGraph full analysis",
+    description="Get full AI analysis using LangGraph workflow (non-streaming).",
+)
+async def get_langgraph_analysis(
+    symbol: str,
+    language: str = Query("en", description="Language for analysis output (en or zh)"),
+    current_user: User = Depends(get_current_user),
+    _rate_limit: None = Depends(AI_ANALYSIS_RATE_LIMIT),
+    _ai_config: None = Depends(apply_user_ai_config),
+):
+    """
+    Get full AI analysis using LangGraph workflow.
+
+    This endpoint uses the new layered LLM architecture with LangGraph.
+    Unlike the streaming endpoint, this returns the complete analysis
+    once all agents and synthesis are finished.
+
+    **Rate Limit**: 10 requests per minute per user
+
+    **Note**: This endpoint may take 30-60 seconds as it runs the complete
+    LangGraph workflow including potential clarification rounds.
+    """
+    symbol = validate_symbol(symbol)
+    market = detect_market(symbol)
+    lang = "zh" if language.lower().startswith("zh") else "en"
+
+    logger.info(
+        f"LangGraph full analysis requested for {symbol} by user {current_user.id} (lang={lang})"
+    )
+
+    try:
+        from app.agents.langgraph import run_analysis
+
+        result = await run_analysis(symbol, market.value, lang)
+
+        # Extract agent results
+        agent_results = {}
+        for agent_type in ["fundamental", "technical", "sentiment", "news"]:
+            agent_result = result.get(agent_type)
+            if agent_result:
+                agent_results[agent_type] = {
+                    "success": agent_result.success,
+                    "content": agent_result.raw_content if agent_result.success else None,
+                    "structured_data": agent_result.structured_data if hasattr(agent_result, 'structured_data') else None,
+                    "error": agent_result.error if not agent_result.success else None,
+                    "confidence": agent_result.confidence if hasattr(agent_result, 'confidence') else None,
+                    "tokens_used": agent_result.tokens_used if hasattr(agent_result, 'tokens_used') else None,
+                    "latency_ms": agent_result.latency_ms if hasattr(agent_result, 'latency_ms') else None,
+                }
+
+        return {
+            "symbol": symbol,
+            "market": market.value,
+            "language": lang,
+            "agents": agent_results,
+            "synthesis": result.get("synthesis_output", ""),
+            "clarification_rounds": result.get("clarification_round", 0),
+            "errors": result.get("errors", []),
+            "timestamp": time.time(),
+        }
+
+    except ImportError as e:
+        logger.error(f"LangGraph not available: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="LangGraph workflow not available. Please check server configuration.",
+        )
+
+    except Exception as e:
+        logger.exception(f"LangGraph analysis error for {symbol}: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Analysis service temporarily unavailable. Please try again later.",
+        )
+
+

@@ -380,6 +380,35 @@ class SystemSettings(Base):
         comment="Layer 1评分模型名称",
     )
 
+    # === Discussion Group Configuration ===
+    discussion_enabled: Mapped[bool] = mapped_column(
+        Boolean,
+        nullable=False,
+        default=False,
+        comment="是否启用讨论组功能",
+    )
+
+    discussion_max_rounds: Mapped[int] = mapped_column(
+        Integer,
+        nullable=False,
+        default=3,
+        comment="讨论组最大讨论轮次（1-5）",
+    )
+
+    discussion_provider_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("llm_providers.id", ondelete="SET NULL"),
+        nullable=True,
+        comment="讨论组使用的Provider（FK→llm_providers）",
+    )
+
+    discussion_model: Mapped[Optional[str]] = mapped_column(
+        String(100),
+        nullable=True,
+        default="gpt-4o",
+        comment="讨论组使用的LLM模型名称",
+    )
+
     # === MCP Content Extraction ===
     enable_mcp_extraction: Mapped[bool] = mapped_column(
         Boolean,
@@ -431,6 +460,7 @@ class SystemSettings(Base):
     phase2_layer2_analysis_provider = relationship("LlmProvider", foreign_keys=[phase2_layer2_analysis_provider_id])
     phase2_layer2_lightweight_provider = relationship("LlmProvider", foreign_keys=[phase2_layer2_lightweight_provider_id])
     layer1_scoring_provider = relationship("LlmProvider", foreign_keys=[layer1_scoring_provider_id])
+    discussion_provider = relationship("LlmProvider", foreign_keys=[discussion_provider_id])
 
     def __repr__(self) -> str:
         return f"<SystemSettings(id={self.id}, updated_at={self.updated_at})>"

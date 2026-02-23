@@ -20,6 +20,7 @@ from app.core.llm.gateway import (
 from app.core.llm.langchain_bridge import (
     get_analysis_langchain_model,
     get_chat_model_config,
+    get_discussion_langchain_model,
     get_langchain_model,
     get_synthesis_langchain_model,
 )
@@ -69,6 +70,7 @@ __all__ = [
     # LangChain bridge
     "get_analysis_langchain_model",
     "get_chat_model_config",
+    "get_discussion_langchain_model",
     "get_langchain_model",
     "get_synthesis_langchain_model",
 ]

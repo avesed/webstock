@@ -29,6 +29,7 @@ const ChatPage = lazy(() => import('@/pages/ChatPage'))
 const SettingsPage = lazy(() => import('@/pages/SettingsPage'))
 const AdminDashboardPage = lazy(() => import('@/pages/admin/AdminDashboardPage'))
 const QlibBacktestsPage = lazy(() => import('@/pages/QlibBacktestsPage'))
+const DiscussionPage = lazy(() => import('@/pages/DiscussionPage'))
 
 // Protected Route wrapper
 function ProtectedRoute({ children }: { readonly children: React.ReactNode }) {
@@ -152,6 +153,7 @@ function App() {
           <Route path="news" element={<NewsPage />} />
           <Route path="news/:newsId" element={<NewsReaderPage />} />
           <Route path="chat" element={<ChatPage />} />
+          <Route path="discussion/:symbol" element={<DiscussionPage />} />
           <Route path="backtests" element={<QlibBacktestsPage />} />
           <Route path="settings" element={<SettingsPage />} />
           <Route

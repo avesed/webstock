@@ -1,5 +1,6 @@
 """Pydantic schemas for AI analysis endpoints."""
 
+import uuid
 from datetime import datetime
 from enum import Enum
 from typing import Any, Dict, List, Optional
@@ -325,3 +326,36 @@ class AnalysisErrorResponse(CamelModel):
     detail: str
     code: Optional[str] = None
     agent: Optional[str] = None
+
+
+# ============== Analysis Session History Schemas ==============
+
+
+class AnalysisSessionResponse(CamelModel):
+    """List view -- lightweight, no full content."""
+
+    id: uuid.UUID
+    symbol: str
+    market: str
+    language: str
+    status: str
+    created_at: datetime
+    completed_at: Optional[datetime] = None
+
+
+class AnalysisSessionDetailResponse(CamelModel):
+    """Detail view -- includes full agent results and synthesis."""
+
+    id: uuid.UUID
+    symbol: str
+    market: str
+    language: str
+    status: str
+    agent_results: Optional[List[Any]] = None
+    synthesis_content: Optional[str] = None
+    clarification_rounds: int = 0
+    total_tokens: Optional[int] = None
+    total_latency_ms: Optional[int] = None
+    error: Optional[str] = None
+    created_at: datetime
+    completed_at: Optional[datetime] = None

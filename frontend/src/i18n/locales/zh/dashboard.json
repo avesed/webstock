@@ -222,7 +222,8 @@
     "aiTab": "AI",
     "tabs": {
       "chat": "聊天",
-      "extension": "扩展功能"
+      "extension": "扩展功能",
+      "discussion": "讨论组"
     },
     "extensionComingSoon": "高级 AI 功能即将推出，敬请期待投资组合优化、风险分析等更多功能。",
     "price": "价格",
@@ -404,5 +405,39 @@
     "noHoldings": "组合中暂无持仓",
     "noData": "暂无图表数据",
     "monthChange": "近1月变动"
+  },
+  "analysis": {
+    "title": "AI 分析",
+    "description": "AI 驱动的综合股票分析",
+    "idlePrompt": "点击\"分析\"生成 AI 综合分析报告",
+    "btnAnalyze": "分析",
+    "btnReanalyze": "重新分析",
+    "btnCancel": "取消",
+    "btnHistory": "历史",
+    "btnGenerating": "生成中...",
+    "agentFundamental": "基本面",
+    "agentTechnical": "技术面",
+    "agentSentiment": "情绪面",
+    "agentNews": "新闻面",
+    "progressInitializing": "初始化分析...",
+    "progressAnalyzing": "AI 分析师正在分析...",
+    "progressFetching": "获取市场数据...",
+    "progressRunning": "运行 AI 分析...",
+    "progressSynthesizing": "综合分析结果...",
+    "progressGeneratingSynthesis": "生成综合报告...",
+    "progressClarifying": "澄清分析中...",
+    "progressClarifyingRound": "执行澄清轮次...",
+    "progressClarifyingComplete": "澄清完成，优化综合报告...",
+    "progressReconnecting": "重新连接...",
+    "progressConnectionLost": "连接断开，正在重连 ({{current}}/{{max}})...",
+    "errorTimeout": "分析超时，请重试。",
+    "errorStreamEnded": "分析流意外中断",
+    "errorFailed": "分析失败",
+    "errorGeneric": "分析过程中发生错误",
+    "clarificationBadge": "+{{count}} 轮澄清",
+    "historyTitle": "历史分析",
+    "deleteSession": "删除",
+    "historyEmpty": "暂无分析记录",
+    "historyLoading": "加载历史记录..."
   }
 }

@@ -8,6 +8,7 @@ from app.api.v1.qlib import router as qlib_router
 from app.api.v1.alerts import push_router
 from app.api.v1.analysis import router as analysis_router
 from app.api.v1.chat import router as chat_router
+from app.api.v1.discussion import router as discussion_router
 from app.api.v1.auth import router as auth_router
 from app.api.v1.health import router as health_router
 from app.api.v1.internal import router as internal_router
@@ -37,4 +38,5 @@ api_router.include_router(reports_router)
 api_router.include_router(settings_router)
 api_router.include_router(admin_router)
 api_router.include_router(qlib_router)
+api_router.include_router(discussion_router)
 api_router.include_router(internal_router)

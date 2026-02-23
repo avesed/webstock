@@ -175,7 +175,7 @@ def _compute_shared_skill_plan(
 
     for agent_type, skill_names in AGENT_SKILLS.items():
         # Market-aware filtering
-        if market in ("CN", "A"):
+        if market in ("sh", "sz"):
             filtered = [s for s in skill_names if s not in _NON_CN_ONLY_SKILLS]
         else:
             filtered = [s for s in skill_names if s not in _CN_ONLY_SKILLS]
@@ -294,7 +294,7 @@ async def _execute_agent_skills(
     skill_names = list(AGENT_SKILLS.get(agent_type, []))
 
     # Market-aware filtering
-    if market in ("CN", "A"):
+    if market in ("sh", "sz"):
         skill_names = [s for s in skill_names if s not in _NON_CN_ONLY_SKILLS]
     else:
         skill_names = [s for s in skill_names if s not in _CN_ONLY_SKILLS]
@@ -589,6 +589,11 @@ Please analyze the fundamentals of this stock and output results in JSON format.
                 timeout=LLM_TIMEOUT,
             )
             content = response.content
+            if isinstance(content, list):
+                content = "\n".join(
+                    block.get("text", "") if isinstance(block, dict) else str(block)
+                    for block in content
+                )
         except asyncio.TimeoutError:
             logger.error(f"Fundamental analysis timeout for {symbol}")
             return {
@@ -812,6 +817,11 @@ Please analyze the technicals of this stock and output results in JSON format.
                 timeout=LLM_TIMEOUT,
             )
             content = response.content
+            if isinstance(content, list):
+                content = "\n".join(
+                    block.get("text", "") if isinstance(block, dict) else str(block)
+                    for block in content
+                )
         except asyncio.TimeoutError:
             logger.error(f"Technical analysis timeout for {symbol}")
             return {
@@ -1026,6 +1036,11 @@ Please analyze the market sentiment for this stock and output results in JSON fo
                 timeout=LLM_TIMEOUT,
             )
             content = response.content
+            if isinstance(content, list):
+                content = "\n".join(
+                    block.get("text", "") if isinstance(block, dict) else str(block)
+                    for block in content
+                )
         except asyncio.TimeoutError:
             logger.error(f"Sentiment analysis timeout for {symbol}")
             return {
@@ -1475,6 +1490,11 @@ Please analyze the impact of these news articles on the stock and output results
                 timeout=LLM_TIMEOUT,
             )
             content = response.content
+            if isinstance(content, list):
+                content = "\n".join(
+                    block.get("text", "") if isinstance(block, dict) else str(block)
+                    for block in content
+                )
         except asyncio.TimeoutError:
             logger.error(f"News analysis timeout for {symbol}")
             return {

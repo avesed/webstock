@@ -180,6 +180,15 @@
       "cacheEnabled": "启用 Prompt 缓存",
       "cacheTtlMinutes": "缓存有效期（分钟）",
       "cacheTtlMinutesHint": "缓存的 Prompt 在刷新之前保留的时间"
+    },
+    "discussion": {
+      "title": "讨论组设置",
+      "description": "配置多代理圆桌讨论功能",
+      "enabled": "启用讨论组",
+      "enabledDescription": "启用后，用户可以在AI标签页中使用多代理讨论功能",
+      "maxRounds": "最大辩论轮次",
+      "maxRoundsHint": "主持人与专家之间的最大辩论轮数（1-5），默认: 3",
+      "model": "讨论模型"
     }
   },
   "monitor": {

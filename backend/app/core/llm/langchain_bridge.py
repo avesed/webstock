@@ -165,6 +165,34 @@ async def get_synthesis_langchain_model(
     )
 
 
+async def get_discussion_langchain_model(
+    db_session=None,
+) -> Union["ChatOpenAI", "ChatAnthropic"]:
+    """Get LangChain model for the discussion group.
+
+    Uses resolve_model_provider() for provider-aware config resolution.
+    No response_format — discussion agents output natural language.
+    """
+    from app.services.settings_service import get_settings_service
+    from app.db.database import get_async_session
+
+    if db_session:
+        service = get_settings_service()
+        resolved = await service.resolve_model_provider(db_session, "discussion")
+    else:
+        async with get_async_session() as db:
+            service = get_settings_service()
+            resolved = await service.resolve_model_provider(db, "discussion")
+
+    return get_langchain_model(
+        model=resolved.model,
+        system_openai_api_key=resolved.api_key if resolved.provider_type == "openai" else None,
+        system_openai_base_url=resolved.base_url if resolved.provider_type == "openai" else None,
+        system_anthropic_api_key=resolved.api_key if resolved.provider_type == "anthropic" else None,
+        system_anthropic_base_url=resolved.base_url if resolved.provider_type == "anthropic" else None,
+    )
+
+
 async def get_chat_model_config() -> tuple[str, dict]:
     """Get model name and provider config for the chat service.
 

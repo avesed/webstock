@@ -360,6 +360,8 @@ class SettingsService:
             "phase2_layer2_lightweight": ("phase2_layer2_lightweight_provider_id", "phase2_layer2_lightweight_model"),
             # Layer 1: 3-agent scoring
             "layer1_scoring": ("layer1_scoring_provider_id", "layer1_scoring_model"),
+            # Discussion group
+            "discussion": ("discussion_provider_id", "discussion_model"),
         }
 
         if purpose not in purpose_map:

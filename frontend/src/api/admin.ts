@@ -17,6 +17,7 @@ import type {
   LlmProviderUpdate,
   ModelAssignmentsConfig,
   Phase2Config,
+  DiscussionConfig,
   RssFeed,
   RssFeedCreate,
   RssFeedUpdate,
@@ -52,6 +53,7 @@ interface BackendSystemConfig {
   }
   modelAssignments?: ModelAssignmentsConfig | null
   phase2?: Phase2Config | null
+  discussion?: DiscussionConfig | null
 }
 
 // Transform backend format to frontend format (merge langgraph into llm)
@@ -74,6 +76,7 @@ function transformConfigFromBackend(backend: BackendSystemConfig): SystemConfig 
     features: backend.features,
     ...(backend.modelAssignments ? { modelAssignments: backend.modelAssignments } : {}),
     ...(backend.phase2 ? { phase2: backend.phase2 } : {}),
+    ...(backend.discussion ? { discussion: backend.discussion } : {}),
   }
 }
 

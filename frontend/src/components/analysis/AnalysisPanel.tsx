@@ -1,4 +1,4 @@
-import { useState, useCallback, useRef, useEffect } from 'react'
+import { useReducer, useCallback, useRef, useEffect } from 'react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import type { LucideIcon } from 'lucide-react'
@@ -12,13 +12,24 @@ import {
   AlertCircle,
   RefreshCw,
   CheckCircle2,
+  XCircle,
+  Clock,
+  ArrowLeft,
+  Trash2,
 } from 'lucide-react'
-import { useQueryClient } from '@tanstack/react-query'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
+import { useTranslation } from 'react-i18next'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
-import { cn } from '@/lib/utils'
-import { getAccessToken } from '@/lib/auth'
+import { cn, formatRelativeTime } from '@/lib/utils'
+import { analysisApi } from '@/api'
+import { getValidAccessToken } from '@/lib/auth'
 import { useLocale } from '@/hooks/useLocale'
+import { createSSEParser } from '@/api/sse'
+
+// ---------------------------------------------------------------------------
+// Props & local types
+// ---------------------------------------------------------------------------
 
 interface AnalysisPanelProps {
   symbol: string
@@ -78,44 +89,280 @@ interface CachedAnalysisResult {
   completedAt: number
 }
 
+// ---------------------------------------------------------------------------
+// Constants
+// ---------------------------------------------------------------------------
+
 const CACHE_TTL_MS = 30 * 60 * 1000 // 30 minutes
+const VALID_AGENTS = new Set(['fundamental', 'technical', 'sentiment', 'news'])
+
+const AGENT_ICONS: Record<string, LucideIcon> = {
+  fundamental: BarChart3,
+  technical: TrendingUp,
+  sentiment: MessageSquare,
+  news: Newspaper,
+}
+
+function createInitialAgentStatus(): Record<string, AgentStatus> {
+  return {
+    fundamental: { name: 'fundamental', icon: BarChart3, status: 'idle' },
+    technical: { name: 'technical', icon: TrendingUp, status: 'idle' },
+    sentiment: { name: 'sentiment', icon: MessageSquare, status: 'idle' },
+    news: { name: 'news', icon: Newspaper, status: 'idle' },
+  }
+}
+
+// ---------------------------------------------------------------------------
+// State management (useReducer)
+// ---------------------------------------------------------------------------
 
 type StreamStatus = 'idle' | 'connecting' | 'analyzing' | 'synthesizing' | 'complete' | 'error'
 
-const VALID_AGENTS = new Set(['fundamental', 'technical', 'sentiment', 'news'])
+interface AnalysisState {
+  status: StreamStatus
+  agents: Record<string, AgentStatus>
+  agentResults: AgentResult[]
+  synthesisContent: string
+  clarificationRound: number
+  error: string | null
+  progress: string
+}
 
-const createInitialAgentStatus = (): Record<string, AgentStatus> => ({
-  fundamental: { name: 'Fundamental', icon: BarChart3, status: 'idle' },
-  technical: { name: 'Technical', icon: TrendingUp, status: 'idle' },
-  sentiment: { name: 'Sentiment', icon: MessageSquare, status: 'idle' },
-  news: { name: 'News', icon: Newspaper, status: 'idle' },
-})
+const INITIAL_STATE: AnalysisState = {
+  status: 'idle',
+  agents: createInitialAgentStatus(),
+  agentResults: [],
+  synthesisContent: '',
+  clarificationRound: 0,
+  error: null,
+  progress: '',
+}
+
+type AnalysisAction =
+  | { type: 'START_ANALYSIS'; progress: string }
+  | { type: 'START_RECONNECT'; progress: string }
+  | { type: 'RESUME_RECONNECT'; progress: string }
+  | { type: 'SET_STATUS'; status: StreamStatus }
+  | { type: 'SET_PROGRESS'; progress: string }
+  | { type: 'AGENT_START'; agent: string }
+  | { type: 'AGENT_COMPLETE'; agent: string; success: boolean; latencyMs?: number | undefined; result?: AgentResult | undefined }
+  | { type: 'SYNTHESIS_CHUNK'; content: string }
+  | { type: 'CLARIFICATION_NEEDED' }
+  | { type: 'COMPLETE'; synthesisOutput?: string | undefined }
+  | { type: 'ERROR'; error: string }
+  | { type: 'CANCEL' }
+  | { type: 'RESET' }
+  | { type: 'BACK_TO_HISTORY' }
+  | { type: 'RESTORE_FROM_CACHE'; cached: CachedAnalysisResult }
+  | { type: 'RESTORE_SESSION'; agentResults: AgentResult[]; synthesisContent: string; clarificationRound: number; agentStatuses: Record<string, { status: AgentStatus['status']; latencyMs?: number }> }
+
+function analysisReducer(state: AnalysisState, action: AnalysisAction): AnalysisState {
+  switch (action.type) {
+    case 'START_ANALYSIS':
+      return {
+        ...INITIAL_STATE,
+        status: 'connecting',
+        progress: action.progress,
+      }
+
+    case 'START_RECONNECT':
+      // Reconnect from start (mount reconnection): reset state to replay all events
+      return {
+        ...INITIAL_STATE,
+        status: 'connecting',
+        progress: action.progress,
+      }
+
+    case 'RESUME_RECONNECT':
+      // Mid-stream reconnect: keep existing state, just update progress
+      return {
+        ...state,
+        error: null,
+        progress: action.progress,
+      }
+
+    case 'SET_STATUS':
+      return {
+        ...state,
+        status: action.status,
+      }
+
+    case 'SET_PROGRESS':
+      return {
+        ...state,
+        progress: action.progress,
+      }
+
+    case 'AGENT_START': {
+      if (!VALID_AGENTS.has(action.agent)) return state
+      const current = state.agents[action.agent]
+      if (!current) return state
+      return {
+        ...state,
+        agents: {
+          ...state.agents,
+          [action.agent]: { ...current, status: 'running' as const },
+        },
+      }
+    }
+
+    case 'AGENT_COMPLETE': {
+      if (!VALID_AGENTS.has(action.agent)) return state
+      const current = state.agents[action.agent]
+      if (!current) return state
+      const updatedAgent: AgentStatus = {
+        ...current,
+        status: action.success ? 'complete' : 'error',
+      }
+      if (typeof action.latencyMs === 'number') {
+        updatedAgent.latencyMs = action.latencyMs
+      }
+      const newResults = action.result
+        ? [
+            ...state.agentResults.filter((r) => r.agent !== action.agent),
+            action.result,
+          ]
+        : state.agentResults
+      return {
+        ...state,
+        agents: {
+          ...state.agents,
+          [action.agent]: updatedAgent,
+        },
+        agentResults: newResults,
+      }
+    }
+
+    case 'SYNTHESIS_CHUNK':
+      return {
+        ...state,
+        synthesisContent: state.synthesisContent + action.content,
+      }
+
+    case 'CLARIFICATION_NEEDED':
+      return {
+        ...state,
+        clarificationRound: state.clarificationRound + 1,
+      }
+
+    case 'COMPLETE': {
+      const finalSynthesis = action.synthesisOutput ?? state.synthesisContent
+      return {
+        ...state,
+        status: 'complete',
+        progress: '',
+        synthesisContent: finalSynthesis,
+      }
+    }
+
+    case 'ERROR':
+      return {
+        ...state,
+        status: 'error',
+        error: action.error,
+      }
+
+    case 'CANCEL':
+      return {
+        ...state,
+        status: 'idle',
+        progress: '',
+      }
+
+    case 'RESET':
+      return INITIAL_STATE
+
+    case 'BACK_TO_HISTORY':
+      return INITIAL_STATE
+
+    case 'RESTORE_FROM_CACHE': {
+      const restoredAgents = createInitialAgentStatus()
+      for (const [key, cachedAgent] of Object.entries(action.cached.agentStatuses)) {
+        if (restoredAgents[key]) {
+          restoredAgents[key] = { ...restoredAgents[key], ...cachedAgent }
+        }
+      }
+      return {
+        status: 'complete',
+        agents: restoredAgents,
+        agentResults: action.cached.agentResults,
+        synthesisContent: action.cached.synthesisContent,
+        clarificationRound: action.cached.clarificationRound,
+        error: null,
+        progress: '',
+      }
+    }
+
+    case 'RESTORE_SESSION': {
+      const restoredAgents = createInitialAgentStatus()
+      for (const [key, val] of Object.entries(action.agentStatuses)) {
+        if (restoredAgents[key]) {
+          const agentUpdate: AgentStatus = { ...restoredAgents[key], status: val.status }
+          if (val.latencyMs != null) {
+            agentUpdate.latencyMs = val.latencyMs
+          }
+          restoredAgents[key] = agentUpdate
+        }
+      }
+      return {
+        status: 'complete',
+        agents: restoredAgents,
+        agentResults: action.agentResults,
+        synthesisContent: action.synthesisContent,
+        clarificationRound: action.clarificationRound,
+        error: null,
+        progress: '',
+      }
+    }
+
+    default:
+      return state
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Component
+// ---------------------------------------------------------------------------
 
 export default function AnalysisPanel({ symbol, className }: AnalysisPanelProps) {
   const { locale } = useLocale()
+  const { t } = useTranslation('dashboard')
   const queryClient = useQueryClient()
-  // Align garbage collection with our cache TTL so results survive page navigation
-  queryClient.setQueryDefaults(['analysis-result'], { gcTime: CACHE_TTL_MS })
-  const [status, setStatus] = useState<StreamStatus>('idle')
-  const [error, setError] = useState<string | null>(null)
-  const [progress, setProgress] = useState<string>('')
-  const [agents, setAgents] = useState<Record<string, AgentStatus>>(createInitialAgentStatus)
-  const [synthesisContent, setSynthesisContent] = useState<string>('')
-  const [clarificationRound, setClarificationRound] = useState<number>(0)
-  const [agentResults, setAgentResults] = useState<AgentResult[]>([])
-  const abortControllerRef = useRef<AbortController | null>(null)
 
-  // Refs to mirror state for use in SSE callback and cache writes
-  const agentResultsRef = useRef<AgentResult[]>([])
-  const synthesisContentRef = useRef('')
-  const clarificationRoundRef = useRef(0)
-  const agentsRef = useRef<Record<string, AgentStatus>>(createInitialAgentStatus())
+  // Align garbage collection with our cache TTL so results survive page navigation
+  const defaultsSetRef = useRef(false)
+  if (!defaultsSetRef.current) {
+    queryClient.setQueryDefaults(['analysis-result'], { gcTime: CACHE_TTL_MS })
+    defaultsSetRef.current = true
+  }
+
+  const [state, dispatch] = useReducer(analysisReducer, INITIAL_STATE)
+
+  // Single ref mirroring reducer state for use in SSE callback closures & cache writes
+  const stateRef = useRef(state)
+  stateRef.current = state
+
+  const abortControllerRef = useRef<AbortController | null>(null)
+  const lastEventIdRef = useRef('0-0')
+  const reconnectCountRef = useRef(0)
+  const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  // Past analysis sessions for history view
+  const pastSessionsQuery = useQuery({
+    queryKey: ['analysis-sessions', symbol],
+    queryFn: () => analysisApi.getSessions(symbol),
+    enabled: state.status === 'idle',
+    staleTime: 5 * 60 * 1000,
+  })
 
   // Clean up on unmount
   useEffect(() => {
     return () => {
       if (abortControllerRef.current) {
         abortControllerRef.current.abort()
+      }
+      if (reconnectTimerRef.current) {
+        clearTimeout(reconnectTimerRef.current)
       }
     }
   }, [])
@@ -126,185 +373,139 @@ export default function AnalysisPanel({ symbol, className }: AnalysisPanelProps)
       abortControllerRef.current.abort()
       abortControllerRef.current = null
     }
+    if (reconnectTimerRef.current) {
+      clearTimeout(reconnectTimerRef.current)
+      reconnectTimerRef.current = null
+    }
 
     // Check for cached result (try-catch guards against corrupted cache shape)
     let restored = false
     try {
       const cached = queryClient.getQueryData<CachedAnalysisResult>(['analysis-result', symbol])
       if (cached && Date.now() - cached.completedAt < CACHE_TTL_MS) {
-        // Restore from cache
-        setAgentResults(cached.agentResults)
-        agentResultsRef.current = cached.agentResults
-        setSynthesisContent(cached.synthesisContent)
-        synthesisContentRef.current = cached.synthesisContent
-        setClarificationRound(cached.clarificationRound)
-        clarificationRoundRef.current = cached.clarificationRound
-        // Reconstruct agents with icons from cached statuses
-        const restoredAgents = createInitialAgentStatus()
-        for (const [key, cachedAgent] of Object.entries(cached.agentStatuses)) {
-          if (restoredAgents[key]) {
-            restoredAgents[key] = { ...restoredAgents[key], ...cachedAgent }
-          }
-        }
-        setAgents(restoredAgents)
-        agentsRef.current = restoredAgents
-        setStatus('complete')
-        setError(null)
-        setProgress('')
+        dispatch({ type: 'RESTORE_FROM_CACHE', cached })
         restored = true
       }
     } catch {
       queryClient.removeQueries({ queryKey: ['analysis-result', symbol] })
     }
     if (!restored) {
-      // Reset to defaults
-      setStatus('idle')
-      setError(null)
-      setProgress('')
-      setAgents(createInitialAgentStatus())
-      setSynthesisContent('')
-      setClarificationRound(0)
-      setAgentResults([])
-      agentResultsRef.current = []
-      synthesisContentRef.current = ''
-      clarificationRoundRef.current = 0
-      agentsRef.current = createInitialAgentStatus()
+      dispatch({ type: 'RESET' })
+      lastEventIdRef.current = '0-0'
+      reconnectCountRef.current = 0
+
+      // Check for a running background task (e.g. user navigated away and back)
+      const checkRunningTask = async () => {
+        try {
+          const token = await getValidAccessToken()
+          const resp = await fetch(`/api/v1/analysis/${symbol}/task-status`, {
+            headers: token ? { Authorization: `Bearer ${token}` } : {},
+            credentials: 'include',
+          })
+          if (resp.ok) {
+            const { status: taskStatus } = (await resp.json()) as { status: string }
+            if (taskStatus === 'running' || taskStatus === 'completed') {
+              startAnalysis({ reconnect: true })
+            }
+          }
+        } catch {
+          // Ignore -- no running task
+        }
+      }
+      checkRunningTask()
     }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [symbol, queryClient])
 
   const handleSSEEvent = useCallback((event: SSEEvent) => {
     switch (event.type) {
       case 'heartbeat':
-        // Ignore heartbeat events
         break
 
       case 'start':
       case 'analysis_phase_start':
-        setStatus('analyzing')
-        setProgress('Analyzing with AI agents...')
+        dispatch({ type: 'SET_STATUS', status: 'analyzing' })
+        dispatch({ type: 'SET_PROGRESS', progress: t('analysis.progressAnalyzing') })
         break
 
       case 'data_fetch_start':
-        setStatus('analyzing')
-        setProgress('Fetching market data...')
+        dispatch({ type: 'SET_STATUS', status: 'analyzing' })
+        dispatch({ type: 'SET_PROGRESS', progress: t('analysis.progressFetching') })
         break
 
       case 'data_fetch_complete':
-        setProgress('Running AI analysis...')
+        dispatch({ type: 'SET_PROGRESS', progress: t('analysis.progressRunning') })
         break
 
       case 'agent_start':
         if (event.agent && VALID_AGENTS.has(event.agent)) {
-          const agentKey = event.agent as keyof typeof agents
-          setAgents((prev) => {
-            const current = prev[agentKey]
-            if (!current) return prev
-            const updated: AgentStatus = {
-              name: current.name,
-              icon: current.icon,
-              status: 'running',
-            }
-            const next = { ...prev, [agentKey]: updated }
-            agentsRef.current = next
-            return next
-          })
+          dispatch({ type: 'AGENT_START', agent: event.agent })
         }
         break
 
       case 'agent_complete':
         if (event.agent && VALID_AGENTS.has(event.agent)) {
-          const agentKey = event.agent as keyof typeof agents
-          setAgents((prev) => {
-            const current = prev[agentKey]
-            if (!current) return prev
-            const updated: AgentStatus = {
-              name: current.name,
-              icon: current.icon,
-              status: event.success ? 'complete' : 'error',
-            }
-            if (typeof event.latency_ms === 'number') {
-              updated.latencyMs = event.latency_ms
-            }
-            const next = { ...prev, [agentKey]: updated }
-            agentsRef.current = next
-            return next
-          })
-
-          // Save intermediate results for progressive display
-          if (event.success && event.summary) {
-            setAgentResults((prev) => {
-              const next = [
-                ...prev.filter((r) => r.agent !== event.agent),
-                {
-                  agent: event.agent!,
-                  summary: event.summary!,
+          const result: AgentResult | undefined =
+            event.success && event.summary
+              ? {
+                  agent: event.agent,
+                  summary: event.summary,
                   keyInsights: event.key_insights ?? [],
-                },
-              ]
-              agentResultsRef.current = next
-              return next
-            })
-          }
+                }
+              : undefined
+          dispatch({
+            type: 'AGENT_COMPLETE',
+            agent: event.agent,
+            success: event.success ?? false,
+            latencyMs: event.latency_ms,
+            result,
+          })
         }
         break
 
       case 'analysis_phase_complete':
-        setProgress('Synthesizing results...')
+        dispatch({ type: 'SET_PROGRESS', progress: t('analysis.progressSynthesizing') })
         break
 
       case 'synthesis_start':
-        setStatus('synthesizing')
-        setProgress('Generating synthesis...')
+        dispatch({ type: 'SET_STATUS', status: 'synthesizing' })
+        dispatch({ type: 'SET_PROGRESS', progress: t('analysis.progressGeneratingSynthesis') })
         break
 
       case 'synthesis_pending':
-        // Synthesis is deferred until after clarification
-        // Show the pending message but don't add to synthesis content
         if (event.message) {
-          setProgress(event.message)
+          dispatch({ type: 'SET_PROGRESS', progress: event.message })
         }
         break
 
       case 'synthesis_chunk':
         if (event.content) {
-          setSynthesisContent((prev) => {
-            const next = prev + event.content
-            synthesisContentRef.current = next
-            return next
-          })
+          dispatch({ type: 'SYNTHESIS_CHUNK', content: event.content })
         }
         break
 
       case 'clarification_needed':
-        setClarificationRound((prev) => {
-          const next = prev + 1
-          clarificationRoundRef.current = next
-          return next
-        })
-        setProgress('Clarifying analysis...')
+        dispatch({ type: 'CLARIFICATION_NEEDED' })
+        dispatch({ type: 'SET_PROGRESS', progress: t('analysis.progressClarifying') })
         break
 
       case 'clarification_start':
-        setProgress('Running clarification round...')
+        dispatch({ type: 'SET_PROGRESS', progress: t('analysis.progressClarifyingRound') })
         break
 
       case 'clarification_complete':
-        setProgress('Clarification complete, refining synthesis...')
+        dispatch({ type: 'SET_PROGRESS', progress: t('analysis.progressClarifyingComplete') })
         break
 
       case 'complete': {
-        setStatus('complete')
-        setProgress('')
-        // Use final synthesis_output if provided
-        let finalSynthesis = synthesisContentRef.current
-        if (event.synthesis_output) {
-          finalSynthesis = event.synthesis_output
-          setSynthesisContent(finalSynthesis)
-          synthesisContentRef.current = finalSynthesis
-        }
-        // Write to React Query cache
+        dispatch({ type: 'COMPLETE', synthesisOutput: event.synthesis_output })
+        // Write to React Query cache using stateRef for the latest reducer state
+        // Note: stateRef won't reflect the COMPLETE dispatch above until next render,
+        // so we compute final values manually here.
+        const currentState = stateRef.current
+        const finalSynthesis = event.synthesis_output ?? currentState.synthesisContent
         const agentStatuses: Record<string, { status: AgentStatus['status']; latencyMs?: number }> = {}
-        for (const [key, agent] of Object.entries(agentsRef.current)) {
+        for (const [key, agent] of Object.entries(currentState.agents)) {
           const entry: { status: AgentStatus['status']; latencyMs?: number } = { status: agent.status }
           if (agent.latencyMs !== undefined) {
             entry.latencyMs = agent.latencyMs
@@ -312,71 +513,82 @@ export default function AnalysisPanel({ symbol, className }: AnalysisPanelProps)
           agentStatuses[key] = entry
         }
         queryClient.setQueryData<CachedAnalysisResult>(['analysis-result', symbol], {
-          agentResults: agentResultsRef.current,
+          agentResults: currentState.agentResults,
           synthesisContent: finalSynthesis,
-          clarificationRound: clarificationRoundRef.current,
+          clarificationRound: currentState.clarificationRound,
           agentStatuses,
           completedAt: Date.now(),
         })
+        queryClient.invalidateQueries({ queryKey: ['analysis-sessions', symbol] })
         break
       }
 
       case 'timeout':
-        setError('Analysis timeout. Please try again.')
-        setStatus('error')
+        dispatch({ type: 'ERROR', error: t('analysis.errorTimeout') })
         break
 
       case 'error':
-        setError(event.error ?? event.message ?? 'An error occurred during analysis')
-        setStatus('error')
+        dispatch({ type: 'ERROR', error: event.error ?? event.message ?? t('analysis.errorGeneric') })
         break
     }
-  }, [queryClient, symbol])
+  }, [queryClient, symbol, t])
 
-  const startAnalysis = useCallback(async () => {
+  const startAnalysis = useCallback(async (options?: { reconnect?: boolean; forceNew?: boolean }) => {
+    const isReconnect = options?.reconnect ?? false
+    const isForceNew = options?.forceNew ?? false
+
     // Cancel any existing stream
     if (abortControllerRef.current) {
       abortControllerRef.current.abort()
     }
+    if (reconnectTimerRef.current) {
+      clearTimeout(reconnectTimerRef.current)
+      reconnectTimerRef.current = null
+    }
 
-    // Clear cached result for this symbol
-    queryClient.removeQueries({ queryKey: ['analysis-result', symbol] })
-
-    // Reset state
-    setStatus('connecting')
-    setError(null)
-    setProgress('Initializing analysis...')
-    setAgents(createInitialAgentStatus())
-    setSynthesisContent('')
-    setClarificationRound(0)
-    setAgentResults([])
-
-    // Reset refs
-    agentResultsRef.current = []
-    synthesisContentRef.current = ''
-    clarificationRoundRef.current = 0
-    agentsRef.current = createInitialAgentStatus()
+    if (!isReconnect) {
+      // Fresh start or re-analyze: reset everything
+      queryClient.removeQueries({ queryKey: ['analysis-result', symbol] })
+      lastEventIdRef.current = '0-0'
+      reconnectCountRef.current = 0
+      dispatch({ type: 'START_ANALYSIS', progress: t('analysis.progressInitializing') })
+    } else if (lastEventIdRef.current === '0-0') {
+      // Reconnect from start (mount reconnection): reset state to replay all events
+      dispatch({ type: 'START_RECONNECT', progress: t('analysis.progressReconnecting') })
+    } else {
+      // Mid-stream reconnect: keep existing state, resume from lastEventId
+      dispatch({ type: 'RESUME_RECONNECT', progress: t('analysis.progressReconnecting') })
+    }
 
     const abortController = new AbortController()
     abortControllerRef.current = abortController
 
     try {
-      const token = getAccessToken()
+      const token = await getValidAccessToken()
       const lang = locale.toLowerCase().startsWith('zh') ? 'zh' : 'en'
+      const params = new URLSearchParams({ language: lang })
+      if (lastEventIdRef.current !== '0-0') {
+        params.set('lastEventId', lastEventIdRef.current)
+      }
+      if (isForceNew) {
+        params.set('forceNew', 'true')
+      }
 
-      // Use v2 endpoint (LangGraph)
-      const response = await fetch(`/api/v1/analysis/${symbol}/stream/v2?language=${lang}`, {
-        method: 'GET',
-        headers: {
-          Accept: 'text/event-stream',
-          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      const response = await fetch(
+        `/api/v1/analysis/${symbol}/stream/v2?${params}`,
+        {
+          method: 'GET',
+          headers: {
+            Accept: 'text/event-stream',
+            ...(token ? { Authorization: `Bearer ${token}` } : {}),
+          },
+          credentials: 'include',
+          signal: abortController.signal,
         },
-        credentials: 'include',
-        signal: abortController.signal,
-      })
+      )
 
       if (!response.ok) {
-        throw new Error(`Analysis failed: ${response.statusText}`)
+        throw new Error(`${t('analysis.errorFailed')}: ${response.statusText}`)
       }
 
       const reader = response.body?.getReader()
@@ -384,58 +596,157 @@ export default function AnalysisPanel({ symbol, className }: AnalysisPanelProps)
         throw new Error('Failed to get response reader')
       }
 
-      setStatus('analyzing')
-      const decoder = new TextDecoder()
-      let buffer = ''
+      dispatch({ type: 'SET_STATUS', status: 'analyzing' })
+      reconnectCountRef.current = 0 // reset on successful connection
+      const parser = createSSEParser<SSEEvent>()
+      let receivedTerminal = false
 
       while (true) {
         const { done, value } = await reader.read()
+        if (done) break
 
-        if (done) {
-          break
-        }
-
-        buffer += decoder.decode(value, { stream: true })
-        const lines = buffer.split('\n')
-        buffer = lines.pop() ?? ''
-
-        for (const line of lines) {
-          if (line.startsWith('data: ')) {
-            const data = line.slice(6).trim()
-            if (data) {
-              try {
-                const event: SSEEvent = JSON.parse(data)
-                handleSSEEvent(event)
-              } catch {
-                // Skip invalid JSON
-              }
-            }
+        for (const { eventId, data } of parser.feed(value)) {
+          if (eventId) {
+            lastEventIdRef.current = eventId
+          }
+          handleSSEEvent(data)
+          if (data.type === 'complete' || data.type === 'error' || data.type === 'timeout') {
+            receivedTerminal = true
           }
         }
       }
 
-      // Ensure completion status is set (use functional update to avoid stale closure)
-      setStatus((prev) => (prev === 'error' ? 'error' : 'complete'))
+      // Stream ended -- if no terminal event, it was a premature close
+      if (!receivedTerminal) {
+        if (lastEventIdRef.current !== '0-0' && reconnectCountRef.current < 3) {
+          reconnectCountRef.current++
+          dispatch({
+            type: 'SET_PROGRESS',
+            progress: t('analysis.progressConnectionLost', {
+              current: reconnectCountRef.current,
+              max: 3,
+            }),
+          })
+          reconnectTimerRef.current = setTimeout(() => {
+            startAnalysis({ reconnect: true })
+          }, 2000)
+          return
+        }
+        // Give up -- show result if we have synthesis, otherwise error
+        if (stateRef.current.synthesisContent) {
+          dispatch({ type: 'COMPLETE' })
+        } else {
+          dispatch({ type: 'ERROR', error: t('analysis.errorStreamEnded') })
+        }
+      }
     } catch (err) {
       if (err instanceof Error && err.name === 'AbortError') {
         return
       }
-      setStatus('error')
-      setError(err instanceof Error ? err.message : 'Analysis failed')
+
+      // Auto-reconnect if we had progress and haven't exceeded retry limit
+      if (lastEventIdRef.current !== '0-0' && reconnectCountRef.current < 3) {
+        reconnectCountRef.current++
+        dispatch({
+          type: 'SET_PROGRESS',
+          progress: t('analysis.progressConnectionLost', {
+            current: reconnectCountRef.current,
+            max: 3,
+          }),
+        })
+        reconnectTimerRef.current = setTimeout(() => {
+          startAnalysis({ reconnect: true })
+        }, 2000)
+        return
+      }
+
+      dispatch({
+        type: 'ERROR',
+        error: err instanceof Error ? err.message : t('analysis.errorFailed'),
+      })
     }
-  }, [symbol, locale, handleSSEEvent, queryClient])
+  }, [symbol, locale, handleSSEEvent, queryClient, t])
 
   const cancelAnalysis = useCallback(() => {
     if (abortControllerRef.current) {
       abortControllerRef.current.abort()
       abortControllerRef.current = null
     }
-    setStatus('idle')
-    setProgress('')
+    if (reconnectTimerRef.current) {
+      clearTimeout(reconnectTimerRef.current)
+      reconnectTimerRef.current = null
+    }
+    reconnectCountRef.current = 0
+    dispatch({ type: 'CANCEL' })
   }, [])
 
+  const restoreSession = useCallback(async (sessionId: string) => {
+    try {
+      dispatch({ type: 'SET_STATUS', status: 'connecting' })
+      const detail = await analysisApi.getSession(sessionId)
+      if (detail.status === 'completed' && detail.synthesisContent) {
+        const restoredAgents: AgentResult[] = (detail.agentResults ?? []).map((ar) => ({
+          agent: ar.agent,
+          summary: ar.summary,
+          keyInsights: ar.keyInsights ?? [],
+        }))
+        const restoredStatuses: Record<string, { status: AgentStatus['status']; latencyMs?: number }> = {}
+        for (const ar of detail.agentResults ?? []) {
+          const entry: { status: AgentStatus['status']; latencyMs?: number } = {
+            status: 'complete' as const,
+          }
+          if (ar.latencyMs != null) {
+            entry.latencyMs = ar.latencyMs
+          }
+          restoredStatuses[ar.agent] = entry
+        }
+
+        dispatch({
+          type: 'RESTORE_SESSION',
+          agentResults: restoredAgents,
+          synthesisContent: detail.synthesisContent,
+          clarificationRound: detail.clarificationRounds,
+          agentStatuses: restoredStatuses,
+        })
+
+        // Write to React Query cache so it survives tab switches
+        queryClient.setQueryData<CachedAnalysisResult>(['analysis-result', symbol], {
+          agentResults: restoredAgents,
+          synthesisContent: detail.synthesisContent,
+          clarificationRound: detail.clarificationRounds,
+          agentStatuses: restoredStatuses,
+          completedAt: Date.now(),
+        })
+      } else if (detail.status === 'failed') {
+        dispatch({ type: 'ERROR', error: detail.error ?? t('analysis.errorFailed') })
+      }
+    } catch (err) {
+      dispatch({ type: 'RESET' })
+      console.error('Failed to restore analysis session:', err)
+    }
+  }, [symbol, queryClient, t])
+
+  const backToHistory = useCallback(() => {
+    dispatch({ type: 'BACK_TO_HISTORY' })
+    queryClient.removeQueries({ queryKey: ['analysis-result', symbol] })
+  }, [symbol, queryClient])
+
+  const handleDeleteSession = useCallback(async (sessionId: string, e: React.MouseEvent) => {
+    e.stopPropagation()
+    try {
+      await analysisApi.deleteSession(sessionId)
+      queryClient.invalidateQueries({ queryKey: ['analysis-sessions', symbol] })
+    } catch {
+      // Silently ignore -- session may already be deleted
+    }
+  }, [symbol, queryClient])
+
+  // ---------------------------------------------------------------------------
+  // Render helpers
+  // ---------------------------------------------------------------------------
+
   const getStatusIcon = () => {
-    switch (status) {
+    switch (state.status) {
       case 'connecting':
       case 'analyzing':
       case 'synthesizing':
@@ -462,6 +773,13 @@ export default function AnalysisPanel({ symbol, className }: AnalysisPanelProps)
     }
   }
 
+  const agentLabelMap: Record<string, string> = {
+    fundamental: t('analysis.agentFundamental'),
+    technical: t('analysis.agentTechnical'),
+    sentiment: t('analysis.agentSentiment'),
+    news: t('analysis.agentNews'),
+  }
+
   /**
    * Filter out JSON code blocks from synthesis content.
    * The LLM outputs structured JSON at the end for machine parsing.
@@ -477,32 +795,25 @@ export default function AnalysisPanel({ symbol, className }: AnalysisPanelProps)
   }
 
   const renderAgentResults = () => {
-    if (agentResults.length === 0) return null
-
-    const agentLabels: Record<string, string> = {
-      fundamental: 'Fundamental',
-      technical: 'Technical',
-      sentiment: 'Sentiment',
-      news: 'News',
-    }
+    if (state.agentResults.length === 0) return null
 
     return (
       <div className="space-y-2 mb-4">
-        {agentResults.map((result) => (
+        {state.agentResults.map((result) => (
           <details
             key={result.agent}
             className="rounded-lg border bg-card"
-            open={status !== 'complete'}
+            open={state.status !== 'complete'}
           >
             <summary className="flex items-center gap-2 px-3 py-2 cursor-pointer text-sm font-medium hover:bg-muted/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 rounded-lg">
               <CheckCircle2 className="h-3.5 w-3.5 text-stock-up flex-shrink-0" />
-              {agentLabels[result.agent] ?? result.agent}
+              {agentLabelMap[result.agent] ?? result.agent}
             </summary>
             <div className="px-3 pb-3 pt-1 text-sm">
               <p className="text-muted-foreground leading-relaxed">
                 {result.summary}
               </p>
-              {result.keyInsights.length > 0 && (
+              {result.keyInsights && result.keyInsights.length > 0 && (
                 <ul className="mt-2 space-y-1">
                   {result.keyInsights.map((insight, idx) => (
                     <li key={idx} className="flex items-start gap-2 text-xs">
@@ -530,18 +841,62 @@ export default function AnalysisPanel({ symbol, className }: AnalysisPanelProps)
   }
 
   const renderSynthesisContent = () => {
-    if (!synthesisContent) {
-      if (status === 'idle') {
+    if (!state.synthesisContent) {
+      if (state.status === 'idle') {
+        const sessions = pastSessionsQuery.data
+        if (sessions && sessions.length > 0) {
+          return (
+            <div className="space-y-3 py-4">
+              <p className="text-sm text-muted-foreground">
+                {t('analysis.historyTitle')}
+              </p>
+              <div className="space-y-2">
+                {sessions.map((s) => (
+                  <div
+                    key={s.id}
+                    className="group flex w-full items-center justify-between rounded-lg border p-3 text-left transition-colors hover:bg-muted/50 cursor-pointer"
+                    role="button"
+                    tabIndex={0}
+                    onClick={() => restoreSession(s.id)}
+                    onKeyDown={(e) => { if (e.key === 'Enter') restoreSession(s.id) }}
+                  >
+                    <div className="flex items-center gap-2">
+                      {s.status === 'completed' ? (
+                        <CheckCircle2 className="h-4 w-4 text-green-500" />
+                      ) : (
+                        <XCircle className="h-4 w-4 text-destructive" />
+                      )}
+                      <span className="text-sm font-medium">{s.symbol}</span>
+                    </div>
+                    <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
+                      <Clock className="h-3 w-3" />
+                      <span>{formatRelativeTime(s.completedAt ?? s.createdAt)}</span>
+                      <button
+                        type="button"
+                        className="ml-1 rounded p-1 opacity-0 transition-opacity hover:bg-destructive/10 hover:text-destructive group-hover:opacity-100"
+                        onClick={(e) => handleDeleteSession(s.id, e)}
+                        title={t('analysis.deleteSession')}
+                        aria-label={t('analysis.deleteSession')}
+                      >
+                        <Trash2 className="h-3.5 w-3.5" />
+                      </button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )
+        }
         return (
           <div className="flex min-h-[200px] items-center justify-center text-muted-foreground py-8">
-            <p>Click "Analyze" to generate AI-powered comprehensive analysis</p>
+            <p>{t('analysis.idlePrompt')}</p>
           </div>
         )
       }
       return null
     }
 
-    const displayContent = filterJsonBlocks(synthesisContent)
+    const displayContent = filterJsonBlocks(state.synthesisContent)
 
     return (
       <div className="space-y-4">
@@ -550,17 +905,17 @@ export default function AnalysisPanel({ symbol, className }: AnalysisPanelProps)
             {displayContent}
           </ReactMarkdown>
         </div>
-        {(status === 'analyzing' || status === 'synthesizing') && (
+        {(state.status === 'analyzing' || state.status === 'synthesizing') && (
           <div className="flex items-center gap-2 text-muted-foreground">
             <Loader2 className="h-3 w-3 animate-spin" />
-            <span className="text-xs">Generating...</span>
+            <span className="text-xs">{t('analysis.btnGenerating')}</span>
           </div>
         )}
       </div>
     )
   }
 
-  const isStreaming = status === 'connecting' || status === 'analyzing' || status === 'synthesizing'
+  const isStreaming = state.status === 'connecting' || state.status === 'analyzing' || state.status === 'synthesizing'
 
   return (
     <Card className={cn('flex flex-col', className)}>
@@ -568,24 +923,36 @@ export default function AnalysisPanel({ symbol, className }: AnalysisPanelProps)
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-2">
             {getStatusIcon()}
-            <CardTitle className="text-lg">AI Analysis</CardTitle>
+            <CardTitle className="text-lg">{t('analysis.title')}</CardTitle>
           </div>
           <div className="flex items-center gap-2">
+            {state.status === 'complete' && (
+              <Button variant="ghost" size="sm" onClick={backToHistory}>
+                <ArrowLeft className="mr-1 h-4 w-4" />
+                {t('analysis.btnHistory')}
+              </Button>
+            )}
             {isStreaming ? (
               <Button variant="outline" size="sm" onClick={cancelAnalysis}>
-                Cancel
+                {t('analysis.btnCancel')}
               </Button>
             ) : (
-              <Button size="sm" onClick={startAnalysis} disabled={isStreaming}>
-                {status === 'complete' ? (
+              <Button
+                size="sm"
+                onClick={() => {
+                  startAnalysis(state.status === 'complete' ? { forceNew: true } : undefined)
+                }}
+                disabled={isStreaming}
+              >
+                {state.status === 'complete' ? (
                   <>
                     <RefreshCw className="mr-2 h-4 w-4" />
-                    Re-analyze
+                    {t('analysis.btnReanalyze')}
                   </>
                 ) : (
                   <>
                     <Brain className="mr-2 h-4 w-4" />
-                    Analyze
+                    {t('analysis.btnAnalyze')}
                   </>
                 )}
               </Button>
@@ -593,49 +960,52 @@ export default function AnalysisPanel({ symbol, className }: AnalysisPanelProps)
           </div>
         </div>
         <CardDescription>
-          {symbol} - Comprehensive AI-powered stock analysis
-          {clarificationRound > 0 && (
+          {symbol} - {t('analysis.description')}
+          {state.clarificationRound > 0 && (
             <span className="ml-2 inline-flex items-center rounded-md border px-2 py-0.5 text-xs font-medium">
-              +{clarificationRound} clarification
+              {t('analysis.clarificationBadge', { count: state.clarificationRound })}
             </span>
           )}
         </CardDescription>
 
         {/* Agent Status Indicators */}
-        {status !== 'idle' && (
+        {state.status !== 'idle' && (
           <div className="flex flex-wrap gap-2 mt-3">
-            {Object.entries(agents).map(([key, agent]) => (
-              <div
-                key={key}
-                className={cn(
-                  'flex items-center gap-1.5 px-2 py-1 rounded-md text-xs',
-                  agent.status === 'idle' && 'bg-muted text-muted-foreground',
-                  agent.status === 'running' && 'bg-primary/10 text-primary',
-                  agent.status === 'complete' && 'bg-stock-up/10 text-stock-up',
-                  agent.status === 'error' && 'bg-destructive/10 text-destructive'
-                )}
-              >
-                <agent.icon className="h-3 w-3" />
-                <span>{agent.name}</span>
-                {getAgentStatusIcon(agent.status)}
-                {agent.latencyMs && agent.status === 'complete' && (
-                  <span className="text-muted-foreground">({(agent.latencyMs / 1000).toFixed(1)}s)</span>
-                )}
-              </div>
-            ))}
+            {Object.entries(state.agents).map(([key, agent]) => {
+              const AgentIcon = AGENT_ICONS[key] ?? Brain
+              return (
+                <div
+                  key={key}
+                  className={cn(
+                    'flex items-center gap-1.5 px-2 py-1 rounded-md text-xs',
+                    agent.status === 'idle' && 'bg-muted text-muted-foreground',
+                    agent.status === 'running' && 'bg-primary/10 text-primary',
+                    agent.status === 'complete' && 'bg-stock-up/10 text-stock-up',
+                    agent.status === 'error' && 'bg-destructive/10 text-destructive'
+                  )}
+                >
+                  <AgentIcon className="h-3 w-3" />
+                  <span>{agentLabelMap[key] ?? key}</span>
+                  {getAgentStatusIcon(agent.status)}
+                  {agent.latencyMs != null && agent.status === 'complete' && (
+                    <span className="text-muted-foreground">({(agent.latencyMs / 1000).toFixed(1)}s)</span>
+                  )}
+                </div>
+              )
+            })}
           </div>
         )}
 
-        {progress && (
+        {state.progress && (
           <div className="flex items-center gap-2 text-sm text-muted-foreground mt-2">
             <Loader2 className="h-3 w-3 animate-spin" />
-            {progress}
+            {state.progress}
           </div>
         )}
-        {error && (
-          <div className="flex items-center gap-2 text-sm text-destructive mt-2">
+        {state.error && (
+          <div role="alert" className="flex items-center gap-2 text-sm text-destructive mt-2">
             <AlertCircle className="h-3 w-3" />
-            {error}
+            {state.error}
           </div>
         )}
       </CardHeader>

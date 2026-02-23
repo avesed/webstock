@@ -149,6 +149,29 @@ http {
             chunked_transfer_encoding on;
         }
 
+        # SSE endpoints (discussion streaming, 600s timeout)
+        location /api/v1/discussion/ {
+            proxy_pass http://backend;
+            proxy_http_version 1.1;
+            proxy_set_header Host $host;
+            proxy_set_header X-Real-IP $remote_addr;
+            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+            proxy_set_header X-Forwarded-Proto $scheme;
+            proxy_set_header X-Request-ID $request_id;
+            proxy_set_header Connection "";
+            proxy_buffering off;
+            proxy_cache off;
+            add_header X-Accel-Buffering "no" always;
+            # Re-add security headers (Nginx drops parent add_header when child uses add_header)
+            add_header X-Frame-Options "DENY" always;
+            add_header X-Content-Type-Options "nosniff" always;
+            add_header X-XSS-Protection "1; mode=block" always;
+            add_header Referrer-Policy "strict-origin-when-cross-origin" always;
+            proxy_read_timeout 600s;
+            proxy_send_timeout 600s;
+            chunked_transfer_encoding on;
+        }
+
         # SSE endpoints (chat streaming)
         location /api/v1/chat/ {
             limit_req zone=chat_limit burst=30 nodelay;

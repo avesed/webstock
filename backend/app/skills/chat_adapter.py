@@ -46,6 +46,14 @@ CHAT_SKILL_NAMES = [
     "get_market_context",
 ]
 
+# Discussion expert skills (only exposed in discussion conversations)
+DISCUSSION_SKILL_NAMES = [
+    "ask_fundamental_expert",
+    "ask_technical_expert",
+    "ask_sentiment_expert",
+    "ask_news_expert",
+]
+
 # Friendly display labels for tool calls (used by SSE events)
 TOOL_LABELS = {
     "get_stock_quote": "获取实时报价",
@@ -65,11 +73,16 @@ TOOL_LABELS = {
     "optimize_portfolio": "优化投资组合",
     "get_analyst_ratings": "获取分析师评级",
     "get_market_context": "获取市场概况",
+    "ask_fundamental_expert": "咨询基本面专家",
+    "ask_technical_expert": "咨询技术面专家",
+    "ask_sentiment_expert": "咨询情绪面专家",
+    "ask_news_expert": "咨询新闻面专家",
 }
 
 # Skills that need user_id and db injection
-_USER_SCOPED_SKILLS = {"get_portfolio", "get_watchlist", "qlib_create_backtest", "qlib_get_backtest"}
-_DB_SCOPED_SKILLS = {"get_portfolio", "get_watchlist", "search_knowledge_base", "search_related_stocks", "get_news", "qlib_create_backtest", "qlib_get_backtest"}
+_USER_SCOPED_SKILLS = {"get_portfolio", "get_watchlist", "qlib_create_backtest", "qlib_get_backtest", "ask_fundamental_expert", "ask_technical_expert", "ask_sentiment_expert", "ask_news_expert"}
+_DB_SCOPED_SKILLS = {"get_portfolio", "get_watchlist", "search_knowledge_base", "search_related_stocks", "get_news", "qlib_create_backtest", "qlib_get_backtest", "ask_fundamental_expert", "ask_technical_expert", "ask_sentiment_expert", "ask_news_expert"}
+_DISCUSSION_SCOPED_SKILLS = {"ask_fundamental_expert", "ask_technical_expert", "ask_sentiment_expert", "ask_news_expert"}
 
 
 def skill_to_tool_definition(skill: BaseSkill) -> ToolDefinition:
@@ -82,13 +95,21 @@ def skill_to_tool_definition(skill: BaseSkill) -> ToolDefinition:
     )
 
 
-def get_chat_tools() -> List[ToolDefinition]:
-    """Get ToolDefinition list for chat function calling."""
+def get_chat_tools(include_discussion: bool = False) -> List[ToolDefinition]:
+    """Get ToolDefinition list for chat function calling.
+
+    Args:
+        include_discussion: If True, include discussion expert skills
+            (only for conversations linked to a discussion session)
+    """
     from app.skills.registry import get_skill_registry
 
     registry = get_skill_registry()
+    skill_names = list(CHAT_SKILL_NAMES)
+    if include_discussion:
+        skill_names.extend(DISCUSSION_SKILL_NAMES)
     tools: List[ToolDefinition] = []
-    for name in CHAT_SKILL_NAMES:
+    for name in skill_names:
         skill = registry.get(name)
         if skill is not None:
             tools.append(skill_to_tool_definition(skill))
@@ -299,6 +320,7 @@ async def execute_chat_tool(
     arguments: Dict[str, Any],
     user_id: int,
     db: AsyncSession,
+    discussion_session_id: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Execute a skill in chat context with user scoping and truncation.
 
@@ -319,6 +341,8 @@ async def execute_chat_tool(
             kwargs["user_id"] = user_id
         if tool_name in _DB_SCOPED_SKILLS:
             kwargs["db"] = db
+        if tool_name in _DISCUSSION_SCOPED_SKILLS:
+            kwargs["discussion_session_id"] = discussion_session_id
 
         result = await asyncio.wait_for(
             skill.execute(**kwargs),

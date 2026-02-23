@@ -50,6 +50,7 @@ Provide your analysis as a JSON object with the following structure:
   "sentiment_score": <number between -1 and 1>,
   "sentiment_trend": "bullish" | "bearish" | "neutral",
   "confidence": "low" | "medium" | "high",
+  "action": "strong_buy" | "buy" | "hold" | "sell" | "strong_sell",
   "sources": [
     {
       "source": "news" | "social_media" | "analysts" | "institutional",

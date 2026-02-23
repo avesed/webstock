@@ -18,6 +18,7 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 from app.db.database import Base
 
 if TYPE_CHECKING:
+    from app.models.discussion import DiscussionSession
     from app.models.user import User
 
 
@@ -69,6 +70,18 @@ class Conversation(Base):
         nullable=False,
     )
 
+    type: Mapped[str] = mapped_column(
+        String(20),
+        nullable=False,
+        default="chat",
+    )
+
+    discussion_session_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("discussion_sessions.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+
     # Relationships
     messages: Mapped[List["ChatMessage"]] = relationship(
         "ChatMessage",
@@ -81,6 +94,12 @@ class Conversation(Base):
     user: Mapped["User"] = relationship(
         "User",
         lazy="joined",
+    )
+
+    discussion_session: Mapped[Optional["DiscussionSession"]] = relationship(
+        "DiscussionSession",
+        back_populates="conversation",
+        lazy="noload",
     )
 
     def __repr__(self) -> str:
@@ -131,6 +150,12 @@ class ChatMessage(Base):
     )
 
     rag_context: Mapped[Optional[dict]] = mapped_column(
+        JSONB,
+        nullable=True,
+    )
+
+    metadata_: Mapped[Optional[dict]] = mapped_column(
+        "metadata",
         JSONB,
         nullable=True,
     )

@@ -50,6 +50,7 @@
   "sentiment_score": <-1到1之间的数值>,
   "sentiment_trend": "bullish" | "bearish" | "neutral",
   "confidence": "low" | "medium" | "high",
+  "action": "strong_buy" | "buy" | "hold" | "sell" | "strong_sell",
   "sources": [
     {
       "source": "news" | "social_media" | "analysts" | "institutional",

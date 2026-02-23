@@ -289,6 +289,13 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     await close_qlib_client()
     logger.debug("Qlib client closed")
 
+    # Cancel background tasks (needs Redis for metadata updates)
+    from app.services.task_manager import get_task_manager
+
+    logger.debug("Cleaning up TaskManager...")
+    await get_task_manager().cleanup()
+    logger.debug("TaskManager cleanup complete")
+
     # Close Redis
     await close_redis()
     logger.info("Redis connection closed")

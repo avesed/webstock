@@ -253,6 +253,15 @@ class Phase2Config(CamelModel):
     cache_ttl_minutes: int = 60
 
 
+class DiscussionConfig(CamelModel):
+    """Discussion group configuration."""
+
+    enabled: Optional[bool] = None
+    max_rounds: Optional[int] = None
+    provider_id: Optional[str] = None
+    model: Optional[str] = None
+
+
 class SystemConfigResponse(CamelModel):
     """System configuration response matching frontend SystemConfig type."""
 
@@ -262,6 +271,7 @@ class SystemConfigResponse(CamelModel):
     langgraph: LangGraphConfig
     model_assignments: Optional[ModelAssignmentsConfig] = None
     phase2: Optional[Phase2Config] = None
+    discussion: Optional[DiscussionConfig] = None
 
 
 class UpdateSystemConfigRequest(CamelModel):
@@ -273,6 +283,7 @@ class UpdateSystemConfigRequest(CamelModel):
     langgraph: Optional[LangGraphConfig] = None
     model_assignments: Optional[ModelAssignmentsConfig] = None
     phase2: Optional[Phase2Config] = None
+    discussion: Optional[DiscussionConfig] = None
 
 
 # ============== System Monitor Stats Schemas ==============

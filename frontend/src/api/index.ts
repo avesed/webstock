@@ -29,6 +29,8 @@ import type {
   RegisterResponse,
   PendingApprovalResponse,
   CheckStatusResponse,
+  AnalysisSession,
+  AnalysisSessionDetail,
 } from '@/types'
 
 /**
@@ -1024,27 +1026,32 @@ export const analysisApi = {
   /**
    * Stream AI analysis for a stock using fetch (supports auth headers).
    * Returns an AbortController so the caller can cancel.
-   * @param symbol - Stock symbol
-   * @param language - Language for analysis output ('en' or 'zh')
-   * @param onEvent - Callback for SSE events
-   * @param onError - Callback for errors
-   * @param onDone - Callback when stream ends
    */
   streamAnalysis: (
     symbol: string,
     language: string,
-    onEvent: (data: Record<string, unknown>) => void,
+    onEvent: (data: Record<string, unknown>, eventId: string | null) => void,
     onError: (err: unknown) => void,
     onDone: () => void,
+    options?: { lastEventId?: string; forceNew?: boolean },
   ): AbortController => {
     const controller = new AbortController()
-    // Normalize language: 'zh-CN', 'zh-TW' etc. → 'zh', others → 'en'
     const lang = language.toLowerCase().startsWith('zh') ? 'zh' : 'en'
 
     const run = async () => {
       try {
+        const { createSSEParser } = await import('./sse')
+
         const token = await getValidAccessToken()
-        const resp = await fetch(`/api/v1/analysis/${symbol}/stream?language=${lang}`, {
+        const params = new URLSearchParams({ language: lang })
+        if (options?.lastEventId && options.lastEventId !== '0-0') {
+          params.set('lastEventId', options.lastEventId)
+        }
+        if (options?.forceNew) {
+          params.set('forceNew', 'true')
+        }
+
+        const resp = await fetch(`/api/v1/analysis/${symbol}/stream/v2?${params}`, {
           method: 'GET',
           headers: {
             Accept: 'text/event-stream',
@@ -1061,29 +1068,13 @@ export const analysisApi = {
         const reader = resp.body?.getReader()
         if (!reader) throw new Error('No response body')
 
-        const decoder = new TextDecoder()
-        let buffer = ''
+        const parser = createSSEParser<Record<string, unknown>>()
 
         while (true) {
           const { done, value } = await reader.read()
           if (done) break
-
-          buffer += decoder.decode(value, { stream: true })
-
-          // Parse SSE lines from buffer
-          const lines = buffer.split('\n')
-          buffer = lines.pop() ?? ''
-
-          for (const line of lines) {
-            const trimmed = line.trim()
-            if (trimmed.startsWith('data: ')) {
-              try {
-                const parsed = JSON.parse(trimmed.slice(6)) as Record<string, unknown>
-                onEvent(parsed)
-              } catch {
-                // skip unparseable lines
-              }
-            }
+          for (const { eventId, data } of parser.feed(value)) {
+            onEvent(data, eventId)
           }
         }
 
@@ -1100,6 +1091,20 @@ export const analysisApi = {
   },
 
   /**
+   * Check if there's a running background analysis task for this symbol.
+   */
+  getTaskStatus: async (symbol: string): Promise<{ taskId: string; status: string } | null> => {
+    try {
+      const response = await apiClient.get<{ taskId: string; status: string }>(
+        `/analysis/${symbol}/task-status`,
+      )
+      return response.data
+    } catch {
+      return null // 404 or error — no running task
+    }
+  },
+
+  /**
    * Get cached analysis (non-streaming)
    */
   getAnalysis: async (symbol: string): Promise<{ content: string; timestamp: string }> => {
@@ -1108,7 +1113,32 @@ export const analysisApi = {
     )
     return response.data
   },
+
+  /**
+   * List past analysis sessions for a symbol (most recent first).
+   */
+  getSessions: async (symbol: string, limit = 10): Promise<AnalysisSession[]> => {
+    const response = await apiClient.get<AnalysisSession[]>('/analysis/sessions', {
+      params: { symbol, limit },
+    })
+    return response.data
+  },
+
+  /**
+   * Get a single analysis session with full results.
+   */
+  getSession: async (sessionId: string): Promise<AnalysisSessionDetail> => {
+    const response = await apiClient.get<AnalysisSessionDetail>(
+      `/analysis/sessions/${sessionId}`,
+    )
+    return response.data
+  },
+
+  deleteSession: async (sessionId: string): Promise<void> => {
+    await apiClient.delete(`/analysis/sessions/${sessionId}`)
+  },
 }
 
 export { default as apiClient, getErrorMessage, isNetworkError, isTimeoutError } from './client'
 export { adminApi } from './admin'
+export { discussionApi } from './discussion'

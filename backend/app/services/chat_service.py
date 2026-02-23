@@ -303,7 +303,26 @@ class ChatService:
             await db.commit()
 
             # 6. Build gateway messages payload (no inline RAG -- RAG is a tool)
-            system_prompt = self._build_system_prompt(language, symbol)
+            # Check if this is a discussion conversation
+            is_discussion = getattr(conversation, "type", "chat") == "discussion"
+            compact_context = None
+            discussion_session_id = None
+            if is_discussion and getattr(conversation, "discussion_session_id", None):
+                discussion_session_id = str(conversation.discussion_session_id)
+                # Load compact context from discussion session
+                try:
+                    from app.models.discussion import DiscussionSession
+                    from sqlalchemy import select as _sel
+                    _res = await db.execute(
+                        _sel(DiscussionSession.compact_context).where(
+                            DiscussionSession.id == conversation.discussion_session_id
+                        )
+                    )
+                    row = _res.first()
+                    compact_context = row[0] if row else None
+                except Exception as e:
+                    logger.warning("Failed to load discussion compact context: %s", e)
+            system_prompt = self._build_system_prompt(language, symbol, compact_context=compact_context)
             gateway_messages: list[Message] = [
                 Message(role=Role.SYSTEM, content=system_prompt),
             ]
@@ -360,7 +379,7 @@ class ChatService:
                 request = ChatRequest(
                     model=model,
                     messages=gateway_messages,
-                    tools=get_chat_tools() if tools_supported and iteration < _MAX_TOOL_ITERATIONS else None,
+                    tools=get_chat_tools(include_discussion=is_discussion) if tools_supported and iteration < _MAX_TOOL_ITERATIONS else None,
                     max_tokens=user_max_tokens,
                     temperature=user_temperature,
                     stream=True,
@@ -453,7 +472,10 @@ class ChatService:
                         except json.JSONDecodeError:
                             args = {}
                         async with AsyncSessionLocal() as tool_db:
-                            result = await execute_chat_tool(name, args, user_id, tool_db)
+                            result = await execute_chat_tool(
+                                name, args, user_id, tool_db,
+                                discussion_session_id=discussion_session_id,
+                            )
                         return tc_id, name, result
 
                     tasks = [_run_tool(tc) for tc in collected_tool_calls]
@@ -579,7 +601,12 @@ class ChatService:
     # System prompt (no RAG injection -- RAG is now a tool)
     # ------------------------------------------------------------------
 
-    def _build_system_prompt(self, language: str = "en", symbol: str | None = None) -> str:
+    def _build_system_prompt(
+        self,
+        language: str = "en",
+        symbol: str | None = None,
+        compact_context: str | None = None,
+    ) -> str:
         """Build the system prompt for the function-calling agent.
 
         Uses user's custom system prompt if set, otherwise uses default
@@ -588,13 +615,34 @@ class ChatService:
         Args:
             language: Language code ("en" or "zh")
             symbol: Optional stock symbol for context injection
+            compact_context: Discussion compact context (for discussion chats)
         """
         user_config = current_user_ai_config.get()
         custom_prompt = user_config.system_prompt if user_config else None
         if custom_prompt:
             return custom_prompt
 
-        return build_chat_system_prompt(language, symbol)
+        base = build_chat_system_prompt(language, symbol)
+
+        # Inject discussion context for discussion-type conversations
+        if compact_context:
+            discussion_prefix = (
+                "你正在一个讨论组对话中。以下是之前多轮专家讨论的综合总结：\n\n"
+                f"{compact_context}\n\n"
+                "用户可能会就讨论内容提出后续问题。你可以使用 ask_*_expert 工具向"
+                "特定专家咨询更深入的问题。\n\n"
+                "---\n\n"
+            ) if language == "zh" else (
+                "You are in a discussion follow-up conversation. Below is the synthesis from a "
+                "prior multi-agent expert discussion:\n\n"
+                f"{compact_context}\n\n"
+                "The user may ask follow-up questions about the discussion. You can use the "
+                "ask_*_expert tools to consult specific experts for deeper analysis.\n\n"
+                "---\n\n"
+            )
+            return discussion_prefix + base
+
+        return base
 
     # ------------------------------------------------------------------
     # Context window

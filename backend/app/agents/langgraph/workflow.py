@@ -210,6 +210,15 @@ async def stream_analysis(
                 if output:
                     final_state.update(output)
 
+            # Capture intermediate agent results from on_chain_end events
+            # so they are not lost if the final LangGraph event is incomplete
+            if event_type == "on_chain_end":
+                output = event.get("data", {}).get("output", {})
+                if output and isinstance(output, dict):
+                    for key in ("fundamental", "technical", "sentiment", "news", "synthesis_output"):
+                        if key in output:
+                            final_state[key] = output[key]
+
             # Node start events
             if event_type == "on_chain_start":
                 if event_name == "fetch_shared_data":

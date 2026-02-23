@@ -234,5 +234,39 @@
     "swipeToDelete": "Swipe to delete",
     "undoDelete": "Undo",
     "itemDeleted": "Item deleted"
+  },
+  "discussion": {
+    "title": "Discussion",
+    "startDiscussion": "Start Discussion",
+    "startDiscussionDesc": "Launch a multi-agent roundtable discussion moderated by the Coordinator Agent",
+    "status": {
+      "idle": "Ready",
+      "loading": "Preparing",
+      "fetchingData": "Fetching market data...",
+      "discussing": "Discussing",
+      "synthesizing": "Generating synthesis report...",
+      "completed": "Completed",
+      "failed": "Discussion failed"
+    },
+    "agents": {
+      "moderator": "Coordinator Agent",
+      "fundamental": "Fundamental Agent",
+      "technical": "Technical Agent",
+      "sentiment": "Sentiment Agent",
+      "news": "News Agent",
+      "synthesis": "Synthesis Report"
+    },
+    "roundsLabel": "rounds",
+    "continueChat": "Continue Chatting",
+    "continueChatDesc": "Ask follow-up questions to the experts based on the discussion",
+    "noSessions": "No discussion sessions yet",
+    "pastSessions": "Past Discussions",
+    "viewSession": "View Discussion",
+    "hideThread": "Hide discussion thread",
+    "showThread": "Show discussion thread",
+    "error": "Discussion error",
+    "typing": "typing...",
+    "featureDisabled": "Discussion feature is not enabled",
+    "featureDisabledDesc": "Please contact admin to enable the discussion feature in system settings"
   }
 }

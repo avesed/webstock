@@ -122,8 +122,9 @@ def _build_synthesis_prompt(
                 structured_summary = f"\nTrend: {trend}, Action: {action}"
         elif result.sentiment:
             sentiment = getattr(result.sentiment.overall_sentiment, 'value', None) if result.sentiment.overall_sentiment else None
+            action_str = f", Action: {result.sentiment.action.value}" if result.sentiment.action else ""
             if sentiment:
-                structured_summary = f"\nSentiment: {sentiment}"
+                structured_summary = f"\nSentiment: {sentiment}{action_str}"
         elif result.news:
             news_sentiment = getattr(result.news.overall_sentiment, 'value', None) if result.news.overall_sentiment else None
             action_str = f", Action: {result.news.action.value}" if result.news.action else ""
@@ -148,7 +149,7 @@ def _build_synthesis_prompt(
         sections.append(f"""## {section_title}
 {structured_summary}
 
-{content[:2000]}
+{content[:10000]}
 """)
 
     # Include clarification responses if any
@@ -499,6 +500,11 @@ async def generate_synthesis_result(state: AnalysisState) -> SynthesisResult:
                 buy_signals += 1
             elif result.technical.action in (ActionRecommendation.SELL, ActionRecommendation.STRONG_SELL):
                 sell_signals += 1
+        elif result.sentiment and result.sentiment.action:
+            if result.sentiment.action in (ActionRecommendation.BUY, ActionRecommendation.STRONG_BUY):
+                buy_signals += 1
+            elif result.sentiment.action in (ActionRecommendation.SELL, ActionRecommendation.STRONG_SELL):
+                sell_signals += 1
         elif result.news:
             if result.news.action is not None:
                 if result.news.action in (ActionRecommendation.BUY, ActionRecommendation.STRONG_BUY):
@@ -515,6 +521,13 @@ async def generate_synthesis_result(state: AnalysisState) -> SynthesisResult:
         confidence = AnalysisConfidence.HIGH
     elif len(results) < 2:
         confidence = AnalysisConfidence.LOW
+
+    logger.info(
+        "Synthesis voting for %s: votes={buy=%d, sell=%d} -> action=%s confidence=%s",
+        state.get("symbol", "?"), buy_signals, sell_signals,
+        action.value if action else "none",
+        confidence.value if confidence else "none",
+    )
 
     return SynthesisResult(
         symbol=state["symbol"],

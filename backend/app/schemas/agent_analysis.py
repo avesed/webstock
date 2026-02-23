@@ -297,6 +297,9 @@ class SentimentAnalysisResult(CamelModel):
         AnalysisConfidence.MEDIUM,
         description="Confidence in sentiment assessment"
     )
+    action: Optional[ActionRecommendation] = Field(
+        None, description="Recommended action based on sentiment analysis"
+    )
     sources: List[SentimentSource] = Field(
         default_factory=list,
         description="Sentiment breakdown by source"

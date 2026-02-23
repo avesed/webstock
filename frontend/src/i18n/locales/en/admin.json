@@ -180,6 +180,15 @@
       "cacheEnabled": "Enable Prompt Caching",
       "cacheTtlMinutes": "Cache TTL (minutes)",
       "cacheTtlMinutesHint": "How long to keep cached prompts before refreshing"
+    },
+    "discussion": {
+      "title": "Discussion Group",
+      "description": "Configure multi-agent roundtable discussion feature",
+      "enabled": "Enable Discussion",
+      "enabledDescription": "When enabled, users can use the multi-agent discussion feature in the AI tab",
+      "maxRounds": "Max Debate Rounds",
+      "maxRoundsHint": "Maximum number of debate rounds between moderator and experts (1-5). Default: 3",
+      "model": "Discussion Model"
     }
   },
   "monitor": {
