@@ -17,8 +17,13 @@ class Settings(BaseSettings):
     # Redis (DB 5 — separate from app/celery/qlib/rsshub on 0-4)
     REDIS_URL: str = "redis://redis:6379/5"
 
-    # PostgreSQL (read-only, for loading API keys from system_settings)
+    # PostgreSQL (shared DB with main backend)
     DATABASE_URL: str = ""
+
+    # Database pool
+    DATABASE_POOL_MIN_SIZE: int = 2
+    DATABASE_POOL_MAX_SIZE: int = 10
+    DATABASE_COMMAND_TIMEOUT: int = 120
 
     # Service-to-service auth
     INTERNAL_API_TOKEN: str = ""
@@ -32,6 +37,9 @@ class Settings(BaseSettings):
 
     # Playwright service (for content extraction fallback, port 8002)
     PLAYWRIGHT_SERVICE_URL: str = "http://playwright-service:8002"
+
+    # Qlib service URL (for triggering data sync after collection)
+    QLIB_SERVICE_URL: str = "http://qlib-service:8001"
 
     # Server
     HOST: str = "0.0.0.0"

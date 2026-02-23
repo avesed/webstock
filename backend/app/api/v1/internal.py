@@ -1,5 +1,8 @@
 """Internal API endpoints for machine-to-machine data access.
 
+DEPRECATED: qlib-service now reads from data-service directly.
+These endpoints are kept for backward compatibility during transition.
+
 These endpoints are designed for inter-service communication (e.g.,
 qlib-service -> main backend) and are secured via a shared token
 in the X-Internal-Token header rather than JWT user authentication.

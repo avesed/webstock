@@ -97,8 +97,78 @@ async def get_history(
     start: Optional[str] = Query(None),
     end: Optional[str] = Query(None),
 ):
-    """Get historical OHLCV data for a symbol."""
+    """Get historical OHLCV data for a symbol.
+
+    Uses the 3-layer cache (disk + DB) when the interval is supported.
+    Falls back to direct provider fetch on cache miss or error.
+    """
+    from app.services.history_cache_service import (
+        PERIOD_DAYS,
+        RESAMPLE_MAP,
+        get_history_cache_service,
+    )
+    from app.providers.constants import detect_market as _detect_market
+
     t0 = time.monotonic()
+
+    # --- Try the cache service for supported intervals ---
+    if interval in RESAMPLE_MAP:
+        try:
+            # Resolve period to day count
+            period_days = PERIOD_DAYS.get(period, 365)
+
+            # Detect market from symbol (more reliable than query param for
+            # symbols like 600519.SS where the caller might pass "us")
+            detected_market = _detect_market(symbol)
+
+            cache_svc = await get_history_cache_service()
+            cached_bars = await cache_svc.get_history(
+                symbol=symbol,
+                interval=interval,
+                period_days=period_days,
+                market=detected_market,
+                start=start,
+                end=end,
+            )
+
+            if cached_bars:
+                elapsed = int((time.monotonic() - t0) * 1000)
+                bars = [
+                    OHLCVBar(
+                        date=b.get("date", ""),
+                        open=b.get("open", 0),
+                        high=b.get("high", 0),
+                        low=b.get("low", 0),
+                        close=b.get("close", 0),
+                        volume=b.get("volume"),
+                    )
+                    for b in cached_bars
+                ]
+                history = HistoryData(
+                    symbol=symbol,
+                    bars=bars,
+                    interval=interval,
+                    market=detected_market,
+                )
+                return ApiResponse(
+                    data=history,
+                    source="cache",
+                    elapsed_ms=elapsed,
+                )
+
+            # cached_bars is None -- fall through to direct provider fetch
+            logger.debug(
+                "Cache returned None for %s/%s, falling back to provider",
+                symbol, interval,
+            )
+
+        except Exception as exc:
+            logger.warning(
+                "Cache service error for %s/%s, falling back to provider: %s",
+                symbol, interval, exc,
+            )
+
+    # --- Fallback: direct provider fetch (original behavior) ---
     sr = await get_stock_router()
     data = await sr.get_history(
         symbol, period=period, interval=interval,

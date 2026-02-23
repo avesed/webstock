@@ -1,6 +1,5 @@
 """Stock data API endpoints."""
 
-import asyncio
 import logging
 import math
 import time
@@ -39,11 +38,6 @@ from app.schemas.stock import (
     WilliamsRResponse,
 )
 from app.services.indicator_service import compute_indicator_series
-from app.services.canonical_cache_service import (
-    RESAMPLE_MAP,
-    get_canonical_cache_service,
-    resample_bars,
-)
 from app.services.data_service_client import get_data_service_client
 from app.services.stock_service import (
     HistoryInterval as ServiceInterval,
@@ -870,8 +864,7 @@ async def get_stock_indicators_query(
     summary="Get incremental bars since a timestamp",
     description=(
         "Fetch bars newer than the given Unix timestamp, useful for live chart "
-        "updates. New bars are written back to the canonical disk cache (Layer 2) "
-        "as a fire-and-forget operation."
+        "updates. Data-service handles caching internally."
     ),
 )
 async def get_latest_bars(
@@ -881,29 +874,25 @@ async def get_latest_bars(
     current_user: User = Depends(get_current_user),
     _rate_limit: None = Depends(STOCK_RATE_LIMIT),
 ):
-    """Get incremental bars since a timestamp. Writes back to canonical cache."""
+    """Get incremental bars since a timestamp."""
     symbol = validate_symbol(symbol)
     market = detect_market(symbol)
 
     since_dt = datetime.fromtimestamp(since, tz=timezone.utc)
 
-    # Resolve to the canonical tier interval
-    canonical_interval = RESAMPLE_MAP.get(interval.value, interval.value)
-    interval_mins = INTERVAL_MINUTES.get(canonical_interval, 5)
-
-    # Fetch slightly before 'since' to catch bars we might have missed
+    # Fetch a small window around 'since'
+    interval_mins = INTERVAL_MINUTES.get(interval.value, 5)
     start_str = (since_dt - timedelta(minutes=interval_mins * 2)).strftime(
         "%Y-%m-%d %H:%M:%S"
     )
     end_str = datetime.now(tz=timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
 
-    # Fetch from data-service at canonical precision
     client = await get_data_service_client()
     try:
         result = await client.get_history(
             symbol,
             period="1d",
-            interval=canonical_interval,
+            interval=interval.value,
             market=market.value,
             start=start_str,
             end=end_str,
@@ -915,7 +904,7 @@ async def get_latest_bars(
     if not result or not result.get("bars"):
         return {"symbol": symbol, "interval": interval.value, "bars": []}
 
-    raw_bars = [
+    bars = [
         {
             "date": str(b.get("date", "")),
             "open": round(float(b.get("open", 0)), 4),
@@ -927,23 +916,7 @@ async def get_latest_bars(
         for b in result.get("bars", [])
     ]
 
-    # Fire-and-forget: write back to Layer 2 disk cache
-    canonical_service = await get_canonical_cache_service()
-    task = asyncio.create_task(
-        canonical_service.append_bars(symbol, canonical_interval, raw_bars)
-    )
-    task.add_done_callback(
-        lambda t: t.exception() and logger.error(
-            "append_bars background task failed for %s/%s: %s",
-            symbol, canonical_interval, t.exception(),
-        )
-    )
-
-    # Downsample to user's requested interval if different from canonical
-    if canonical_interval != interval.value:
-        raw_bars = resample_bars(raw_bars, canonical_interval, interval.value)
-
-    return {"symbol": symbol, "interval": interval.value, "bars": raw_bars}
+    return {"symbol": symbol, "interval": interval.value, "bars": bars}
 
 
 # =============================================================================

@@ -1,18 +1,29 @@
 """Stock list update Celery tasks.
 
-This task fetches stock lists from the data-service and updates the local stock list
-for fast in-memory search functionality.
+This task downloads the pre-built stock list msgpack from data-service and
+writes it to the backend's local data directory for fast in-memory search.
+
+The data-service owns the building and persistence of the stock list.  This
+task simply downloads the binary and triggers a backend reload.  If the
+download fails (e.g., data-service hasn't built one yet), it falls back to
+the legacy approach of calling build_stock_list() and saving locally.
 """
 
 import asyncio
 import logging
 import os
 from datetime import datetime
+from pathlib import Path
 from typing import Any, Dict, List, Optional
+
+import msgpack
 
 from worker.celery_app import celery_app
 
 logger = logging.getLogger(__name__)
+
+# Backend's local stock list data directory
+_DATA_DIR = Path(__file__).parent.parent.parent / "data" / "stock_list"
 
 
 @celery_app.task(bind=True, max_retries=3, time_limit=600, soft_time_limit=540)
@@ -20,11 +31,8 @@ def update_stock_list(self):
     """
     Update the local stock list from the data-service.
 
-    The data-service handles fetching from Finnhub, AKShare, and other sources.
-    This task:
-    1. Calls data-service to build the full stock list
-    2. Saves to msgpack file
-    3. Notifies backend to reload
+    Primary path: download pre-built msgpack from data-service.
+    Fallback path: call build_stock_list() API and save locally.
 
     Scheduled to run daily at 5:30 AM UTC.
     """
@@ -61,10 +69,101 @@ def update_stock_list(self):
 
 
 async def _fetch_and_save_stock_list() -> Dict[str, Any]:
-    """Fetch stock list from data-service and save locally."""
+    """Download pre-built stock list from data-service, with legacy fallback."""
     from app.services.data_service_client import get_data_service_client
 
     client = await get_data_service_client()
+
+    # --- Primary path: download pre-built msgpack binary ---
+    binary = await client.download_stock_list()
+    if binary:
+        count = _write_msgpack_binary(binary)
+        if count > 0:
+            _notify_reload()
+            by_market = _count_by_market_from_binary(binary)
+            return {
+                "status": "success",
+                "source": "download",
+                "total_stocks": count,
+                "by_market": by_market,
+            }
+        logger.warning("Downloaded stock list is empty or corrupt, falling back")
+
+    # --- Fallback path: call build API and save locally ---
+    logger.info("Falling back to legacy stock list build")
+    return await _fetch_and_save_stock_list_legacy(client)
+
+
+def _write_msgpack_binary(binary: bytes) -> int:
+    """Write raw msgpack binary to the local data directory.
+
+    Also writes SHA256 checksum and version.json alongside the msgpack file.
+
+    Returns:
+        Number of stocks in the file, or 0 on error.
+    """
+    import hashlib
+    import json
+
+    try:
+        _DATA_DIR.mkdir(parents=True, exist_ok=True)
+
+        stocks_file = _DATA_DIR / "stocks.msgpack"
+        sha256_file = _DATA_DIR / "stocks.msgpack.sha256"
+        version_file = _DATA_DIR / "version.json"
+
+        # Write msgpack binary
+        stocks_file.write_bytes(binary)
+
+        # Compute and write SHA256 checksum
+        sha256_hash = hashlib.sha256(binary).hexdigest()
+        sha256_file.write_text(sha256_hash)
+
+        # Count stocks from the binary for metadata
+        try:
+            stocks = msgpack.unpackb(binary, raw=False)
+            count = len(stocks) if isinstance(stocks, list) else 0
+        except Exception:
+            count = 0
+
+        # Write version metadata
+        version_data = {
+            "version": datetime.utcnow().strftime("%Y%m%d%H%M%S"),
+            "updated_at": datetime.utcnow().isoformat(),
+            "stock_count": count,
+        }
+        version_file.write_text(json.dumps(version_data, indent=2))
+
+        logger.info("Wrote %d stocks to %s (%d bytes)", count, stocks_file, len(binary))
+        return count
+
+    except Exception as e:
+        logger.exception("Failed to write stock list binary: %s", e)
+        return 0
+
+
+def _count_by_market_from_binary(binary: bytes) -> Dict[str, int]:
+    """Unpack the msgpack binary and count stocks by market."""
+    try:
+        stocks = msgpack.unpackb(binary, raw=False)
+        if not isinstance(stocks, list):
+            return {}
+        by_market: Dict[str, int] = {}
+        for s in stocks:
+            m = s.get("market", "unknown") if isinstance(s, dict) else "unknown"
+            by_market[m] = by_market.get(m, 0) + 1
+        return by_market
+    except Exception:
+        return {}
+
+
+# ---------------------------------------------------------------------------
+# Legacy fallback (kept for backward compatibility)
+# ---------------------------------------------------------------------------
+
+
+async def _fetch_and_save_stock_list_legacy(client) -> Dict[str, Any]:
+    """Legacy path: call data-service build API and save locally."""
     data = await client.build_stock_list()
 
     if not data:
@@ -81,8 +180,8 @@ async def _fetch_and_save_stock_list() -> Dict[str, Any]:
     stocks.extend(metals)
 
     # Deduplicate by symbol (keep first occurrence)
-    seen_symbols = set()
-    unique_stocks = []
+    seen_symbols: set = set()
+    unique_stocks: List[Dict[str, Any]] = []
     for stock in stocks:
         symbol = stock.get("symbol", "")
         if symbol and symbol not in seen_symbols:
@@ -106,6 +205,7 @@ async def _fetch_and_save_stock_list() -> Dict[str, Any]:
 
     return {
         "status": "success",
+        "source": "legacy",
         "total_stocks": len(unique_stocks),
         "by_market": by_market,
     }

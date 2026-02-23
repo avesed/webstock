@@ -922,6 +922,15 @@ async def unlock_daily_bars(
         )
 
     revoked_task_id = await _force_release_market_lock(market)
+
+    # Also unlock on data-service side
+    try:
+        from app.services.data_service_client import get_data_service_client
+        client = await get_data_service_client()
+        await client.unlock_daily_bars(market)
+    except Exception as e:
+        logger.warning("Failed to unlock data-service for %s: %s", market, e)
+
     if revoked_task_id:
         logger.warning(
             "Admin %s force-released daily bar lock for market=%s, revoked task=%s",

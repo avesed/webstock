@@ -26,6 +26,7 @@ from fastapi import FastAPI
 
 from app.config import get_settings
 from app.core.cache import close_redis
+from app.core.database import close_db_pool, init_db_pool
 from app.core.executor import shutdown_executor, start_watchdog, stop_watchdog
 from app.core.request_id import RequestIdFilter, RequestIdMiddleware
 
@@ -54,18 +55,31 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     """Application lifespan: load keys, cleanup on shutdown."""
     logger.info("Starting data-service...")
 
+    # Initialize database connection pool
+    await init_db_pool()
+
     # Load API keys from DB and start Redis subscriber for live updates
     from app.core.api_keys import load_api_keys_from_db, start_subscriber, stop_subscriber
     await load_api_keys_from_db()
     start_subscriber()
     start_watchdog()
 
+    # Start background scheduler (leader election ensures single-worker execution)
+    from app.core.scheduler import start_scheduler
+    await start_scheduler()
+
     yield
 
     logger.info("Shutting down data-service...")
+
+    # Stop scheduler before other teardown
+    from app.core.scheduler import stop_scheduler
+    await stop_scheduler()
+
     await stop_watchdog()
     await stop_subscriber()
     shutdown_executor()
+    await close_db_pool()
     await close_redis()
     logger.info("data-service shut down")
 
@@ -88,6 +102,8 @@ from app.api.analysis import router as analysis_router  # noqa: E402
 from app.api.reference import router as reference_router  # noqa: E402
 from app.api.news import router as news_router  # noqa: E402
 from app.api.content import router as content_router  # noqa: E402
+from app.api.internal import router as internal_router  # noqa: E402
+from app.api.collection import router as collection_router  # noqa: E402
 
 app.include_router(health_router)
 app.include_router(stock_router)
@@ -96,3 +112,5 @@ app.include_router(analysis_router)
 app.include_router(reference_router)
 app.include_router(news_router)
 app.include_router(content_router)
+app.include_router(internal_router)
+app.include_router(collection_router)

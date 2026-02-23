@@ -393,6 +393,44 @@ class DataServiceClient:
             timeout=_VERY_LONG_TIMEOUT,
         )
 
+    async def download_stock_list(self) -> Optional[bytes]:
+        """Download the pre-built stock list msgpack from data-service.
+
+        Returns the raw binary content if successful, or None on any error
+        (404, timeout, connection failure, etc.).
+        """
+        try:
+            extra_headers: Dict[str, str] = {}
+            rid = get_request_id()
+            if rid:
+                extra_headers["X-Request-ID"] = rid
+
+            resp = await self._client.request(
+                "GET",
+                "/v1/reference/stock-list/download",
+                timeout=_MEDIUM_TIMEOUT,  # 60s -- downloading a ~10MB file
+                headers=extra_headers,
+            )
+            if resp.status_code == 200:
+                logger.info(
+                    "Downloaded stock list from data-service: %d bytes",
+                    len(resp.content),
+                )
+                return resp.content
+            logger.warning(
+                "Stock list download returned HTTP %d", resp.status_code,
+            )
+            return None
+        except httpx.TimeoutException:
+            logger.error("Stock list download timed out")
+            return None
+        except httpx.ConnectError:
+            logger.error("Data-service unreachable for stock list download")
+            return None
+        except Exception:
+            logger.exception("Unexpected error downloading stock list")
+            return None
+
     async def collect_profiles(
         self, market: str, *, symbols: Optional[List[str]] = None,
     ) -> Optional[Dict[str, Any]]:
@@ -425,6 +463,202 @@ class DataServiceClient:
             "POST", "/v1/reference/stock-profiles-batch",
             json={"market": market, "symbols": symbols},
             timeout=_MEDIUM_TIMEOUT,  # ≤50 symbols ≈ 20-40s
+        )
+
+    # ==================================================================
+    # Stock profile collection endpoints (/v1/collection/stock-profiles/...)
+    #
+    # These endpoints return plain JSON (no ApiResponse envelope), so we
+    # use _collection_request() instead of _request().
+    # ==================================================================
+
+    async def _collection_request(
+        self,
+        method: str,
+        path: str,
+        *,
+        timeout: Optional[httpx.Timeout] = None,
+    ) -> Optional[Dict[str, Any]]:
+        """Execute an HTTP request for collection endpoints (no ApiResponse envelope).
+
+        Unlike ``_request()``, this returns the raw JSON body directly since
+        collection endpoints do not use the ``ApiResponse`` wrapper.
+        """
+        t0 = time.monotonic()
+        try:
+            extra_headers: Dict[str, str] = {}
+            rid = get_request_id()
+            if rid:
+                extra_headers["X-Request-ID"] = rid
+
+            resp = await self._client.request(
+                method, path, timeout=timeout, headers=extra_headers,
+            )
+            elapsed = time.monotonic() - t0
+            resp.raise_for_status()
+            body = resp.json()
+
+            logger.debug(
+                "data-service %s %s -> %d (%.2fs)",
+                method.upper(), path, resp.status_code, elapsed,
+            )
+            return body
+
+        except httpx.TimeoutException:
+            elapsed = time.monotonic() - t0
+            logger.error(
+                "data-service timeout: %s %s after %.2fs",
+                method.upper(), path, elapsed,
+            )
+            return None
+        except httpx.ConnectError:
+            elapsed = time.monotonic() - t0
+            logger.error(
+                "data-service unreachable: %s %s after %.2fs",
+                method.upper(), path, elapsed,
+            )
+            return None
+        except httpx.HTTPStatusError as e:
+            elapsed = time.monotonic() - t0
+            # 404 is expected for "no profiles available yet"
+            if e.response.status_code == 404:
+                logger.info(
+                    "data-service %s %s -> 404 (%.2fs)",
+                    method.upper(), path, elapsed,
+                )
+            else:
+                body_text = e.response.text[:300] if e.response else ""
+                logger.error(
+                    "data-service HTTP %d: %s %s (%.2fs) -- %s",
+                    e.response.status_code, method.upper(), path,
+                    elapsed, body_text,
+                )
+            return None
+        except Exception:
+            elapsed = time.monotonic() - t0
+            logger.exception(
+                "data-service unexpected error: %s %s (%.2fs)",
+                method.upper(), path, elapsed,
+            )
+            return None
+
+    async def download_market_profiles(
+        self, market: str,
+    ) -> Optional[List[Dict[str, Any]]]:
+        """Download pre-collected stock profiles from data-service.
+
+        The data-service collects profiles on its own schedule and saves
+        them to disk. This endpoint downloads the cached result.
+
+        Args:
+            market: ``'cn'``, ``'us'``, or ``'hk'``.
+
+        Returns:
+            List of profile dicts, or ``None`` if not available or on error.
+        """
+        result = await self._collection_request(
+            "GET",
+            f"/v1/collection/stock-profiles/{market}/download",
+            timeout=_LONG_TIMEOUT,  # large JSON payload for CN (~5K profiles)
+        )
+        if result is None:
+            return None
+        # The endpoint returns {market, count, profiles, metadata, ?concept_mapping}
+        profiles = result.get("profiles")
+        if isinstance(profiles, list):
+            return profiles
+        return None
+
+    async def download_concept_mapping(self) -> Optional[Dict[str, Any]]:
+        """Download pre-collected CN concept mapping from data-service.
+
+        Returns:
+            Dict with keys ``concepts`` and ``names``, or ``None`` on error.
+        """
+        result = await self._collection_request(
+            "GET",
+            "/v1/collection/stock-profiles/cn/concept-mapping/download",
+            timeout=_MEDIUM_TIMEOUT,
+        )
+        if result is None:
+            return None
+        # The endpoint returns {concepts, names, count}
+        if "concepts" in result:
+            return result
+        return None
+
+    async def trigger_profile_collection(
+        self, market: str,
+    ) -> Optional[Dict[str, Any]]:
+        """Trigger stock profile collection on data-service.
+
+        The collection runs asynchronously in the data-service. Use
+        ``get_profile_collection_progress`` to poll for completion.
+
+        Args:
+            market: ``'cn'``, ``'us'``, or ``'hk'``.
+
+        Returns:
+            Status dict with ``status``, ``market``, ``message`` keys,
+            or ``None`` on error.
+        """
+        return await self._collection_request(
+            "POST",
+            f"/v1/collection/stock-profiles/{market}/collect",
+            timeout=_DEFAULT_TIMEOUT,
+        )
+
+    async def get_profile_collection_progress(
+        self, market: str,
+    ) -> Optional[Dict[str, Any]]:
+        """Get stock profile collection progress from data-service.
+
+        Args:
+            market: ``'cn'``, ``'us'``, or ``'hk'``.
+
+        Returns:
+            Progress dict with ``market``, ``progress``, ``metadata``,
+            ``task_running`` keys, or ``None`` on error.
+        """
+        return await self._collection_request(
+            "GET",
+            f"/v1/collection/stock-profiles/{market}/progress",
+            timeout=_DEFAULT_TIMEOUT,
+        )
+
+    # ==================================================================
+    # Daily bar collection endpoints (/v1/collection/daily-bars/...)
+    #
+    # These endpoints return plain JSON (no ApiResponse envelope), so we
+    # use _collection_request() instead of _request().
+    # ==================================================================
+
+    async def trigger_daily_bar_collection(self, market: str) -> Optional[Dict[str, Any]]:
+        """Trigger daily bar collection on data-service."""
+        return await self._collection_request(
+            "POST", f"/v1/collection/daily-bars/{market}/collect",
+            timeout=_DEFAULT_TIMEOUT,
+        )
+
+    async def trigger_daily_bar_rebuild(self, market: str) -> Optional[Dict[str, Any]]:
+        """Trigger daily bar rebuild on data-service."""
+        return await self._collection_request(
+            "POST", f"/v1/collection/daily-bars/{market}/rebuild",
+            timeout=_DEFAULT_TIMEOUT,
+        )
+
+    async def get_daily_bar_progress(self, market: str) -> Optional[Dict[str, Any]]:
+        """Get daily bar collection progress from data-service."""
+        return await self._collection_request(
+            "GET", f"/v1/collection/daily-bars/{market}/progress",
+            timeout=_DEFAULT_TIMEOUT,
+        )
+
+    async def unlock_daily_bars(self, market: str) -> Optional[Dict[str, Any]]:
+        """Force-unlock daily bar collection on data-service."""
+        return await self._collection_request(
+            "POST", f"/v1/collection/daily-bars/{market}/unlock",
+            timeout=_DEFAULT_TIMEOUT,
         )
 
     # ==================================================================

@@ -3,7 +3,6 @@
 import asyncio
 import hashlib
 import logging
-from datetime import datetime
 from typing import Any, Dict, List, Optional
 
 from app.services.data_aggregator import DataAggregator, DataType, get_data_aggregator
@@ -115,62 +114,44 @@ class StockService:
         end: Optional[str] = None,
     ) -> Optional[Dict[str, Any]]:
         """
-        Get historical OHLCV data via the canonical disk cache.
+        Get historical OHLCV data via the data-service (which owns the 3-layer cache).
 
         Args:
             symbol: Stock symbol
             period: Time period (1mo, 3mo, 6mo, 1y, 2y, 5y, max) - ignored when start/end provided
             interval: Data interval (1m, 2m, 5m, 15m, 30m, 1h, 1d, 1wk, 1mo)
-            force_refresh: Force fetch from source (currently unused; canonical cache uses TTL)
+            force_refresh: Force fetch from source (passed through to data-service)
             start: Optional start date/datetime (e.g. '2025-03-01' or '2025-03-01T09:30:00')
             end: Optional end date/datetime (e.g. '2025-03-15' or '2025-03-15T15:00:00')
 
         Returns:
             Historical data as dict or None if unavailable
         """
-        from app.services.canonical_cache_service import get_canonical_cache_service
+        from app.services.data_service_client import get_data_service_client
 
         market = detect_market(symbol)
-        canonical = await get_canonical_cache_service()
+        client = await get_data_service_client()
 
-        # Calculate the requested day span
-        _PERIOD_DAYS_MAP = {
-            "1d": 1, "5d": 5, "1mo": 30, "3mo": 90, "6mo": 180,
-            "1y": 365, "2y": 730, "5y": 1825, "max": 99999,
+        params: Dict[str, Any] = {
+            "period": period.value,
+            "interval": interval.value,
+            "market": market.value,
         }
+        if start:
+            params["start"] = start
+        if end:
+            params["end"] = end
 
-        if start and end:
-            try:
-                start_dt = datetime.fromisoformat(
-                    start.replace("T", " ").split("+")[0].split("Z")[0]
-                )
-                end_dt = datetime.fromisoformat(
-                    end.replace("T", " ").split("+")[0].split("Z")[0]
-                )
-                period_days = max((end_dt - start_dt).days, 1)
-            except (ValueError, TypeError):
-                period_days = _PERIOD_DAYS_MAP.get(period.value, 365)
-        else:
-            period_days = _PERIOD_DAYS_MAP.get(period.value, 365)
-
-        bars = await canonical.get_history(
-            symbol=symbol,
-            interval=interval.value,
-            period_days=period_days,
-            market=market,
-            start=start,
-            end=end,
-        )
-
-        if not bars:
+        result = await client.get_history(symbol, **params)
+        if not result or not result.get("bars"):
             return None
 
         return {
             "symbol": symbol,
             "interval": interval.value,
-            "bars": bars,
+            "bars": result.get("bars", []),
             "market": market.value,
-            "source": "canonical_cache",
+            "source": result.get("source", "data_service"),
         }
 
     async def get_info(

@@ -1,8 +1,10 @@
-"""Synchronous HTTP client for fetching data from WebStock main backend.
+"""Synchronous HTTP client for fetching market data via the internal API.
 
 Designed for use in ProcessPoolExecutor (DataSyncService) where all I/O
-must be synchronous.  Communicates with the main backend's internal API
-using the ``X-Internal-Token`` header for authentication.
+must be synchronous.  Communicates via ``X-Internal-Token`` header auth.
+
+By default targets data-service (``DATA_SERVICE_URL``), falling back to
+the main backend (``WEBSTOCK_BACKEND_URL``) for backward compatibility.
 
 Internal endpoints consumed:
     GET  /api/v1/internal/symbols/{market}
@@ -19,13 +21,17 @@ logger = logging.getLogger(__name__)
 
 
 class BackendDataClient:
-    """Synchronous HTTP client for fetching data from WebStock main backend.
+    """Synchronous HTTP client for fetching market data via the internal API.
 
+    Targets data-service by default, with fallback to the main backend.
     Designed for use in ProcessPoolExecutor (DataSyncService).
     """
 
     def __init__(self) -> None:
-        self.base_url = os.environ.get("WEBSTOCK_BACKEND_URL", "http://app:80")
+        self.base_url = os.environ.get(
+            "DATA_SERVICE_URL",
+            os.environ.get("WEBSTOCK_BACKEND_URL", "http://app:80"),
+        )
         self.token = os.environ.get("INTERNAL_API_TOKEN", "")
         # Transport retries handle transient connection errors (refused, reset)
         self._client = httpx.Client(
@@ -127,16 +133,22 @@ class BackendDataClient:
             ) from e
 
     def is_available(self) -> bool:
-        """Check if the backend internal API is reachable."""
+        """Check if the backend internal API is reachable.
+
+        Tries ``/health`` first (data-service), then ``/api/v1/health``
+        (main backend) for backward compatibility.
+        """
         if not self.token:
             logger.debug("Backend client: no INTERNAL_API_TOKEN configured")
             return False
-        try:
-            resp = self._client.get("/api/v1/health")
-            return resp.status_code == 200
-        except Exception as e:
-            logger.debug("Backend health check failed: %s", e)
-            return False
+        for path in ("/health", "/api/v1/health"):
+            try:
+                resp = self._client.get(path)
+                if resp.status_code == 200:
+                    return True
+            except Exception as e:
+                logger.debug("Health check %s failed: %s", path, e)
+        return False
 
     def close(self) -> None:
         """Close the underlying HTTP client."""

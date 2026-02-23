@@ -7,6 +7,7 @@ from fastapi import APIRouter, Response
 
 from app.config import get_settings
 from app.core.cache import get_redis
+from app.core.database import get_db_pool
 from app.core.executor import check_executor_health
 
 logger = logging.getLogger(__name__)
@@ -32,6 +33,20 @@ async def health_check(response: Response):
     except Exception as e:
         logger.warning("Redis health check failed: %s", e)
         checks["redis"] = f"error: {e}"
+        checks["status"] = "degraded"
+
+    # Check Database pool
+    try:
+        pool = get_db_pool()
+        async with pool.acquire(timeout=5) as conn:
+            await conn.fetchval("SELECT 1")
+        checks["database"] = "ok"
+    except RuntimeError:
+        # Pool not initialized -- not necessarily unhealthy during startup
+        checks["database"] = "not_initialized"
+    except Exception as e:
+        logger.warning("Database health check failed: %s", e)
+        checks["database"] = f"error: {e}"
         checks["status"] = "degraded"
 
     # Check ThreadPoolExecutor health (can all threads be stuck?)

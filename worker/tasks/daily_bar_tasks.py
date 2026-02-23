@@ -1,9 +1,19 @@
-"""Daily bar collection tasks -- fetch OHLCV data from providers and store in PostgreSQL.
+"""Daily bar collection tasks -- thin proxies delegating to data-service.
 
-Each market has its own Celery Beat schedule aligned to market close times.
-On successful collection, triggers qlib-service sync via chain task.
+Data-service (Phase 7) now owns daily bar collection and DB persistence.
+These Celery tasks exist solely for admin UI backward compatibility: the
+admin panel dispatches tasks and reads progress from Redis DB 0.
+
+The proxy pattern:
+1. Acquire Redis lock (DB 0) for admin UI status
+2. Call data-service collection endpoint via HTTP
+3. Poll data-service progress every 5 seconds
+4. Mirror progress to Redis DB 0 keys for admin UI
+5. Rebuild counter from DB when complete
+6. Release lock
 """
 
+import asyncio
 import json
 import logging
 import uuid
@@ -18,9 +28,9 @@ logger = logging.getLogger(__name__)
 
 # Redis progress key pattern for admin dashboard
 _PROGRESS_KEY_TEMPLATE = "kb:daily_bars:{market}:progress"
-_PROGRESS_TTL = 3600  # 1 hour — auto-expires if task crashes without cleanup
+_PROGRESS_TTL = 3600  # 1 hour -- auto-expires if task crashes without cleanup
 _LOCK_KEY_TEMPLATE = "kb:daily_bars:{market}:lock"
-_LOCK_TTL = 28800  # matches task time_limit — auto-releases if task crashes
+_LOCK_TTL = 28800  # matches task time_limit -- auto-releases if task crashes
 
 # Lua script for atomic CAS lock release: only delete if current value matches owner
 _RELEASE_LOCK_LUA = """
@@ -30,7 +40,7 @@ end
 return 0
 """
 
-# Module-level Redis connection — reused across calls within one task
+# Module-level Redis connection -- reused across calls within one task
 _redis_conn = None
 
 
@@ -96,18 +106,18 @@ def _acquire_daily_bar_lock_sync(market: str, task_id: Optional[str] = None) -> 
             ex=_LOCK_TTL,
         )
         if acquired:
-            # Clear queued flag — task is now running
+            # Clear queued flag -- task is now running
             r.delete(f"kb:daily_bars:{market}:queued")
         return owner if acquired else None
     except Exception:
-        # Redis unavailable — generate owner token and allow task to proceed
+        # Redis unavailable -- generate owner token and allow task to proceed
         return task_id or str(uuid.uuid4())
 
 
 def _release_daily_bar_lock_sync(market: str, owner: str):
     """Release the per-market collection lock only if we still own it (CAS).
 
-    Uses a Lua script to atomically check owner and delete — prevents one
+    Uses a Lua script to atomically check owner and delete -- prevents one
     task from accidentally releasing another task's lock.
     """
     try:
@@ -204,23 +214,78 @@ async def _rebuild_daily_bars_counter_async(market: str):
         logger.warning("Failed to rebuild daily bars counter for %s: %s", market, e)
 
 
+async def _poll_data_service_progress(market: str, operation: str = "collect"):
+    """Poll data-service for collection progress and mirror to Redis DB 0.
+
+    The data-service progress endpoint returns::
+
+        {"market": "us", "progress": {nested dict} or null, "task_running": true/false}
+
+    When collection completes, the progress Redis key is deleted, so the
+    inner ``progress`` becomes ``null`` and ``task_running`` becomes ``false``.
+
+    Args:
+        market: Market code (us, hk, cn, metal).
+        operation: 'collect' or 'rebuild'.
+
+    Returns:
+        Final result dict from data-service or a fallback summary.
+    """
+    from app.services.data_service_client import get_data_service_client
+
+    client = await get_data_service_client()
+
+    max_polls = 5760  # 5760 * 5s = 8 hours (matches task time_limit)
+    last_task_running = None
+
+    for _ in range(max_polls):
+        await asyncio.sleep(5)
+
+        resp = await client.get_daily_bar_progress(market)
+        if resp is None:
+            # Data-service unreachable; keep polling
+            continue
+
+        task_running = resp.get("task_running", False)
+        last_task_running = task_running
+        inner = resp.get("progress") or {}
+
+        # Mirror progress to Redis DB 0 for admin UI
+        symbols_done = inner.get("symbolsDone", inner.get("symbols_done", 0))
+        symbols_total = inner.get("symbolsTotal", inner.get("symbols_total", 0))
+        new_bars = inner.get("newBars", inner.get("new_bars", 0))
+        _update_daily_bar_progress_sync(market, symbols_done, symbols_total, new_bars)
+
+        if not task_running:
+            # Task finished: inner progress may be null (cleared on completion)
+            return {
+                "symbolsDone": symbols_done,
+                "symbolsTotal": symbols_total,
+                "newBars": new_bars,
+            }
+
+    logger.warning("Polling timed out for %s %s (last_task_running=%s)", operation, market, last_task_running)
+    return {"status": "timeout", "symbol_count": 0, "new_bars": 0, "errors": ["Polling timed out"]}
+
+
 @shared_task(
     bind=True,
     name="worker.tasks.daily_bar_tasks.collect_market_daily_bars",
     max_retries=2,
     default_retry_delay=300,
-    time_limit=28800,     # 8 h — covers full bootstrap of ~12K US symbols (~5-6 h)
+    time_limit=28800,     # 8 h -- matches data-service collection timeout
     soft_time_limit=28740,
 )
 def collect_market_daily_bars(self, market: str):
-    """Collect daily bars for a single market and write to PostgreSQL.
+    """Trigger daily bar collection on data-service and mirror progress.
 
+    This is a thin proxy: the actual collection happens in data-service.
     On success, chain-triggers Qlib sync for the same market.
 
     Args:
         market: Market code (us, hk, cn, metal).
     """
-    logger.info("日线数据：开始采集%s市场", market)
+    logger.info("日线数据：触发data-service采集%s市场", market)
 
     owner = _acquire_daily_bar_lock_sync(market, task_id=self.request.id)
     if owner is None:
@@ -231,29 +296,29 @@ def collect_market_daily_bars(self, market: str):
         return {"symbol_count": 0, "new_bars": 0, "errors": ["Already running"]}
 
     async def _collect():
-        from app.db.task_session import get_task_session
-        from app.services.daily_bar_service import DailyBarService
+        from app.services.data_service_client import get_data_service_client
 
-        symbols = await _get_symbols_for_market(market)
-        if not symbols:
-            logger.warning("No symbols found for market=%s, skipping", market)
-            return {"symbol_count": 0, "new_bars": 0, "errors": ["No symbols"]}
+        client = await get_data_service_client()
 
-        logger.debug("Resolved %d symbols for market=%s", len(symbols), market)
-        _update_daily_bar_progress_sync(market, 0, len(symbols), 0)
+        # Trigger collection on data-service
+        trigger_result = await client.trigger_daily_bar_collection(market)
+        if trigger_result is None:
+            logger.error("Failed to trigger daily bar collection on data-service for market=%s", market)
+            return {"symbol_count": 0, "new_bars": 0, "errors": ["data-service trigger failed"]}
 
-        async def _on_progress(completed: int, total: int, with_data: int, errors: int):
-            _update_daily_bar_progress_sync(market, completed, total, with_data)
+        logger.info("data-service collection triggered for market=%s: %s", market, trigger_result.get("status", "unknown"))
 
-        async with get_task_session() as db:
-            service = DailyBarService()
-            result = await service.collect_market(
-                db, market, symbols, on_progress=_on_progress,
-            )
+        # Poll for progress
+        result = await _poll_data_service_progress(market, "collect")
 
-        # Rebuild counter BEFORE clearing progress so UI sees updated counts
+        # Rebuild counter from DB
         await _rebuild_daily_bars_counter_async(market)
-        return result
+
+        return {
+            "symbol_count": result.get("symbolCount", result.get("symbol_count", 0)),
+            "new_bars": result.get("newBars", result.get("new_bars", 0)),
+            "errors": result.get("errors", []),
+        }
 
     try:
         result = run_async_task(_collect)
@@ -265,8 +330,7 @@ def collect_market_daily_bars(self, market: str):
             len(result.get("errors", [])),
         )
 
-        # Chain-trigger Qlib sync if we have symbols (even if no new bars,
-        # qlib-service may need to catch up from its last sync point)
+        # Chain-trigger Qlib sync if we have symbols
         if result.get("symbol_count", 0) > 0:
             from worker.tasks.qlib_sync import sync_qlib_market
 
@@ -294,13 +358,13 @@ def collect_market_daily_bars(self, market: str):
     soft_time_limit=28740,
 )
 def rebuild_market_daily_bars(self, market: str):
-    """Delete all daily bars for a market, then re-collect from scratch.
+    """Trigger daily bar rebuild on data-service (delete + re-collect).
 
-    This is a destructive operation — all existing bars for the market are
-    deleted before re-collection begins.  Uses the same per-market Redis lock
-    as collect_market_daily_bars to prevent concurrent runs.
+    This is a thin proxy: the actual rebuild happens in data-service.
+    Uses the same per-market Redis lock as collect_market_daily_bars
+    to prevent concurrent runs.
     """
-    logger.info("日线重建：开始%s市场", market)
+    logger.info("日线重建：触发data-service重建%s市场", market)
 
     owner = _acquire_daily_bar_lock_sync(market, task_id=self.request.id)
     if owner is None:
@@ -311,40 +375,30 @@ def rebuild_market_daily_bars(self, market: str):
         return {"symbol_count": 0, "new_bars": 0, "errors": ["Already running"]}
 
     async def _rebuild():
-        from app.db.task_session import get_task_session
-        from app.services.daily_bar_service import DailyBarService
+        from app.services.data_service_client import get_data_service_client
 
-        service = DailyBarService()
+        client = await get_data_service_client()
 
-        # Phase 1: Delete existing bars
-        async with get_task_session() as db:
-            deleted = await service.delete_market_bars(db, market)
-            logger.debug("Rebuild phase 1 complete: deleted %d bars for market=%s", deleted, market)
+        # Trigger rebuild on data-service
+        trigger_result = await client.trigger_daily_bar_rebuild(market)
+        if trigger_result is None:
+            logger.error("Failed to trigger daily bar rebuild on data-service for market=%s", market)
+            return {"symbol_count": 0, "new_bars": 0, "deleted": 0, "errors": ["data-service trigger failed"]}
 
-        # Write zero counter so UI immediately reflects the deletion
+        logger.info("data-service rebuild triggered for market=%s: %s", market, trigger_result.get("status", "unknown"))
+
+        # Poll for progress
+        result = await _poll_data_service_progress(market, "rebuild")
+
+        # Rebuild counter from DB
         await _rebuild_daily_bars_counter_async(market)
 
-        # Phase 2: Re-collect from scratch
-        symbols = await _get_symbols_for_market(market)
-        if not symbols:
-            logger.warning("No symbols found for market=%s, skipping rebuild", market)
-            return {"symbol_count": 0, "new_bars": 0, "deleted": deleted, "errors": ["No symbols"]}
-
-        logger.debug("Rebuild phase 2: collecting %d symbols for market=%s", len(symbols), market)
-        _update_daily_bar_progress_sync(market, 0, len(symbols), 0)
-
-        async def _on_progress(completed: int, total: int, with_data: int, errors: int):
-            _update_daily_bar_progress_sync(market, completed, total, with_data)
-
-        async with get_task_session() as db:
-            result = await service.collect_market(
-                db, market, symbols, on_progress=_on_progress,
-            )
-
-        # Rebuild counter with final counts BEFORE progress is cleared
-        await _rebuild_daily_bars_counter_async(market)
-        result["deleted"] = deleted
-        return result
+        return {
+            "symbol_count": result.get("symbolCount", result.get("symbol_count", 0)),
+            "new_bars": result.get("newBars", result.get("new_bars", 0)),
+            "deleted": result.get("deleted", 0),
+            "errors": result.get("errors", []),
+        }
 
     try:
         result = run_async_task(_rebuild)
@@ -369,35 +423,6 @@ def rebuild_market_daily_bars(self, market: str):
         raise
     finally:
         # Always refresh the counter so a Phase-1-zero doesn't persist on crash.
-        # This runs even if Phase 2 crashes after Phase 1 set the counter to 0.
         _rebuild_daily_bars_counter_sync(market)
         _clear_daily_bar_progress_sync(market)
         _release_daily_bar_lock_sync(market, owner)
-
-
-async def _get_symbols_for_market(market: str) -> list[str]:
-    """Get symbol list for a market.
-
-    Uses the same logic as the internal API endpoint.
-    """
-    if market == "us":
-        from app.api.v1.internal import _get_us_symbols
-
-        return await _get_us_symbols()
-
-    elif market == "hk":
-        from app.services.hsi_constituents import get_hsi_constituents
-
-        return await get_hsi_constituents()
-
-    elif market == "cn":
-        from app.api.v1.internal import _get_cn_symbols
-
-        return await _get_cn_symbols()
-
-    elif market == "metal":
-        return ["GC=F", "SI=F", "PL=F", "PA=F"]
-
-    else:
-        logger.error("Unknown market: %s", market)
-        return []

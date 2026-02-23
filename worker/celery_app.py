@@ -55,7 +55,8 @@ celery_app.conf.update(
         "worker.tasks.full_content_tasks.cleanup_expired_news": {"queue": "default"},
         "worker.tasks.full_content_tasks.cleanup_pipeline_events": {"queue": "default"},
         "worker.tasks.full_content_tasks.cleanup_old_usage_records": {"queue": "default"},
-        # Daily bar tasks: dedicated queue so they don't block main worker slots
+        # Daily bar tasks: thin proxies that delegate to data-service.
+        # Kept on dedicated queue for admin UI backward compatibility.
         "worker.tasks.daily_bar_tasks.collect_market_daily_bars": {"queue": "daily_bars"},
         "worker.tasks.daily_bar_tasks.rebuild_market_daily_bars": {"queue": "daily_bars"},
         "worker.tasks.qlib_sync.sync_qlib_market": {"queue": "default"},
@@ -126,10 +127,8 @@ celery_app.conf.update(
             "task": "worker.tasks.full_content_tasks.cleanup_pipeline_events",
             "schedule": crontab(hour=4, minute=30),  # Daily at 4:30 AM (after news cleanup)
         },
-        "update-stock-list": {
-            "task": "worker.tasks.stock_list_tasks.update_stock_list",
-            "schedule": crontab(hour=5, minute=30),  # Daily at 5:30 AM UTC
-        },
+        # "update-stock-list": Migrated to data-service APScheduler (Phase 7).
+        # Admin UI can still trigger via stock_list_tasks.update_stock_list.
         "cleanup-old-backtests": {
             "task": "worker.tasks.backtest_cleanup.cleanup_old_backtests",
             "schedule": crontab(hour=5, minute=15),  # Daily at 5:15 AM UTC
@@ -142,26 +141,9 @@ celery_app.conf.update(
             "task": "worker.tasks.rss_monitor.monitor_rss_feeds",
             "schedule": crontab(minute="*/5"),
         },
-        "collect-daily-bars-cn": {
-            "task": "worker.tasks.daily_bar_tasks.collect_market_daily_bars",
-            "schedule": crontab(hour=8, minute=0),  # 08:00 UTC, A-share close + 1h
-            "args": ["cn"],
-        },
-        "collect-daily-bars-hk": {
-            "task": "worker.tasks.daily_bar_tasks.collect_market_daily_bars",
-            "schedule": crontab(hour=9, minute=0),  # 09:00 UTC, HK close + 1h
-            "args": ["hk"],
-        },
-        "collect-daily-bars-us": {
-            "task": "worker.tasks.daily_bar_tasks.collect_market_daily_bars",
-            "schedule": crontab(hour=22, minute=0),  # 22:00 UTC, US close + 1h
-            "args": ["us"],
-        },
-        "collect-daily-bars-metal": {
-            "task": "worker.tasks.daily_bar_tasks.collect_market_daily_bars",
-            "schedule": crontab(hour=22, minute=30),  # 22:30 UTC, CME close
-            "args": ["metal"],
-        },
+        # Daily bar collection migrated to data-service APScheduler (Phase 7).
+        # Beat entries for collect-daily-bars-{cn,hk,us,metal} removed.
+        # Admin UI still dispatches tasks via daily_bar_tasks (thin proxies).
         "sync-concept-boards": {
             "task": "worker.tasks.stock_profile_tasks.sync_concept_boards",
             "schedule": crontab(hour=6, minute=0, day_of_week="1-6"),  # Mon-Sat 6:00 AM UTC (skip Sunday)

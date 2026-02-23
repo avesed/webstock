@@ -1,7 +1,7 @@
 """Portfolio optimization service using PyPortfolioOpt.
 
 Runs in the main backend process (not qlib-service) since it's lightweight
-and stateless. Uses CanonicalCache daily close prices directly.
+and stateless. Fetches daily close prices via the data-service.
 
 All computation is offloaded to a thread via asyncio.to_thread() to avoid
 blocking the event loop.
@@ -34,31 +34,34 @@ class PortfolioOptimizationService:
         symbols: List[str],
         lookback_days: int = 252,
     ) -> pd.DataFrame:
-        """Fetch daily close prices from CanonicalCache for all symbols.
+        """Fetch daily close prices via data-service for all symbols.
 
         Uses asyncio.gather with a semaphore for parallel fetching.
         Returns a DataFrame with dates as index and symbols as columns.
         """
-        from app.services.canonical_cache_service import get_canonical_cache_service
+        from app.services.data_service_client import get_data_service_client
+        from app.services.stock_types import detect_market
 
         end_date = date.today()
         start_date = end_date - timedelta(days=int(lookback_days * 1.5))
 
-        cache = await get_canonical_cache_service()
+        client = await get_data_service_client()
         semaphore = asyncio.Semaphore(_FETCH_CONCURRENCY)
 
         async def _fetch_one(symbol: str) -> Tuple[str, Optional[pd.Series]]:
             async with semaphore:
                 try:
-                    bars = await cache.get_history(
-                        symbol=symbol,
+                    result = await client.get_history(
+                        symbol,
+                        period="2y",
                         interval="1d",
-                        period_days=int(lookback_days * 1.5),
+                        market=detect_market(symbol).value,
                         start=str(start_date),
                         end=str(end_date),
                     )
-                    if bars and len(bars) > 0:
-                        df = pd.DataFrame(bars)
+                    if result and result.get("bars"):
+                        bars_list = result["bars"]
+                        df = pd.DataFrame(bars_list)
                         if "date" in df.columns and "close" in df.columns:
                             df["date"] = pd.to_datetime(df["date"])
                             df = df.set_index("date").sort_index()

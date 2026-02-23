@@ -26,6 +26,7 @@ import time
 from typing import List, Optional
 
 from fastapi import APIRouter, Depends
+from fastapi.responses import Response
 from pydantic import BaseModel
 
 from app.core.auth import verify_internal_token
@@ -283,3 +284,44 @@ async def stock_profiles_batch_endpoint(body: BatchProfileRequest):
             error=str(e),
             elapsed_ms=elapsed_ms,
         )
+
+
+# ---------------------------------------------------------------------------
+# Stock list download (binary msgpack)
+# ---------------------------------------------------------------------------
+
+
+@router.get("/stock-list/download")
+async def download_stock_list():
+    """Return the pre-built stock list as binary msgpack.
+
+    The backend Celery task downloads this file and writes it to its own
+    local data directory for fast in-memory search.
+
+    Returns 404 if no stock list has been built yet.
+    """
+    from app.services.stock_list_persistence import (
+        get_stock_list_binary,
+        get_stock_list_metadata,
+    )
+
+    data = get_stock_list_binary()
+    if data is None:
+        return Response(
+            content='{"detail": "Stock list not available. Build it first."}',
+            status_code=404,
+            media_type="application/json",
+        )
+
+    # Include metadata in response headers for convenience
+    metadata = get_stock_list_metadata()
+    headers: dict[str, str] = {}
+    if metadata:
+        headers["X-Stock-Count"] = str(metadata.get("stock_count", 0))
+        headers["X-Stock-Version"] = str(metadata.get("version", ""))
+
+    return Response(
+        content=data,
+        media_type="application/x-msgpack",
+        headers=headers,
+    )

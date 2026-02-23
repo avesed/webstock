@@ -174,7 +174,10 @@ services:
       - TAVILY_API_KEY=${TAVILY_API_KEY:-}
       - POLYGON_API_KEY=${POLYGON_API_KEY:-}
       - PLAYWRIGHT_SERVICE_URL=${PLAYWRIGHT_SERVICE_URL:-http://playwright-service:8002}
+      - QLIB_SERVICE_URL=http://qlib-service:8001
       - LOG_LEVEL=${DATA_SERVICE_LOG_LEVEL:-info}
+    volumes:
+      - data_service_data:/app/data
     healthcheck:
       test: ["CMD", "curl", "-f", "http://127.0.0.1:8003/health"]
       interval: 30s
@@ -276,7 +279,7 @@ services:
     depends_on:
       redis:
         condition: service_healthy
-      app:
+      data-service:
         condition: service_healthy
     volumes:
       - qlib_data:/app/data/qlib
@@ -287,6 +290,7 @@ services:
       - REDIS_URL=redis://redis:6379/3
       - DEFAULT_MARKET=us
       - LOG_LEVEL=info
+      - DATA_SERVICE_URL=http://data-service:8003
       - WEBSTOCK_BACKEND_URL=http://app:80
       - INTERNAL_API_TOKEN=${INTERNAL_API_TOKEN:-}
     healthcheck:
@@ -366,6 +370,8 @@ volumes:
   redis_data:
     driver: local
   app_data:
+    driver: local
+  data_service_data:
     driver: local
   qlib_data:
     driver: local

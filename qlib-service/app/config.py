@@ -29,7 +29,8 @@ class Settings(BaseSettings):
     BACKTEST_TIMEOUT_SECONDS: int = 1800  # 30 minutes
 
     # Backend data source configuration
-    WEBSTOCK_BACKEND_URL: str = "http://app:80"
+    DATA_SERVICE_URL: str = "http://data-service:8003"
+    WEBSTOCK_BACKEND_URL: str = "http://app:80"  # Legacy fallback
     INTERNAL_API_TOKEN: str = ""
 
 

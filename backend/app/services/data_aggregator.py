@@ -152,9 +152,8 @@ class DataAggregator:
     """
 
     # Mapping of data types to cache configurations
-    # NOTE: HISTORY is no longer cached via Redis -- it uses the canonical
-    # disk-based cache in canonical_cache_service.py.  The HISTORY entry is
-    # intentionally omitted here.
+    # NOTE: HISTORY is not cached via Redis -- it uses the 3-layer cache
+    # in data-service.  The HISTORY entry is intentionally omitted here.
     CACHE_CONFIG: Dict[DataType, tuple[CachePrefix, CacheTTL]] = {
         DataType.QUOTE: (CachePrefix.QUOTE, CacheTTL.REALTIME_QUOTE),
         DataType.INFO: (CachePrefix.INFO, CacheTTL.COMPANY_INFO),

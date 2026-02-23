@@ -74,7 +74,7 @@ class OHLCVBarResponse(CamelModel):
     high: float
     low: float
     close: float
-    volume: int
+    volume: Optional[int] = None
 
 
 class StockHistoryResponse(CamelModel):
