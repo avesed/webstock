@@ -215,8 +215,14 @@ async def _monitor_rss_feeds_async() -> Dict[str, Any]:
                         for a in all_new_articles if a.url in timed_out_url_set
                     ]
                     if retry_payload:
-                        from worker.tasks.news_monitor import retry_score_articles
-                        retry_score_articles.delay(retry_payload)
+                        from app.db.redis import get_redis as _get_redis
+                        from worker.news_queue import enqueue_retry_score
+                        _redis = await _get_redis()
+                        await enqueue_retry_score(
+                            _redis,
+                            articles_data=retry_payload,
+                            retry_num=0,
+                        )
                         logger.info("RSS监控：%d篇评分超时 已派发重试", len(retry_payload))
 
                     # Remove timed-out articles from processing list

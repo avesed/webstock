@@ -200,7 +200,12 @@ async def _batch_fetch_content_async(articles: List[Dict[str, Any]]) -> Dict[str
         if result.get("success"):
             success_count += 1
             try:
-                process_news_article.delay(
+                from app.db.redis import get_redis
+                from worker.news_queue import enqueue_process_article
+
+                redis = await get_redis()
+                await enqueue_process_article(
+                    redis,
                     news_id=article["news_id"],
                     url=article["url"],
                     source=article.get("source", ""),
@@ -210,7 +215,6 @@ async def _batch_fetch_content_async(articles: List[Dict[str, Any]]) -> Dict[str
                     title=article.get("title", ""),
                     summary=article.get("summary", ""),
                     published_at=article.get("published_at"),
-                    # Pass scoring data from Layer 1
                     content_score=article.get("content_score", 0),
                     processing_path=article.get("processing_path", "lightweight"),
                     score_details=article.get("score_details"),
@@ -218,8 +222,9 @@ async def _batch_fetch_content_async(articles: List[Dict[str, Any]]) -> Dict[str
                 dispatched_count += 1
             except Exception as e:
                 logger.error(
-                    "batch_fetch: failed to dispatch Layer 3 for news_id=%s: %s",
-                    article.get("news_id"), e,
+                    "batch_fetch: Layer 3派发失败，文章将停留在FETCHED状态. "
+                    "news_id=%s, file_path=%s, error=%s",
+                    article.get("news_id"), result.get("file_path"), e,
                 )
         else:
             failed_count += 1

@@ -300,8 +300,18 @@ async def _monitor_news_async() -> Dict[str, Any]:
                             for a in new_articles if a.url in timed_out_url_set
                         ]
                         if retry_payload:
-                            retry_score_articles.delay(retry_payload)
-                            logger.info("新闻监控：%d篇评分超时 已派发重试", len(retry_payload))
+                            try:
+                                from app.db.redis import get_redis as _get_redis
+                                from worker.news_queue import enqueue_retry_score
+                                _redis = await _get_redis()
+                                await enqueue_retry_score(
+                                    _redis,
+                                    articles_data=retry_payload,
+                                    retry_num=0,
+                                )
+                                logger.info("新闻监控：%d篇评分超时 已派发重试", len(retry_payload))
+                            except Exception as eq_err:
+                                logger.error("新闻监控：评分重试入队失败: %s", eq_err)
 
                         # Add to seen_urls so Layer 2 watchlist doesn't re-process
                         seen_urls.update(timed_out_urls)
@@ -548,8 +558,18 @@ async def _monitor_news_async() -> Dict[str, Any]:
                                 for symbol, ad in new_watchlist if ad.get("url") in wl_timed_out_url_set
                             ]
                             if wl_retry_payload:
-                                retry_score_articles.delay(wl_retry_payload)
-                                logger.info("新闻监控自选：%d篇评分超时 已派发重试", len(wl_retry_payload))
+                                try:
+                                    from app.db.redis import get_redis as _get_redis
+                                    from worker.news_queue import enqueue_retry_score
+                                    _redis = await _get_redis()
+                                    await enqueue_retry_score(
+                                        _redis,
+                                        articles_data=wl_retry_payload,
+                                        retry_num=0,
+                                    )
+                                    logger.info("新闻监控自选：%d篇评分超时 已派发重试", len(wl_retry_payload))
+                                except Exception as eq_err:
+                                    logger.error("新闻监控自选：评分重试入队失败: %s", eq_err)
                     except Exception as e:
                         logger.warning(
                             "Watchlist: Layer 1 scoring failed, defaulting to lightweight: %s", e
@@ -681,13 +701,22 @@ async def _monitor_news_async() -> Dict[str, Any]:
             # Dispatch AI analysis for important articles AFTER commit
             # so that rows exist in DB and IDs are assigned
             for news_obj, importance, title_preview in important_articles:
-                await db.refresh(news_obj)  # Ensure ID is loaded
-                if news_obj.id:
-                    analyze_important_news.delay(str(news_obj.id))
-                    logger.debug(
-                        "Queued AI analysis for important article: %s (score=%.1f)",
-                        title_preview,
-                        importance,
+                try:
+                    await db.refresh(news_obj)  # Ensure ID is loaded
+                    if news_obj.id:
+                        from app.db.redis import get_redis as _get_redis
+                        from worker.news_queue import enqueue_analyze_important
+                        _redis = await _get_redis()
+                        await enqueue_analyze_important(_redis, news_id=str(news_obj.id))
+                        logger.debug(
+                            "Queued AI analysis for important article: %s (score=%.1f)",
+                            title_preview,
+                            importance,
+                        )
+                except Exception as eq_err:
+                    logger.error(
+                        "入队analyze_important失败: news_id=%s: %s",
+                        getattr(news_obj, "id", "unknown"), eq_err,
                     )
 
             # Write pipeline trace events for Layer 1

@@ -341,6 +341,8 @@ try:
             key = f'kb:stock_profile:{m}:{suffix}'
             if r.delete(key):
                 cleaned.append(key)
+    # Note: news:consumer:in_flight is NOT cleaned here — the consumer
+    # process recovers in-flight items on startup via _recover_in_flight().
     if cleaned:
         print(f'  -> Cleaned {len(cleaned)} orphan key(s): {cleaned}')
     else:
