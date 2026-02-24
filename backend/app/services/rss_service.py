@@ -245,7 +245,25 @@ class RssService:
                 dedup_result = await db.execute(dedup_query)
                 existing_urls = {row[0] for row in dedup_result.fetchall()}
 
+            # Title dedup: same title within 48h → cross-source duplicate
+            _MIN_TITLE_LEN = 10
+            title_cutoff = datetime.now(timezone.utc) - timedelta(hours=48)
+            candidate_titles = list({
+                e["title"] for e in prepared_entries
+                if e.get("title") and len(e["title"]) >= _MIN_TITLE_LEN
+            })
+            existing_titles: set = set()
+            if candidate_titles:
+                title_query = (
+                    select(News.title)
+                    .where(News.title.in_(candidate_titles), News.created_at >= title_cutoff)
+                    .distinct()
+                )
+                title_result = await db.execute(title_query)
+                existing_titles = {row[0] for row in title_result.fetchall()}
+
             storage_service = get_news_storage_service()
+            seen_titles: set = set()
 
             for entry_data in prepared_entries:
                 link = entry_data["link"]
@@ -253,6 +271,15 @@ class RssService:
                 if link in existing_urls:
                     result["skipped_count"] += 1
                     continue
+
+                # Title dedup: skip if same title already in DB or this batch
+                title = entry_data.get("title", "")
+                if (title and len(title) >= _MIN_TITLE_LEN
+                        and (title in existing_titles or title in seen_titles)):
+                    result["skipped_count"] += 1
+                    continue
+                if title and len(title) >= _MIN_TITLE_LEN:
+                    seen_titles.add(title)
 
                 # Mark as seen to avoid intra-batch duplicates
                 existing_urls.add(link)

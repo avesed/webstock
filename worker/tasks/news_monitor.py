@@ -171,8 +171,9 @@ async def _monitor_news_async() -> Dict[str, Any]:
             settings_service = SettingsService()
             system_settings = await settings_service.get_system_settings(db)
 
-            # Track seen URLs to avoid duplicates
+            # Track seen URLs and titles to avoid duplicates
             seen_urls: set = set()
+            seen_titles: set = set()
 
             # Collect important articles for post-commit AI analysis dispatch
             important_articles: List[tuple] = []  # (News obj, importance score, title preview)
@@ -245,16 +246,45 @@ async def _monitor_news_async() -> Dict[str, Any]:
                 if pending_urls:
                     existing_urls |= pending_urls
 
+                # Title dedup: same title within 48h → duplicate (cross-source wire copy)
+                from datetime import timedelta
+                title_cutoff = datetime.now(timezone.utc) - timedelta(hours=48)
+                _MIN_TITLE_LEN = 10
+                candidate_titles = list({
+                    a.title for a in global_articles
+                    if a.title and len(a.title) >= _MIN_TITLE_LEN
+                    and a.title not in seen_titles
+                })
+                existing_titles: set = set()
+                if candidate_titles:
+                    title_query = (
+                        select(News.title)
+                        .where(News.title.in_(candidate_titles), News.created_at >= title_cutoff)
+                        .distinct()
+                    )
+                    title_result = await db.execute(title_query)
+                    existing_titles = {row[0] for row in title_result.fetchall()}
+
                 new_articles = []
+                title_dup_count = 0
                 for a in global_articles:
                     if a.url and a.url not in seen_urls and a.url not in existing_urls:
-                        new_articles.append(a)
+                        # Skip if same title already seen (in-batch or in DB within 48h)
+                        if (a.title and len(a.title) >= _MIN_TITLE_LEN
+                                and (a.title in seen_titles or a.title in existing_titles)):
+                            title_dup_count += 1
+                        else:
+                            new_articles.append(a)
                     if a.url:
                         seen_urls.add(a.url)
+                    if a.title and len(a.title) >= _MIN_TITLE_LEN:
+                        seen_titles.add(a.title)
 
                 logger.info(
-                    "新闻监控：获取%d篇 去重后新增%d篇",
+                    "新闻监控：获取%d篇 去重后新增%d篇 (URL去重%d 标题去重%d)",
                     len(global_articles), len(new_articles),
+                    len(global_articles) - len(new_articles) - title_dup_count,
+                    title_dup_count,
                 )
 
                 if enable_pipeline:
@@ -498,7 +528,7 @@ async def _monitor_news_async() -> Dict[str, Any]:
                         logger.debug(f"Error fetching watchlist news for {symbol}: {e}")
                         continue
 
-                # Pass 2: Batch dedup against DB (single query)
+                # Pass 2: Batch dedup against DB (URL + title)
                 wl_urls = [a[1].get("url", "") for a in watchlist_collected if a[1].get("url")]
                 existing_wl_urls = set()
                 if wl_urls:
@@ -506,13 +536,35 @@ async def _monitor_news_async() -> Dict[str, Any]:
                     dedup_result = await db.execute(dedup_query)
                     existing_wl_urls = {row[0] for row in dedup_result.fetchall()}
 
+                # Title dedup for watchlist articles
+                wl_titles = list({
+                    a[1].get("title", "") for a in watchlist_collected
+                    if a[1].get("title") and len(a[1]["title"]) >= _MIN_TITLE_LEN
+                    and a[1]["title"] not in seen_titles
+                })
+                existing_wl_titles: set = set()
+                if wl_titles:
+                    wl_title_query = (
+                        select(News.title)
+                        .where(News.title.in_(wl_titles), News.created_at >= title_cutoff)
+                        .distinct()
+                    )
+                    wl_title_result = await db.execute(wl_title_query)
+                    existing_wl_titles = {row[0] for row in wl_title_result.fetchall()}
+
                 # Pass 3: Collect new (non-duplicate) watchlist articles
                 new_watchlist = []
                 for symbol, article_data in watchlist_collected:
                     url = article_data.get("url", "")
                     if url in existing_wl_urls:
                         continue
+                    title = article_data.get("title", "")
+                    if (title and len(title) >= _MIN_TITLE_LEN
+                            and (title in seen_titles or title in existing_wl_titles)):
+                        continue
                     new_watchlist.append((symbol, article_data))
+                    if title and len(title) >= _MIN_TITLE_LEN:
+                        seen_titles.add(title)
 
                 # Pass 4: Score + store watchlist articles
                 wl_scoring_map: dict = {}
