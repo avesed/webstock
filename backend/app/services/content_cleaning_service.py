@@ -38,9 +38,12 @@ CLEANING_SYSTEM_PROMPT = """\
 - 广告、推广、赞助商内容
 - Cookie提示、隐私政策弹窗文本
 - 社交分享按钮文字（"分享到微信/微博"、"Tweet this"）
-- "相关阅读"、"推荐文章"、"你可能喜欢"列表
+- "相关阅读"、"推荐文章"、"你可能喜欢"、"热门文章"、"最新文章"、"编辑推荐"列表
+- 付费/会员推广区块：含"热门解锁"、"VIP解锁"、"付费内容"、"会员专享"、"金牌纪要库"、"独家纪要"、"商务合作"等标记的整个区块（包括其后的内容摘要）
+- App下载推广、扫码关注提示
 - 评论区内容
 - 版权声明模板（非文章内容的网站通用声明）
+- 与文章标题明显无关的其他新闻摘要或快讯（如页面混入的其他新闻条目）
 
 **重要原则**：
 - 有任何疑问时，保留原文
@@ -274,11 +277,14 @@ class ContentCleaningService:
             image_insights = result.get("image_insights", "")
             has_visual_data = bool(result.get("has_critical_visual_data", False))
 
-            # Safety: if cleaned text lost > 50% of original, LLM over-cleaned.
-            # Use original text instead.
-            if cleaned_text and len(cleaned_text) < len(full_text) * 0.5:
+            # Safety: if cleaned text lost > 70% of original, LLM likely
+            # over-cleaned.  Use original text instead.  The 30% threshold
+            # accommodates short-form articles (flash news / telegrams) where
+            # sidebar / paywall-promo content extracted by trafilatura can
+            # exceed half the raw text.
+            if cleaned_text and len(cleaned_text) < len(full_text) * 0.3:
                 logger.warning(
-                    "[ContentCleaning] Cleaned text lost >50%% "
+                    "[ContentCleaning] Cleaned text lost >70%% "
                     "(%d chars vs %d original) for %s. Using original.",
                     len(cleaned_text), len(full_text), url_short,
                 )

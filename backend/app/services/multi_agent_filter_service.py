@@ -1,13 +1,20 @@
 """Layer 2 multi-agent deep analysis service.
 
 Runs 5 specialized agents in parallel with shared prompt cache for
-comprehensive article analysis. Each agent receives the same system
+comprehensive article analysis.  Each agent receives the same system
 message + article context (with cache_control=ephemeral), then a
-unique instruction message. Agent 1 writes the cache; Agents 2-5
+unique instruction message.  Agent 1 writes the cache; Agents 2-5
 read from cache (~90% cost saving on input tokens).
 
-Used by the news pipeline Layer 2 for articles that pass the initial
-filter with high scores.
+Structured output uses ``response_format={"type":"json_schema"}``
+(strict mode) instead of tool calling.  This provides:
+  - Schema-enforced JSON output per agent (no parsing failures)
+  - Full prompt cache sharing (response_format is NOT part of the
+    cache key, so different schemas across agents still share cache)
+  - No wrong-tool issues (no tools involved at all)
+
+Used by the news pipeline Layer 3 for articles that pass scoring
+with high content_score (full_analysis path).
 """
 
 import asyncio
@@ -126,7 +133,7 @@ ENTITY_EXTRACTION_PROMPT = """你的角色：实体提取专家（带联想能�
 2. 判断新闻**主要关联的市场**（cn=A股/hk=港股/us=美股）
 3. 提取直接提及的实体（公司、指数、宏观因素）
 4. 识别需要联想扩展的行业主题（如"人形机器人"、"AI芯片"、"新能源汽车产业链"）
-5. 调用 `submit_entities` 一次性提交所有结果（entities + themes + primary_market）
+5. 在JSON中提交所有结果（entities + themes + primary_market）
    - 系统会**自动验证和修正**股票代码，你不需要自己查询
    - 系统会根据 themes **自动搜索**知识库找到关联股票
    - **primary_market** 告诉系统在哪个市场搜索关联股票
@@ -160,27 +167,21 @@ ENTITY_EXTRACTION_PROMPT = """你的角色：实体提取专家（带联想能�
 - 涉及多个市场时，选**最主要**的那个市场
 
 ## 限制
-- 最多15个实体，优先保留高相关度
-
-**重要**：你只能调用 `submit_entities` 工具，不要调用其他工具。"""
+- 最多15个实体，优先保留高相关度"""
 
 SENTIMENT_TAGS_PROMPT = """你的角色：情绪与标签分析师
 判断新闻情绪和分类标签。
 
 industry_tags选项: tech/finance/healthcare/energy/consumer/industrial/materials/utilities/realestate/telecom
 event_tags选项: earnings/merger/ipo/regulatory/executive/product/lawsuit/dividend/buyback/guidance/macro
-- 每类最多5个标签
-
-**重要**：你只能调用 `submit_sentiment` 工具，不要调用其他工具。"""
+- 每类最多5个标签"""
 
 SUMMARY_GENERATION_PROMPT = """你的角色：摘要生成专家
 生成投资导向的摘要内容。
 
 要求：
 - investment_summary: 精炼的1句话，不超过50字，用于卡片预览
-- detailed_summary: 保留所有关键信息，长度5-20句话，视复杂程度调整。删除冗余表述，但不能遗漏重要数据和因果关系
-
-**重要**：你只能调用 `submit_summary` 工具，不要调用其他工具。"""
+- detailed_summary: 保留所有关键信息，长度5-20句话，视复杂程度调整。删除冗余表述，但不能遗漏重要数据和因果关系"""
 
 IMPACT_ASSESSMENT_PROMPT = """你的角色：影响力评估师
 评估新闻对市场、行业和个股的影响。
@@ -188,14 +189,12 @@ IMPACT_ASSESSMENT_PROMPT = """你的角色：影响力评估师
 要求：
 - market_impact/sector_impact/stock_impact: 每个影响字段2-3句话，数据和结论要有理有据
 - time_horizon: 影响的主要时间维度
-- impact_magnitude: 综合影响强度
-
-**重要**：你只能调用 `submit_impact` 工具，不要调用其他工具。"""
+- impact_magnitude: 综合影响强度"""
 
 REPORT_WRITING_PROMPT = """你的角色：报告撰写专家
 撰写Markdown格式的专业分析报告。
 
-报告模板（submit_report 工具的 analysis_report 参数）：
+报告模板（analysis_report 字段）：
 ## 核心解读
 用通俗易懂的语言解释...
 
@@ -216,16 +215,14 @@ REPORT_WRITING_PROMPT = """你的角色：报告撰写专家
 ## 情绪指数
 **综合情绪**：看涨/中性/看跌
 **情绪强度**：X/5
-**理由**：...
+**依据**：...
 
 ## 专业信息
 - **相关公司**：...
 - **关键数据**：...
 - **时间线**：...
 
-报告必须包含以上6个章节。每章节2-4句话，数据和结论要有理有据。
-
-**重要**：你只能调用 `submit_report` 工具，不要调用其他工具。"""
+报告必须包含以上6个章节。每章节2-4句话，数据和结论要有理有据。"""
 
 # Agent name → instruction prompt mapping
 AGENT_PROMPTS: Dict[str, str] = {
@@ -234,6 +231,139 @@ AGENT_PROMPTS: Dict[str, str] = {
     "summary_generator": SUMMARY_GENERATION_PROMPT,
     "impact_assessor": IMPACT_ASSESSMENT_PROMPT,
     "report_writer": REPORT_WRITING_PROMPT,
+}
+
+# ---------------------------------------------------------------------------
+# Per-agent JSON Schema for response_format (strict mode)
+# ---------------------------------------------------------------------------
+# NOTE: Field names deliberately avoid "reason" which triggers DeepSeek's
+# chain-of-thought reasoning mode, inflating output tokens and latency.
+
+AGENT_SCHEMAS: Dict[str, Dict] = {
+    "entity_extractor": {
+        "type": "json_schema",
+        "json_schema": {
+            "name": "entity_result",
+            "strict": True,
+            "schema": {
+                "type": "object",
+                "properties": {
+                    "entities": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "entity": {"type": "string"},
+                                "type": {"type": "string", "enum": ["stock", "index", "macro"]},
+                                "company_name": {"type": "string"},
+                                "relation": {
+                                    "type": "string",
+                                    "enum": ["direct", "industry_peer", "supply_chain",
+                                             "competitor", "beneficiary", "subsidiary"],
+                                },
+                                "score": {"type": "number"},
+                            },
+                            "required": ["entity", "type", "company_name", "relation", "score"],
+                            "additionalProperties": False,
+                        },
+                    },
+                    "themes": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                    },
+                    "primary_market": {
+                        "type": "string",
+                        "enum": ["cn", "hk", "us"],
+                    },
+                },
+                "required": ["entities", "themes", "primary_market"],
+                "additionalProperties": False,
+            },
+        },
+    },
+    "sentiment_tags": {
+        "type": "json_schema",
+        "json_schema": {
+            "name": "sentiment_result",
+            "strict": True,
+            "schema": {
+                "type": "object",
+                "properties": {
+                    "sentiment": {
+                        "type": "string",
+                        "enum": ["bullish", "bearish", "neutral"],
+                    },
+                    "industry_tags": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                    },
+                    "event_tags": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                    },
+                },
+                "required": ["sentiment", "industry_tags", "event_tags"],
+                "additionalProperties": False,
+            },
+        },
+    },
+    "summary_generator": {
+        "type": "json_schema",
+        "json_schema": {
+            "name": "summary_result",
+            "strict": True,
+            "schema": {
+                "type": "object",
+                "properties": {
+                    "investment_summary": {"type": "string"},
+                    "detailed_summary": {"type": "string"},
+                },
+                "required": ["investment_summary", "detailed_summary"],
+                "additionalProperties": False,
+            },
+        },
+    },
+    "impact_assessor": {
+        "type": "json_schema",
+        "json_schema": {
+            "name": "impact_result",
+            "strict": True,
+            "schema": {
+                "type": "object",
+                "properties": {
+                    "market_impact": {"type": "string"},
+                    "sector_impact": {"type": "string"},
+                    "stock_impact": {"type": "string"},
+                    "time_horizon": {
+                        "type": "string",
+                        "enum": ["short_term", "medium_term", "long_term"],
+                    },
+                    "impact_magnitude": {
+                        "type": "string",
+                        "enum": ["high", "medium", "low"],
+                    },
+                },
+                "required": ["market_impact", "sector_impact", "stock_impact",
+                             "time_horizon", "impact_magnitude"],
+                "additionalProperties": False,
+            },
+        },
+    },
+    "report_writer": {
+        "type": "json_schema",
+        "json_schema": {
+            "name": "report_result",
+            "strict": True,
+            "schema": {
+                "type": "object",
+                "properties": {
+                    "analysis_report": {"type": "string"},
+                },
+                "required": ["analysis_report"],
+                "additionalProperties": False,
+            },
+        },
+    },
 }
 
 
@@ -371,43 +501,23 @@ class MultiAgentFilterService:
         ]
 
         # ------------------------------------------------------------------
-        # 3. Run 5 agents in parallel (all tool-based, shared tools for cache)
+        # 3. Run 5 agents in parallel (json_schema strict mode, no tools)
         # ------------------------------------------------------------------
-        # All 5 agents receive the SAME tools list so the prompt prefix
-        # (tools + system + article) is identical → prompt cache hits on
-        # agents 2-5.  Each agent is forced to call its specific tool via
-        # named tool_choice={"type":"function","function":{"name":"..."}}.
-        from app.skills.chat_adapter import skill_to_tool_definition
-        from app.skills.knowledge.submit_entities import SubmitEntitiesSkill
-        from app.skills.news.submit_sentiment import SubmitSentimentSkill
-        from app.skills.news.submit_summary import SubmitSummarySkill
-        from app.skills.news.submit_impact import SubmitImpactSkill
-        from app.skills.news.submit_report import SubmitReportSkill
-
-        agent_skills: Dict[str, Any] = {
-            "entity_extractor": SubmitEntitiesSkill(),
-            "sentiment_tags": SubmitSentimentSkill(),
-            "summary_generator": SubmitSummarySkill(),
-            "impact_assessor": SubmitImpactSkill(),
-            "report_writer": SubmitReportSkill(),
-        }
-
-        # Build unified tools list once — identical across all 5 agents
-        all_tools = [skill_to_tool_definition(s) for s in agent_skills.values()]
+        # All 5 agents share the same message prefix (system + article)
+        # which is cached.  Each agent has its own json_schema in
+        # response_format — this does NOT affect the cache key, so all
+        # 5 agents benefit from prompt caching.
 
         tasks = []
         for name, prompt in AGENT_PROMPTS.items():
-            # entity_extractor needs db for ticker resolution + theme expansion
-            extra_kwargs = {"db": db} if name == "entity_extractor" else None
             tasks.append(
                 self._run_agent(
                     agent_name=name,
                     base_messages=base_messages,
                     instruction=prompt,
                     model_config=model_config,
-                    all_tools=all_tools,
-                    skill=agent_skills.get(name),
-                    skill_kwargs=extra_kwargs,
+                    response_schema=AGENT_SCHEMAS.get(name),
+                    db=db if name == "entity_extractor" else None,
                 )
             )
 
@@ -562,19 +672,19 @@ class MultiAgentFilterService:
         base_messages: List[Message],
         instruction: str,
         model_config: Any,
-        all_tools: Optional[List[Any]] = None,
-        skill: Optional[Any] = None,
-        skill_kwargs: Optional[Dict[str, Any]] = None,
+        response_schema: Optional[Dict] = None,
+        db: Optional[Any] = None,
     ) -> _AgentResponse:
-        """Run a single agent with shared prompt cache.
+        """Run a single agent with shared prompt cache + json_schema output.
 
-        All agents receive the same ``all_tools`` list so the prompt prefix
-        (tools + system + article) is identical → prompt cache hits on
-        agents 2-5.  Each agent is forced to call its specific tool via
-        named ``tool_choice``.
+        All agents share the same message prefix (system + article context)
+        so prompt caching works across agents.  Each agent has its own
+        ``response_format`` json_schema — this does NOT affect the cache
+        key, so different schemas still share the cached prefix.
 
-        When ``skill`` is None, falls back to free-text + JSON extraction
-        (legacy path, kept for resilience).
+        For entity_extractor, the parsed JSON is post-processed through
+        ``SubmitEntitiesSkill.execute()`` for ticker resolution and theme
+        expansion.
 
         Args:
             agent_name: Identifier for this agent (for logging/stats).
@@ -582,10 +692,8 @@ class MultiAgentFilterService:
                 (with cache_control already set).
             instruction: Agent-specific instruction prompt.
             model_config: ResolvedModelConfig from settings_service.
-            all_tools: Unified tools list shared by all agents (for cache).
-            skill: The specific BaseSkill this agent must call.
-            skill_kwargs: Extra kwargs to pass to ``skill.safe_execute()``
-                (e.g. ``db`` for entity_extractor).
+            response_schema: json_schema response_format dict for this agent.
+            db: Database session (only needed for entity_extractor).
 
         Returns:
             _AgentResponse with parsed JSON data and token usage.
@@ -599,22 +707,10 @@ class MultiAgentFilterService:
 
         gateway = get_llm_gateway()
 
-        # Build ChatRequest — with or without tool forcing
-        tools = None
-        tool_choice = None
-        if skill is not None:
-            tools = all_tools
-            tool_name = skill.definition().name
-            tool_choice = {
-                "type": "function",
-                "function": {"name": tool_name},
-            }
-
         chat_request = ChatRequest(
             model=model_config.model,
             messages=messages,
-            tools=tools,
-            tool_choice=tool_choice,
+            response_format=response_schema,
             temperature=0.3,
             timeout=AGENT_TIMEOUT,
         )
@@ -641,85 +737,34 @@ class MultiAgentFilterService:
                 cached_tokens = response.usage.cached_tokens
 
             data: dict = {}
-            raw_content = ""
+            raw_content = response.content or ""
 
-            if skill is not None and response.tool_calls:
-                # ── Tool-based path: read from tool_calls ──
-                tc = response.tool_calls[0]
-                expected_tool = skill.definition().name
-
-                # Verify the model called the correct tool
-                if tc.name != expected_tool:
-                    logger.warning(
-                        "Agent '%s': called '%s' instead of '%s' "
-                        "(proxy may not enforce named tool_choice)",
-                        agent_name, tc.name, expected_tool,
-                    )
-
+            # ── Parse JSON from response content ──
+            if raw_content.strip():
                 try:
-                    args = json.loads(tc.arguments)
-                except (json.JSONDecodeError, TypeError, ValueError) as e:
-                    logger.warning(
-                        "Agent '%s': tool call args parse failed: %s",
-                        agent_name, e,
-                    )
-                    args = {}
+                    data = json.loads(raw_content)
+                except json.JSONDecodeError:
+                    # json_schema should guarantee valid JSON, but fall back
+                    # to multi-strategy extraction if needed
+                    try:
+                        data = extract_json_from_response(raw_content)
+                    except (ValueError, Exception) as json_err:
+                        logger.warning(
+                            "Agent '%s' JSON extraction failed: %s (%d chars)",
+                            agent_name, json_err, len(raw_content),
+                        )
 
-                if args:
-                    if tc.name == expected_tool:
-                        # Correct tool — run through skill validation
-                        try:
-                            extra = skill_kwargs or {}
-                            skill_result = await skill.safe_execute(
-                                timeout=60.0, **args, **extra,
-                            )
-                            if skill_result.success and skill_result.data:
-                                data = skill_result.data
-                            else:
-                                logger.warning(
-                                    "Agent '%s' skill failed: %s, using raw args",
-                                    agent_name, skill_result.error,
-                                )
-                                data = args
-                        except Exception as skill_err:
-                            logger.warning(
-                                "Agent '%s' skill error: %s, using raw args",
-                                agent_name, skill_err,
-                            )
-                            data = args
-                    else:
-                        # Wrong tool — use raw args as-is (best effort)
-                        data = args
+            if not data and raw_content.strip():
+                data = {"_raw_content": raw_content.strip()[:5000]}
+                logger.info(
+                    "Agent '%s': stored raw content as fallback (%d chars)",
+                    agent_name, len(raw_content),
+                )
 
-                raw_content = json.dumps(data, ensure_ascii=False)[:5000]
-
-            if not data:
-                # ── Free-text path: JSON extraction from content ──
-                content = response.content or ""
-                raw_content = content[:5000]
-
-                if skill is not None:
-                    # Forced tool_choice but no tool_calls — unexpected
-                    logger.warning(
-                        "Agent '%s': tool_choice=required but no tool_calls, "
-                        "trying content extraction (%d chars)",
-                        agent_name, len(content),
-                    )
-
-                try:
-                    data = extract_json_from_response(content)
-                except (ValueError, Exception) as json_err:
-                    logger.warning(
-                        "Agent '%s' JSON extraction failed: %s (%d chars)",
-                        agent_name, json_err, len(content),
-                    )
-
-                if not data and content.strip():
-                    data = {"_raw_content": content.strip()}
-                    logger.info(
-                        "Agent '%s': stored raw content as fallback (%d chars)",
-                        agent_name, len(content),
-                    )
+            # ── Entity extractor post-processing ──
+            # Run ticker resolution + theme expansion via SubmitEntitiesSkill
+            if agent_name == "entity_extractor" and data and "entities" in data:
+                data = await self._post_process_entities(data, db)
 
             logger.debug(
                 "Agent '%s' completed: %d prompt (cached=%d), "
@@ -735,7 +780,7 @@ class MultiAgentFilterService:
             return _AgentResponse(
                 agent_name=agent_name,
                 data=data,
-                raw_content=raw_content,
+                raw_content=raw_content[:5000],
                 prompt_tokens=prompt_tokens,
                 completion_tokens=completion_tokens,
                 cached_tokens=cached_tokens,
@@ -758,6 +803,42 @@ class MultiAgentFilterService:
                 success=False,
                 error=str(e),
             )
+
+    @staticmethod
+    async def _post_process_entities(
+        data: Dict[str, Any], db: Optional[Any] = None,
+    ) -> Dict[str, Any]:
+        """Run ticker resolution + theme expansion on entity extractor output.
+
+        Delegates to SubmitEntitiesSkill.execute() which handles:
+        1. Normalize & verify ticker symbols via StockListService
+        2. Expand industry themes via knowledge-base vector search
+        3. Deduplicate and cap at 15 entities
+        """
+        try:
+            from app.skills.knowledge.submit_entities import SubmitEntitiesSkill
+
+            skill = SubmitEntitiesSkill()
+            skill_result = await skill.safe_execute(
+                timeout=60.0,
+                entities=data.get("entities", []),
+                themes=data.get("themes", []),
+                primary_market=data.get("primary_market", ""),
+                db=db,
+            )
+            if skill_result.success and skill_result.data:
+                return skill_result.data
+            else:
+                logger.warning(
+                    "Entity post-processing failed: %s, using raw data",
+                    skill_result.error,
+                )
+                return data
+        except Exception as e:
+            logger.warning(
+                "Entity post-processing error: %s, using raw data", e,
+            )
+            return data
 
     def _merge_agent_results(
         self,
