@@ -27,18 +27,21 @@ LIGHTWEIGHT_PROMPT = """快速提取以下新闻信息，返回JSON格式：
 
 {{
   "decision": "keep" 或 "delete",
-  "entities": [{{"entity": "AAPL", "type": "stock", "company_name": "苹果", "score": 0.8}}],
+  "entities": [
+    {{"entity": "AAPL", "type": "stock", "company_name": "苹果公司", "score": 0.9}},
+    {{"entity": "600519.SS", "type": "stock", "company_name": "贵州茅台", "score": 0.6}}
+  ],
   "sentiment": "bullish/bearish/neutral",
   "industry_tags": ["tech"],
   "event_tags": ["earnings"],
   "investment_summary": "1句话概况（≤50字）"
 }}
 
-- decision: 是否有投资价值（delete = 广告/水文/完全无价值）
-- entities: 关联实体，最多8个，type: stock(尽量用代码，不确定时填company_name)/index/macro
-  - 除直接提及的公司外，也应包含同行业的知名公司（如提到机器人行业，可加入相关龙头股）
-  - company_name: 公司中文/英文名（便于校验代码）
-- investment_summary: 精炼的1句话
+- decision: 有投资价值=keep，广告/水文/无价值=delete
+- entities: 最多8个，含直接提及和同行业龙头。company_name必填（便于校验）
+  - 代码格式：A股必须带后缀(600519.SS/000001.SZ，不可写600519/SH600519)，港股数字+.HK(0700.HK，不可写HK0700/BABA.HK)，贵金属GC=F/SI=F/PL=F/PA=F(不可写XAU/GOLD)
+  - type: stock/index/macro。不确定代码时填company_name，系统自动校验
+- investment_summary: 精炼1句话
 - 不需要生成detailed_summary和analysis_report
 
 标题: {title}

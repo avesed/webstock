@@ -509,6 +509,22 @@ async def update_db_node(state: NewsProcessingState) -> dict:
                             news.primary_entity = entities[0].get("entity", "")
                             news.primary_entity_type = entities[0].get("type", "stock")
 
+                        # Backfill News.symbol from primary_entity when the
+                        # original symbol is empty or generic "MARKET" (global
+                        # news that got stock entities via Layer 3 extraction)
+                        if (
+                            news.primary_entity
+                            and news.primary_entity_type == "stock"
+                            and news.symbol in ("", "MARKET")
+                        ):
+                            old_symbol = news.symbol
+                            news.symbol = news.primary_entity
+                            logger.info(
+                                "update_db_node: backfilled symbol '%s' -> '%s' "
+                                "from primary_entity for news_id=%s",
+                                old_symbol, news.symbol, news_id,
+                            )
+
                 if state.get("industry_tags"):
                     news.industry_tags = state["industry_tags"]
                 if state.get("event_tags"):

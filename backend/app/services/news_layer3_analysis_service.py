@@ -159,15 +159,160 @@ def validate_entities(
     return validated
 
 
+# ---------------------------------------------------------------------------
+# Ticker normalization & verification helpers
+# ---------------------------------------------------------------------------
+
+# Shanghai Exchange prefixes (SSE)
+_SHANGHAI_PREFIXES = ("600", "601", "603", "605", "688")
+# Shenzhen Exchange prefixes (SZSE)
+_SHENZHEN_PREFIXES = ("000", "001", "002", "003", "300", "301")
+
+# Common LLM aliases for precious metal futures
+_METAL_ALIASES: Dict[str, str] = {
+    "XAU": "GC=F", "XAUUSD": "GC=F", "GOLD": "GC=F",
+    "XAG": "SI=F", "XAGUSD": "SI=F", "SILVER": "SI=F",
+    "XPT": "PL=F", "PLATINUM": "PL=F",
+    "XPD": "PA=F", "PALLADIUM": "PA=F",
+}
+
+# Compiled patterns (module-level to avoid re-creation per call)
+_METAL_PATTERN = re.compile(r"^(GC|SI|PL|PA)=F$")
+_US_PATTERN = re.compile(r"^[A-Z]{1,5}$")
+_CN_PATTERN = re.compile(r"^\d{6}\.\w{2,3}$")
+_HK_PATTERN = re.compile(r"^\d{4,5}\.HK$")
+_CN_BROKER_PATTERN = re.compile(r"^(SH|SZ)(\d{6})$")
+_HK_PREFIX_PATTERN = re.compile(r"^HK(\d{4,5})$")
+
+
+def _normalize_ticker(raw: str) -> str:
+    """Normalize common non-standard ticker formats to canonical form.
+
+    Handles: Chinese broker format (SH600519), bare digit codes,
+    HK prefix (HK0700), HK leading-zero normalization, and
+    precious metal aliases (XAU → GC=F).
+
+    Does NOT validate existence — only syntactic normalization.
+    """
+    ticker = raw.strip().upper()
+    if not ticker:
+        return ticker
+
+    # Precious metal aliases: XAU → GC=F, GOLD → GC=F, etc.
+    if ticker in _METAL_ALIASES:
+        return _METAL_ALIASES[ticker]
+
+    # Chinese broker format: SH600519 → 600519.SS, SZ000001 → 000001.SZ
+    m = _CN_BROKER_PATTERN.match(ticker)
+    if m:
+        prefix, code = m.group(1), m.group(2)
+        return f"{code}.SS" if prefix == "SH" else f"{code}.SZ"
+
+    # HK prefix format: HK0700, HK01810 → 0700.HK, 1810.HK
+    m = _HK_PREFIX_PATTERN.match(ticker)
+    if m:
+        code = str(int(m.group(1))).zfill(4)
+        return f"{code}.HK"
+
+    # Bare 6-digit A-share code: 600519 → 600519.SS, 000001 → 000001.SZ
+    if re.match(r"^\d{6}$", ticker):
+        if ticker.startswith(_SHANGHAI_PREFIXES):
+            return f"{ticker}.SS"
+        if ticker.startswith(_SHENZHEN_PREFIXES):
+            return f"{ticker}.SZ"
+
+    # Bare 4-5 digit code (likely HK): 0700 → 0700.HK, 01810 → 1810.HK
+    if re.match(r"^\d{4,5}$", ticker):
+        code = str(int(ticker)).zfill(4)
+        return f"{code}.HK"
+
+    # Normalize HK leading zeros: 01810.HK → 1810.HK
+    m = _HK_PATTERN.match(ticker)
+    if m:
+        code = str(int(ticker[:-3])).zfill(4)
+        return f"{code}.HK"
+
+    return ticker
+
+
+def _verify_ticker_exists(ticker: str, stock_list_svc: Any) -> bool:
+    """Check if a ticker actually exists in the StockListService index.
+
+    Precious metals are checked against PRECIOUS_METALS directly.
+    Other tickers use exact-match search (score >= 1000 = exact symbol match).
+
+    For HK stocks, the stock list uses 5-digit format (00700.HK) while
+    our normalized format is 4-digit (0700.HK). This method tries both.
+    """
+    from app.services.stock_types import PRECIOUS_METALS
+
+    if ticker in PRECIOUS_METALS:
+        return True
+
+    try:
+        results = stock_list_svc.search(ticker, limit=1)
+        if results and results[0].get("symbol", "").upper() == ticker.upper():
+            return True
+
+        # HK format fallback: stock list uses 5-digit (00700.HK),
+        # our normalization outputs 4-digit (0700.HK). Try 5-digit.
+        if ticker.endswith(".HK"):
+            code = ticker[:-3]
+            alt_ticker = f"{code.zfill(5)}.HK"
+            if alt_ticker != ticker:
+                results = stock_list_svc.search(alt_ticker, limit=1)
+                if results and results[0].get("symbol", "").upper() == alt_ticker.upper():
+                    return True
+    except Exception:
+        pass
+    return False
+
+
+def _pick_best_match(
+    results: List[Dict[str, Any]], query: str
+) -> str:
+    """Pick the best symbol from search results, preferring exact name match.
+
+    When multiple results have the same score, prefer the one whose
+    ``name_zh`` or ``name`` exactly contains the query string. This
+    avoids picking e.g. '腾讯音乐' over '腾讯控股' when searching '腾讯控股'.
+    """
+    if not results:
+        return ""
+    if len(results) == 1:
+        return results[0]["symbol"]
+
+    top_score = results[0].get("score", 0)
+    # Among results with the top score, prefer exact name match
+    query_lower = query.lower()
+    for r in results:
+        if r.get("score", 0) < top_score:
+            break  # results are sorted by score descending
+        name_zh = r.get("name_zh", "") or ""
+        name = r.get("name", "") or ""
+        # Prefer exact name_zh match, then name_zh containing query
+        if name_zh == query or name.lower() == query_lower:
+            return r["symbol"]
+    for r in results:
+        if r.get("score", 0) < top_score:
+            break
+        name_zh = r.get("name_zh", "") or ""
+        if query in name_zh:
+            return r["symbol"]
+
+    return results[0]["symbol"]
+
+
 def resolve_entity_tickers(
     entities: List[Dict[str, Any]],
     stock_list_svc: Any = None,
 ) -> List[Dict[str, Any]]:
-    """Validate and correct ticker symbols using the local stock list.
+    """Validate, normalize, and correct ticker symbols using the local stock list.
 
-    For entities with type="stock", checks if the ticker matches a valid
-    pattern. If invalid or suspicious, uses ``company_name`` (or the ticker
-    itself) to search ``StockListService`` for the correct symbol.
+    Three-step process for each stock entity:
+    1. **Normalize** common non-standard formats (SH600519, bare digits, etc.)
+    2. **Verify** that syntactically valid tickers actually exist in StockListService
+    3. **Resolve** unverified tickers via company_name or entity text search
 
     Args:
         entities: List of entity dicts (may include company_name, relation).
@@ -180,12 +325,6 @@ def resolve_entity_tickers(
     if not stock_list_svc or not stock_list_svc.is_loaded:
         return entities
 
-    # Valid ticker patterns (metal checked BEFORE US to avoid SI/SI=F conflict)
-    metal_pattern = re.compile(r"^(GC|SI|PL|PA)=F$")
-    us_pattern = re.compile(r"^[A-Z]{1,5}$")
-    cn_pattern = re.compile(r"^\d{6}\.\w{2,3}$")
-    hk_pattern = re.compile(r"^\d{4,5}\.HK$")
-
     resolved = []
     for e in entities:
         entity = dict(e)  # shallow copy
@@ -194,32 +333,93 @@ def resolve_entity_tickers(
             resolved.append(entity)
             continue
 
-        ticker = entity.get("entity", "")
-        is_valid = bool(
-            metal_pattern.match(ticker)
-            or us_pattern.match(ticker)
-            or cn_pattern.match(ticker)
-            or hk_pattern.match(ticker)
+        raw_ticker = entity.get("entity", "")
+
+        # Step 1: Normalize common format mistakes
+        ticker = _normalize_ticker(raw_ticker)
+
+        # Step 2: Check if normalized ticker matches a valid pattern
+        is_valid_pattern = bool(
+            _METAL_PATTERN.match(ticker)
+            or _US_PATTERN.match(ticker)
+            or _CN_PATTERN.match(ticker)
+            or _HK_PATTERN.match(ticker)
         )
 
-        if not is_valid:
-            # Try to resolve using company_name or the ticker string itself
-            search_term = entity.get("company_name") or ticker
-            if search_term:
-                try:
-                    results = stock_list_svc.search(search_term, limit=1)
-                    if results:
-                        old_ticker = ticker
-                        entity["entity"] = results[0]["symbol"]
-                        logger.info(
-                            "Resolved entity ticker: '%s' -> '%s' (via '%s')",
-                            old_ticker, entity["entity"], search_term,
-                        )
-                except Exception as search_err:
-                    logger.debug(
-                        "Ticker resolution search failed for '%s': %s",
-                        search_term, search_err,
+        # Step 3: If valid pattern, verify the ticker actually exists
+        needs_resolution = False
+        if is_valid_pattern:
+            if _verify_ticker_exists(ticker, stock_list_svc):
+                # Valid and exists — use normalized ticker
+                if ticker != raw_ticker:
+                    logger.info(
+                        "Normalized entity ticker: '%s' -> '%s'",
+                        raw_ticker, ticker,
                     )
+                entity["entity"] = ticker
+            else:
+                # Valid pattern but doesn't exist in stock list
+                needs_resolution = True
+                logger.debug(
+                    "Ticker '%s' matches pattern but not found in stock list",
+                    ticker,
+                )
+        else:
+            needs_resolution = True
+
+        # Step 4: Try to resolve via company_name or entity text
+        if needs_resolution:
+            resolved_symbol = None
+
+            # 4a: Try company_name first (most reliable)
+            company_name = entity.get("company_name", "")
+            if company_name:
+                try:
+                    results = stock_list_svc.search(company_name, limit=10)
+                    if results:
+                        resolved_symbol = _pick_best_match(
+                            results, company_name
+                        )
+                except Exception as err:
+                    logger.debug(
+                        "Search by company_name '%s' failed: %s",
+                        company_name, err,
+                    )
+
+            # 4b: If no result from company_name, try the raw entity text
+            # (handles LLM putting Chinese name in entity field: "腾讯控股")
+            if not resolved_symbol and raw_ticker:
+                try:
+                    results = stock_list_svc.search(raw_ticker, limit=10)
+                    if results and results[0].get("score", 0) >= 150:
+                        resolved_symbol = _pick_best_match(
+                            results, raw_ticker
+                        )
+                except Exception as err:
+                    logger.debug(
+                        "Search by entity text '%s' failed: %s",
+                        raw_ticker, err,
+                    )
+
+            # 4c: Apply resolution result (re-normalize for consistency)
+            if resolved_symbol:
+                resolved_symbol = _normalize_ticker(resolved_symbol)
+                logger.info(
+                    "Resolved entity ticker: '%s' -> '%s' (via '%s')",
+                    raw_ticker, resolved_symbol,
+                    company_name or raw_ticker,
+                )
+                entity["entity"] = resolved_symbol
+            elif is_valid_pattern:
+                # Pattern-valid but unverified: keep normalized ticker
+                # (could be a newly listed stock not yet in our index)
+                entity["entity"] = ticker
+                if ticker != raw_ticker:
+                    logger.info(
+                        "Normalized entity ticker (unverified): '%s' -> '%s'",
+                        raw_ticker, ticker,
+                    )
+            # else: keep original raw_ticker
 
         resolved.append(entity)
 
@@ -265,13 +465,15 @@ class NewsLayer3AnalysisService:
 
 【字段说明】
 - decision: 是否有投资价值（delete = 广告/水文/无价值）
-- entities: 关联实体，score 0.0-1.0，最多10个
-  - type=stock: 尽量使用股票代码（如AAPL, 600519.SS, 0700.HK），不确定时填company_name
-  - company_name: 公司中文/英文名（便于系统校验代码，stock类型建议填写）
-  - 贵金属期货用type=stock，代码格式：黄金→GC=F，白银→SI=F，铂金→PL=F，钯金→PA=F（不要用XAU/XAG等）
-  - 除直接提及的实体外，也应联想相关的行业同行和供应链公司
-  - type=index: 指数代码。例：标普500→SPX，纳指→IXIC，上证→000001.SS，恒生→HSI
-  - type=macro: 宏观因素，用简短中文/英文名。例：Fed利率、CPI、美元指数
+- entities: 关联实体，score 0.0-1.0，最多10个。除直接提及外，也应联想行业同行和供应链公司
+  - type=stock: company_name**必填**（系统用其校验代码）。代码格式规则：
+    - A股6位数字+后缀：600519.SS, 000001.SZ（不可写600519或SH600519）
+    - 港股4-5位数字+.HK：0700.HK, 9988.HK（不可写HK0700或01810.HK，港股不用BABA.HK等字母代码）
+    - 美股1-5位字母：AAPL, TSLA（不可用中文名作entity）
+    - 贵金属期货：GC=F, SI=F, PL=F, PA=F（不可写XAU/XAUUSD/GOLD）
+    - 不确定代码时填company_name，系统自动校验
+  - type=index: SPX, IXIC, 000001.SS, HSI
+  - type=macro: Fed利率, CPI, 美元指数
 - industry_tags: 行业（tech/finance/healthcare/energy/consumer/industrial/materials/utilities/realestate/telecom）
 - event_tags: 事件类型（earnings/merger/ipo/regulatory/executive/product/lawsuit/dividend/buyback/guidance/macro）
 - sentiment: 对市场/个股的情绪（bullish/bearish/neutral）
@@ -317,7 +519,7 @@ class NewsLayer3AnalysisService:
 - investment_summary 必须是1句话，不超过50字
 - detailed_summary 要保留所有关键信息，但尽可能精炼
 - analysis_report 使用Markdown格式，包含上述6个章节
-- entities 中 type=stock 的 entity 字段**尽量**使用股票代码（如 TSLA, 00694.HK, 600519.SS），不确定时用company_name标注公司名"""
+- entities 中 type=stock 必须按格式规范填写代码，company_name必填。不确定代码时entity填公司名，由系统自动校验"""
 
     # JSON Schema for OpenAI Structured Outputs (deep filter)
     DEEP_FILTER_SCHEMA = {
@@ -506,9 +708,22 @@ class NewsLayer3AnalysisService:
                 raw_detailed_summary = ""
                 raw_analysis_report = ""
 
+            # Validate entities, then resolve ticker symbols
+            entities = validate_entities(result.get("entities", []), max_entities=10)
+            try:
+                from app.services.stock_list_service import get_stock_list_service
+
+                stock_list_svc = await get_stock_list_service()
+                entities = resolve_entity_tickers(entities, stock_list_svc)
+            except Exception as resolve_err:
+                logger.debug(
+                    "Ticker resolution failed (non-fatal) in deep_filter: %s",
+                    resolve_err,
+                )
+
             deep_result = DeepFilterResult(
                 decision=decision,
-                entities=validate_entities(result.get("entities", []), max_entities=10),
+                entities=entities,
                 industry_tags=result.get("industry_tags", [])[:5],  # Max 5 tags
                 event_tags=result.get("event_tags", [])[:5],
                 sentiment=sentiment,

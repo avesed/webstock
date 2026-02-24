@@ -114,28 +114,45 @@ ENTITY_EXTRACTION_PROMPT = """你的角色：实体提取专家（带联想能�
 ## 任务
 提取所有**直接提及**和**间接关联**的股票、指数、宏观因素实体。
 
-## 联想维度
-分析新闻时，从以下5个维度进行联想：
-1. **行业同行**：同一细分行业的竞争对手和龙头公司
-2. **供应链**：上游原材料/零部件供应商、下游客户/应用方
-3. **竞争者**：直接竞争关系的公司
-4. **受益方**：因该新闻间接受益的公司（政策受益、技术溢出）
-5. **子公司/母公司**：集团内关联公司
+## 联想维度（5个方向）
+1. **行业同行**：同一细分行业的竞争对手和龙头
+2. **供应链**：上游供应商、下游客户
+3. **竞争者**：直接竞争关系
+4. **受益方**：政策受益、技术溢出等间接受益
+5. **子公司/母公司**：集团内关联
 
 ## 工作流程
 1. 阅读新闻，识别核心主题和涉及的行业/概念
 2. 提取直接提及的实体（公司、指数、宏观因素）
-3. **如果新闻涉及行业主题、政策变化或供应链事件**，调用 `search_related_stocks` 工具搜索相关股票
-   - 搜索关键词应包含行业/概念（如"人形机器人"、"AI芯片"、"新能源汽车产业链"）
-   - 可以调用多次以覆盖不同维度
-4. 从搜索结果中筛选真正相关的股票，加入实体列表
-5. **如果新闻只涉及单个公司且无行业主题，不需要调用搜索工具**
+3. **验证代码**：对不确定的股票代码，调用 `search_stocks` 搜索公司名确认正确代码
+   - 例：不确定腾讯代码 → search_stocks("腾讯") → 确认 0700.HK
+4. **联想扩展**：如新闻涉及行业主题/政策/供应链，调用 `search_related_stocks` 搜索关联股票
+   - 关键词用行业/概念（如"人形机器人"、"AI芯片"、"新能源汽车产业链"）
+   - 可多次调用覆盖不同维度
+5. 从搜索结果中筛选真正相关的股票，编制最终实体列表
+6. **如果新闻只涉及单一公司且无行业主题，可跳过步骤4**
+
+## 代码格式规则（严格遵守）
+| 市场 | 正确格式 | 常见错误 |
+|------|----------|----------|
+| A股 | 600519.SS, 000001.SZ | ~~600519~~, ~~SH600519~~, ~~000001~~ |
+| 港股 | 0700.HK, 9988.HK | ~~HK0700~~, ~~01810.HK~~(应为1810.HK), ~~BABA.HK~~(港股用数字代码) |
+| 美股 | AAPL, TSLA | ~~苹果~~(不可用中文名), ~~AAPL.US~~ |
+| 贵金属 | GC=F, SI=F, PL=F, PA=F | ~~XAU~~, ~~XAUUSD~~, ~~GOLD~~ |
+| 指数 | type=index: SPX, IXIC, 000001.SS, HSI | - |
+| 宏观 | type=macro: Fed利率, CPI, 美元指数 | - |
+
+**关键规则**：
+- A股6位数字必须带后缀：上海.SS，深圳.SZ
+- 港股4-5位数字+.HK，无前导零多余位（0700.HK而非00700.HK）
+- company_name是**必填字段**（stock类型），用于系统自动校验代码
+- 不确定代码时，填写company_name并用 `search_stocks` 查询确认
 
 ## 输出JSON格式
 ```json
 {
   "entities": [
-    {"entity": "AAPL", "type": "stock", "company_name": "苹果", "relation": "direct", "score": 0.95},
+    {"entity": "AAPL", "type": "stock", "company_name": "苹果公司", "relation": "direct", "score": 0.95},
     {"entity": "600519.SS", "type": "stock", "company_name": "贵州茅台", "relation": "industry_peer", "score": 0.6},
     {"entity": "Fed利率", "type": "macro", "company_name": "", "relation": "direct", "score": 0.7}
   ]
@@ -143,20 +160,15 @@ ENTITY_EXTRACTION_PROMPT = """你的角色：实体提取专家（带联想能�
 ```
 
 ## 字段说明
-- **entity**: 股票代码（如AAPL, 600519.SS, 0700.HK）或指数/宏观因素名称
+- **entity**: 股票代码或指数/宏观因素名称（严格遵守上述格式规则）
 - **type**: stock / index / macro
-- **贵金属期货**用type=stock，代码格式：黄金→GC=F，白银→SI=F，铂金→PL=F，钯金→PA=F（不要用XAU/XAG等）
-- **company_name**: 公司中文名或英文名（方便后续校验，stock类型必填）
-- **relation**: direct(直接提及) / industry_peer(行业同行) / supply_chain(供应链) / competitor(竞争者) / beneficiary(受益方) / subsidiary(子公司/母公司)
-- **score**: 相关度评分
-  - 0.8-1.0: 直接提及，核心主题
-  - 0.5-0.7: 行业同行/供应链/竞争关系
-  - 0.3-0.5: 间接受益/弱关联
+- **company_name**: 公司中文或英文名（stock类型必填，不确定代码时尤其重要）
+- **relation**: direct / industry_peer / supply_chain / competitor / beneficiary / subsidiary
+- **score**: 0.8-1.0 直接提及 | 0.5-0.7 行业/供应链 | 0.3-0.5 间接关联
 
 ## 限制
-- 最多15个实体
-- 优先保留高相关度实体
-- 不确定的股票代码用company_name标注，系统会自动校验"""
+- 最多15个实体，优先保留高相关度
+- 宁可填写company_name让系统校验，也不要猜测代码"""
 
 SENTIMENT_TAGS_PROMPT = """你的角色：情绪与标签分析师
 判断新闻情绪和分类标签。
@@ -719,10 +731,10 @@ class MultiAgentFilterService:
         """Run the entity extractor agent with function calling (tool use).
 
         Unlike ``_run_agent()``, this method:
-        - Provides ``search_related_stocks`` as a callable tool
+        - Provides ``search_related_stocks`` + ``search_stocks`` as callable tools
         - Does NOT use ``response_format={"type": "json_object"}``
           (OpenAI disallows combining tools + response_format)
-        - Supports up to 2 tool call iterations
+        - Supports up to 3 tool call iterations (initial + 2 rounds)
         - Falls back gracefully if the model doesn't support tools
 
         Args:
@@ -737,12 +749,17 @@ class MultiAgentFilterService:
         t0 = time.monotonic()
         agent_name = "entity_extractor"
 
-        # Build tool definition from the SearchRelatedStocksSkill
+        # Build tool definitions for both search skills
         from app.skills.knowledge.search_related_stocks import SearchRelatedStocksSkill
+        from app.skills.market_data.search_stocks import SearchStocksSkill
         from app.skills.chat_adapter import skill_to_tool_definition
 
-        skill = SearchRelatedStocksSkill()
-        tool_def = skill_to_tool_definition(skill)
+        related_skill = SearchRelatedStocksSkill()
+        search_skill = SearchStocksSkill()
+        tool_defs = [
+            skill_to_tool_definition(related_skill),
+            skill_to_tool_definition(search_skill),
+        ]
 
         # Build messages: shared base + agent-specific instruction
         messages = list(base_messages) + [
@@ -757,7 +774,7 @@ class MultiAgentFilterService:
         total_cached_tokens = 0
         raw_contents: List[str] = []
         had_tool_calls = False
-        max_iterations = 2  # initial call + 1 tool call round
+        max_iterations = 3  # initial call + up to 2 tool call rounds
         entity_time_budget = 210.0  # seconds — agents run in parallel, Celery soft=480s
 
         try:
@@ -774,7 +791,7 @@ class MultiAgentFilterService:
                 chat_request = ChatRequest(
                     model=model_config.model,
                     messages=messages,
-                    tools=[tool_def],
+                    tools=tool_defs,
                     tool_choice="auto",
                     temperature=0.3,
                     timeout=AGENT_TIMEOUT,
@@ -841,13 +858,16 @@ class MultiAgentFilterService:
                 for tc_sanitized, tc_raw in zip(
                     sanitized_tool_calls, raw_tool_calls
                 ):
-                    if tc_sanitized.name != "search_related_stocks":
+                    tool_name = tc_sanitized.name
+                    if tool_name not in (
+                        "search_related_stocks", "search_stocks"
+                    ):
                         logger.warning(
                             "Entity extractor called unexpected tool: %s",
-                            tc_sanitized.name,
+                            tool_name,
                         )
                         tool_result_content = json.dumps(
-                            {"error": f"Unknown tool: {tc_sanitized.name}"}
+                            {"error": f"Unknown tool: {tool_name}"}
                         )
                     else:
                         # Parse sanitized arguments for execution
@@ -865,18 +885,25 @@ class MultiAgentFilterService:
                             args = {"query": combined}
 
                         logger.info(
-                            "Entity extractor calling search_related_stocks: %s",
+                            "Entity extractor calling %s: %s",
+                            tool_name,
                             args.get("query", "")[:100],
                         )
 
-                        # Use a fresh DB session to avoid event loop conflicts
-                        # in Celery workers where the parent session may be on
-                        # a different event loop.
                         try:
-                            from app.db.task_session import get_task_session
-                            async with get_task_session() as skill_db:
-                                skill_result = await skill.execute(
-                                    db=skill_db, **args
+                            if tool_name == "search_related_stocks":
+                                # Use a fresh DB session to avoid event loop
+                                # conflicts in Celery workers where the parent
+                                # session may be on a different event loop.
+                                from app.db.task_session import get_task_session
+                                async with get_task_session() as skill_db:
+                                    skill_result = await related_skill.execute(
+                                        db=skill_db, **args
+                                    )
+                            else:
+                                # search_stocks uses in-memory index, no DB
+                                skill_result = await search_skill.execute(
+                                    **args
                                 )
                             tool_result_content = json.dumps(
                                 skill_result.data if skill_result.success
@@ -885,7 +912,8 @@ class MultiAgentFilterService:
                             )
                         except Exception as skill_err:
                             logger.warning(
-                                "search_related_stocks execution error: %s",
+                                "%s execution error: %s",
+                                tool_name,
                                 skill_err,
                             )
                             tool_result_content = json.dumps(
