@@ -62,6 +62,10 @@ CLEANING_SYSTEM_PROMPT = """\
 
 如果没有图片或图片不包含有用数据，image_insights设为空字符串。
 
+## 任务3: 提取发布时间（可选）
+
+如果文章正文中包含明确的发布时间（如"2026年2月25日 14:30"、"Feb 25, 2026 2:30 PM ET"、"财联社2月25日电"等），将其转换为ISO-8601格式输出到article_published_at字段。注意保留原始时区信息（如ET、北京时间等）。如果无法确定准确时间，不要传此字段。
+
 完成后，调用 `submit_cleaning` 工具提交结果。"""
 
 
@@ -72,6 +76,7 @@ class CleaningResult:
     cleaned_text: str
     image_insights: str
     has_visual_data: bool
+    article_published_at: Optional[str] = None  # ISO-8601 from article text
 
 
 class ContentCleaningService:
@@ -276,6 +281,7 @@ class ContentCleaningService:
             cleaned_text = result.get("cleaned_text", "")
             image_insights = result.get("image_insights", "")
             has_visual_data = bool(result.get("has_critical_visual_data", False))
+            article_published_at = result.get("article_published_at") or None
 
             # Safety: if cleaned text lost > 70% of original, LLM likely
             # over-cleaned.  Use original text instead.  Skip this check
@@ -316,6 +322,7 @@ class ContentCleaningService:
                 cleaned_text=cleaned_text,
                 image_insights=image_insights,
                 has_visual_data=has_visual_data,
+                article_published_at=article_published_at,
             )
 
         except Exception as e:

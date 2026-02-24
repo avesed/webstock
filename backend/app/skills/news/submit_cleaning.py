@@ -56,6 +56,16 @@ class SubmitCleaningSkill(BaseSkill):
                     ),
                     required=True,
                 ),
+                SkillParameter(
+                    name="article_published_at",
+                    type="string",
+                    description=(
+                        "Article publication datetime extracted from the text, "
+                        "in ISO-8601 format (e.g. '2026-02-25T14:30:00+08:00'). "
+                        "Empty string if no clear publication time can be identified."
+                    ),
+                    required=False,
+                ),
             ],
         )
 
@@ -63,12 +73,14 @@ class SubmitCleaningSkill(BaseSkill):
         cleaned_text = (kwargs.get("cleaned_text") or "").strip()
         image_insights = (kwargs.get("image_insights") or "").strip()
         has_critical_visual_data = bool(kwargs.get("has_critical_visual_data", False))
+        article_published_at = (kwargs.get("article_published_at") or "").strip()
 
-        return SkillResult(
-            success=True,
-            data={
-                "cleaned_text": cleaned_text,
-                "image_insights": image_insights,
-                "has_critical_visual_data": has_critical_visual_data,
-            },
-        )
+        data = {
+            "cleaned_text": cleaned_text,
+            "image_insights": image_insights,
+            "has_critical_visual_data": has_critical_visual_data,
+        }
+        if article_published_at:
+            data["article_published_at"] = article_published_at
+
+        return SkillResult(success=True, data=data)

@@ -694,15 +694,22 @@ class RssService:
 
     @staticmethod
     def _parse_entry_date_as_datetime(entry: Any) -> datetime:
-        """Parse entry date as datetime for News model."""
+        """Parse entry date as datetime for News model.
+
+        Clamps future dates to now — some RSSHub routes (e.g. finviz)
+        produce pubDate values ahead of the current time due to
+        upstream timezone parsing bugs.
+        """
+        now = datetime.now(timezone.utc)
         published_parsed = getattr(entry, "published_parsed", None)
         if published_parsed:
             try:
                 ts = timegm(published_parsed)
-                return datetime.fromtimestamp(ts, tz=timezone.utc)
+                dt = datetime.fromtimestamp(ts, tz=timezone.utc)
+                return min(dt, now)
             except Exception:
                 pass
-        return datetime.now(timezone.utc)
+        return now
 
 
 # Module-level singleton

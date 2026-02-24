@@ -407,6 +407,24 @@ async def _fetch_single_article(article: Dict[str, Any]) -> Dict[str, Any]:
                 news.image_insights = cleaning_result.image_insights or None
                 news.has_visual_data = cleaning_result.has_visual_data
 
+                # Override published_at if LLM extracted a more accurate time
+                if cleaning_result.article_published_at:
+                    try:
+                        from datetime import datetime as _dt, timezone as _tz
+                        extracted_dt = _dt.fromisoformat(
+                            cleaning_result.article_published_at
+                        )
+                        now = _dt.now(_tz.utc)
+                        if extracted_dt <= now:
+                            news.published_at = extracted_dt
+                            logger.debug(
+                                "batch_fetch: updated published_at for news_id=%s "
+                                "from article text: %s",
+                                news_id, extracted_dt.isoformat(),
+                            )
+                    except (ValueError, TypeError):
+                        pass  # Invalid format, keep original
+
             # Record pipeline trace event for fetch success
             elapsed = (time.monotonic() - t0) * 1000
             try:

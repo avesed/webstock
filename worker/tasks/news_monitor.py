@@ -97,17 +97,21 @@ def _dict_to_news_article(d: Dict[str, Any]):
 
     url = d.get("url", "")
     published_at_raw = d.get("publishedAt") or d.get("published_at")
+    now = datetime.now(timezone.utc)
     if isinstance(published_at_raw, str):
         try:
             published_at = datetime.fromisoformat(
                 published_at_raw.replace("Z", "+00:00")
             )
         except (ValueError, TypeError):
-            published_at = datetime.now(timezone.utc)
+            published_at = now
     elif isinstance(published_at_raw, datetime):
         published_at = published_at_raw
     else:
-        published_at = datetime.now(timezone.utc)
+        published_at = now
+    # Clamp future dates (upstream timezone bugs)
+    if published_at > now:
+        published_at = now
 
     return NewsArticle(
         id=d.get("id") or hashlib.md5(url.encode()).hexdigest(),
