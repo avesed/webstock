@@ -1,43 +1,32 @@
 """Stock list persistence service.
 
-Builds the full stock list via stock_list_service.build_stock_list(), saves to
-msgpack on disk, and publishes a Redis reload event so the backend can pick up
-the new data.
+Builds the full stock list via stock_list_service.build_stock_list() and
+saves directly to the ``stock_symbols`` PostgreSQL table.  The backend
+reads from the same table to build its in-memory search indexes.
 
-Data directory: /app/data/stock_list/ (inside the data_service_data volume).
-
-File layout:
-  stocks.msgpack         -- msgpack-serialised list of stock dicts
-  stocks.msgpack.sha256  -- hex SHA256 of stocks.msgpack
-  version.json           -- {"version": "20260223053000", "updated_at": "...", "stock_count": 37000}
+Version tracking: after a successful write, sets Redis key
+``stock_list:version`` so the backend can detect changes via polling.
 """
 from __future__ import annotations
 
-import hashlib
 import json
 import logging
-import os
-import tempfile
 import time
 from datetime import datetime, timezone
-from pathlib import Path
 from typing import Any, Dict, List, Optional
-
-import msgpack
 
 from app.core.cache import get_redis
 
 logger = logging.getLogger(__name__)
 
-# Persistence directory (inside data_service_data volume mount)
-_DATA_DIR = Path("/app/data/stock_list")
-_STOCKS_FILE = _DATA_DIR / "stocks.msgpack"
-_SHA256_FILE = _DATA_DIR / "stocks.msgpack.sha256"
-_VERSION_FILE = _DATA_DIR / "version.json"
+# Chunk size for asyncpg executemany
+_INSERT_CHUNK_SIZE = 500
 
-# Redis progress key (for admin UI polling)
+# Redis keys
 _PROGRESS_KEY = "ds:stock_list:progress"
 _PROGRESS_TTL = 3600  # 1 hour
+_VERSION_KEY = "stock_list:version"
+_VERSION_TTL = 172800  # 48 hours
 
 
 # ---------------------------------------------------------------------------
@@ -46,15 +35,14 @@ _PROGRESS_TTL = 3600  # 1 hour
 
 
 async def build_and_save_stock_list() -> Dict[str, Any]:
-    """Build the full stock list and persist to disk as msgpack.
+    """Build the full stock list and persist to the ``stock_symbols`` table.
 
     Steps:
         1. Call existing build_stock_list() to fetch from all markets.
-        2. Deduplicate by symbol (already done inside build_stock_list, but
-           we guard again here for safety).
-        3. Save to msgpack with SHA256 checksum and version.json.
-        4. Invalidate symbol_resolver cache for all markets.
-        5. Publish ``stock_list_reload`` to Redis so the backend auto-reloads.
+        2. Deduplicate by symbol.
+        3. Write to PostgreSQL via TRUNCATE + INSERT in a transaction.
+        4. Set Redis version marker and publish reload event.
+        5. Invalidate symbol_resolver caches.
 
     Returns:
         Dict with status, total_stocks, and by_market breakdown.
@@ -74,7 +62,7 @@ async def build_and_save_stock_list() -> Dict[str, Any]:
 
     await _set_progress(
         "saving",
-        f"Saving {len(all_stocks)} stocks to disk...",
+        f"Saving {len(all_stocks)} stocks to database...",
     )
 
     # 2. Deduplicate by symbol (safety guard)
@@ -86,17 +74,19 @@ async def build_and_save_stock_list() -> Dict[str, Any]:
             seen.add(sym)
             unique.append(stock)
 
-    # 3. Save to disk
-    _save_to_disk(unique)
+    # 3. Write to PostgreSQL
+    await _save_to_db(unique)
 
-    # 4. Invalidate symbol_resolver caches
+    # 4. Set Redis version + publish reload
+    version = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S")
+    await _set_version(version)
+    await _publish_reload()
+
+    # 5. Invalidate symbol_resolver caches
     from app.services import symbol_resolver
 
     for market in ("us", "hk", "cn"):
         await symbol_resolver.invalidate_cache(market)
-
-    # 5. Publish reload event to Redis
-    await _publish_reload()
 
     elapsed = time.monotonic() - t0
 
@@ -107,7 +97,7 @@ async def build_and_save_stock_list() -> Dict[str, Any]:
         by_market[m] = by_market.get(m, 0) + 1
 
     logger.info(
-        "Stock list built and saved: %d stocks in %.1fs -- %s",
+        "Stock list built and saved to DB: %d stocks in %.1fs -- %s",
         len(unique),
         elapsed,
         by_market,
@@ -126,36 +116,6 @@ async def build_and_save_stock_list() -> Dict[str, Any]:
     }
 
 
-def get_stock_list_binary() -> Optional[bytes]:
-    """Return raw msgpack bytes for download.
-
-    Returns:
-        bytes if the file exists, None otherwise.
-    """
-    if not _STOCKS_FILE.is_file():
-        return None
-    try:
-        return _STOCKS_FILE.read_bytes()
-    except Exception as e:
-        logger.error("Failed to read stock list binary: %s", e)
-        return None
-
-
-def get_stock_list_metadata() -> Optional[Dict[str, Any]]:
-    """Return version info from version.json.
-
-    Returns:
-        Dict with stock_count, version, updated_at, or None if not available.
-    """
-    if not _VERSION_FILE.is_file():
-        return None
-    try:
-        return json.loads(_VERSION_FILE.read_text())
-    except Exception as e:
-        logger.warning("Failed to read stock list metadata: %s", e)
-        return None
-
-
 async def get_progress() -> Optional[Dict[str, Any]]:
     """Read stock list build progress from Redis (for admin API)."""
     try:
@@ -168,79 +128,96 @@ async def get_progress() -> Optional[Dict[str, Any]]:
     return None
 
 
+async def is_table_empty() -> bool:
+    """Check if the stock_symbols table has no rows."""
+    from app.core.database import get_db_pool
+
+    pool = get_db_pool()
+    row = await pool.fetchval("SELECT EXISTS(SELECT 1 FROM stock_symbols)")
+    return not row
+
+
 # ---------------------------------------------------------------------------
 # Internal helpers
 # ---------------------------------------------------------------------------
 
 
-def _save_to_disk(stocks: List[Dict[str, Any]]) -> None:
-    """Write stocks to msgpack file with checksum and version metadata.
+async def _save_to_db(stocks: List[Dict[str, Any]]) -> None:
+    """Write stocks to the ``stock_symbols`` table using TRUNCATE + INSERT.
 
-    Uses atomic temp-file + rename to prevent corrupt reads during writes.
+    Runs inside a single transaction: TRUNCATE first, then INSERT in chunks.
+    If anything fails, the entire operation rolls back (old data preserved).
 
     Raises:
-        RuntimeError: If the save fails for any reason.
+        RuntimeError: If the database write fails.
     """
+    from app.core.database import get_db_pool
+
+    pool = get_db_pool()
+
+    sql = (
+        "INSERT INTO stock_symbols "
+        "(symbol, name, name_zh, exchange, market, pinyin, pinyin_initial, updated_at) "
+        "VALUES ($1, $2, $3, $4, $5, $6, $7, NOW())"
+    )
+
     try:
-        _DATA_DIR.mkdir(parents=True, exist_ok=True)
+        async with pool.acquire() as conn:
+            async with conn.transaction():
+                await conn.execute("TRUNCATE stock_symbols")
 
-        # Write msgpack atomically (temp + rename)
-        tmp_fd, tmp_path = tempfile.mkstemp(
-            dir=str(_DATA_DIR), suffix=".tmp",
-        )
-        try:
-            with open(tmp_fd, "wb") as f:
-                msgpack.pack(stocks, f)
-            os.rename(tmp_path, str(_STOCKS_FILE))
-        except BaseException:
-            os.unlink(tmp_path)
-            raise
+                # Insert in chunks
+                for i in range(0, len(stocks), _INSERT_CHUNK_SIZE):
+                    chunk = stocks[i : i + _INSERT_CHUNK_SIZE]
+                    rows = [
+                        (
+                            s.get("symbol", ""),
+                            s.get("name", ""),
+                            s.get("name_zh", ""),
+                            s.get("exchange", ""),
+                            s.get("market", ""),
+                            s.get("pinyin", ""),
+                            s.get("pinyin_initial", ""),
+                        )
+                        for s in chunk
+                    ]
+                    await conn.executemany(sql, rows)
 
-        # Compute and write SHA256 checksum atomically
-        sha256_hash = _compute_sha256(_STOCKS_FILE)
-        tmp_fd2, tmp_path2 = tempfile.mkstemp(
-            dir=str(_DATA_DIR), suffix=".tmp",
-        )
-        try:
-            with open(tmp_fd2, "w") as f:
-                f.write(sha256_hash)
-            os.rename(tmp_path2, str(_SHA256_FILE))
-        except BaseException:
-            os.unlink(tmp_path2)
-            raise
-
-        # Write version metadata atomically
-        now = datetime.now(timezone.utc)
-        version_data = {
-            "version": now.strftime("%Y%m%d%H%M%S"),
-            "updated_at": now.isoformat(),
-            "stock_count": len(stocks),
-        }
-        tmp_fd3, tmp_path3 = tempfile.mkstemp(
-            dir=str(_DATA_DIR), suffix=".tmp",
-        )
-        try:
-            with open(tmp_fd3, "w") as f:
-                json.dump(version_data, f, indent=2)
-            os.rename(tmp_path3, str(_VERSION_FILE))
-        except BaseException:
-            os.unlink(tmp_path3)
-            raise
-
-        logger.info("Saved %d stocks to %s", len(stocks), _STOCKS_FILE)
+        logger.info("Saved %d stocks to stock_symbols table", len(stocks))
 
     except Exception as e:
-        logger.exception("Failed to save stock list to disk: %s", e)
+        logger.exception("Failed to save stock list to DB: %s", e)
         raise RuntimeError(f"Failed to save stock list: {e}") from e
 
 
-def _compute_sha256(file_path: Path) -> str:
-    """Compute SHA256 hex digest of a file."""
-    sha256_hash = hashlib.sha256()
-    with open(file_path, "rb") as f:
-        for chunk in iter(lambda: f.read(4096), b""):
-            sha256_hash.update(chunk)
-    return sha256_hash.hexdigest()
+async def _set_version(version: str) -> None:
+    """Set the stock list version in Redis for backend polling.
+
+    Writes to both DB 5 (data-service) and DB 0 (backend app cache) so
+    that the backend's StockListService.check_for_updates() can detect
+    changes when polling from its own Redis DB.
+    """
+    try:
+        r = await get_redis()
+        await r.setex(_VERSION_KEY, _VERSION_TTL, version)
+
+        # Also write to DB 0 (backend app cache) for cross-service visibility
+        import redis.asyncio as aioredis
+        from app.config import get_settings
+        settings = get_settings()
+        base_url = settings.REDIS_URL.rsplit("/", 1)[0]  # strip /5
+        r0 = aioredis.from_url(
+            f"{base_url}/0", decode_responses=True,
+            socket_connect_timeout=5, socket_timeout=5,
+        )
+        try:
+            await r0.setex(_VERSION_KEY, _VERSION_TTL, version)
+        finally:
+            await r0.close()
+
+        logger.info("Set stock_list:version = %s (DB 0 + 5)", version)
+    except Exception as e:
+        logger.warning("Failed to set stock_list:version: %s", e)
 
 
 async def _publish_reload() -> None:

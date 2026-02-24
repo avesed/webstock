@@ -1,27 +1,24 @@
 """Stock list service for local in-memory search optimization.
 
 This service provides fast local search (<10ms) instead of slow API calls (500ms-2s).
-Stock data is loaded from msgpack files and indexed for efficient prefix/ngram search.
+Stock data is loaded from the ``stock_symbols`` PostgreSQL table (written by data-service)
+and indexed for efficient prefix/ngram search.
+
+Version tracking: data-service sets Redis key ``stock_list:version`` after each build.
+This service polls that key (30s cooldown) and reloads from DB on mismatch.
 """
 
 import asyncio
-import hashlib
-import json
 import logging
-import os
 import re
 import time
-from dataclasses import dataclass, asdict, field
-from datetime import datetime
-from pathlib import Path
+from dataclasses import dataclass, asdict
 from typing import Any, Dict, List, Optional, Set, Tuple
-
-import msgpack
 
 logger = logging.getLogger(__name__)
 
-# Default data directory relative to project root
-DEFAULT_DATA_DIR = Path(__file__).parent.parent.parent.parent / "data" / "stock_list"
+# Redis key written by data-service after each stock list build
+_VERSION_KEY = "stock_list:version"
 
 
 @dataclass
@@ -77,9 +74,8 @@ class StockListService:
     _instance: Optional["StockListService"] = None
     _instance_lock = asyncio.Lock()
 
-    def __init__(self, data_dir: Optional[Path] = None):
+    def __init__(self):
         """Initialize the service (private, use get_instance())."""
-        self.data_dir = data_dir or DEFAULT_DATA_DIR
         self.stocks: List[LocalStock] = []
 
         # Index structures
@@ -102,15 +98,15 @@ class StockListService:
         self._load_lock = asyncio.Lock()
         self._version: Optional[str] = None
         self._last_version_check: float = 0.0  # monotonic timestamp
-        self._version_check_interval: float = 30.0  # seconds between disk checks
+        self._version_check_interval: float = 30.0  # seconds between checks
 
     @classmethod
-    async def get_instance(cls, data_dir: Optional[Path] = None) -> "StockListService":
+    async def get_instance(cls) -> "StockListService":
         """Get singleton instance of the service."""
         if cls._instance is None:
             async with cls._instance_lock:
                 if cls._instance is None:
-                    cls._instance = cls(data_dir)
+                    cls._instance = cls()
         return cls._instance
 
     @classmethod
@@ -134,8 +130,7 @@ class StockListService:
         return self._version
 
     async def load(self, force: bool = False) -> bool:
-        """
-        Load stock data from msgpack file.
+        """Load stock data from the ``stock_symbols`` PostgreSQL table.
 
         Args:
             force: Force reload even if already loaded
@@ -152,69 +147,44 @@ class StockListService:
             if self._loaded and not force:
                 return True
 
-            stocks_file = self.data_dir / "stocks.msgpack"
-            sha256_file = self.data_dir / "stocks.msgpack.sha256"
-            version_file = self.data_dir / "version.json"
-
-            if not stocks_file.exists():
-                logger.warning(f"Stock list file not found: {stocks_file}")
-                return False
-
             try:
-                # Verify checksum if available
-                if sha256_file.exists():
-                    expected_hash = sha256_file.read_text().strip()
-                    actual_hash = self._compute_sha256(stocks_file)
-                    if expected_hash != actual_hash:
-                        logger.error(
-                            f"Stock list checksum mismatch: expected {expected_hash}, got {actual_hash}"
-                        )
-                        return False
+                from app.db.database import engine
+                from sqlalchemy import text
 
-                # Load stock data
-                loop = asyncio.get_event_loop()
-                data = await loop.run_in_executor(None, self._load_msgpack, stocks_file)
+                async with engine.connect() as conn:
+                    result = await conn.execute(text(
+                        "SELECT symbol, name, name_zh, exchange, market, "
+                        "pinyin, pinyin_initial FROM stock_symbols"
+                    ))
+                    rows = result.mappings().all()
 
-                if not data:
-                    logger.warning("Empty stock list data")
+                if not rows:
+                    logger.warning("stock_symbols table is empty")
                     return False
 
                 # Convert to LocalStock objects
-                stocks = [LocalStock.from_dict(item) for item in data]
+                stocks = [LocalStock.from_dict(dict(row)) for row in rows]
 
-                # Build indexes
+                # Build indexes (CPU-bound, run in executor)
+                loop = asyncio.get_event_loop()
                 await loop.run_in_executor(None, self._build_index, stocks)
 
                 # Update state
                 self.stocks = stocks
                 self._loaded = True
 
-                # Load version info
-                if version_file.exists():
-                    version_data = json.loads(version_file.read_text())
-                    self._version = version_data.get("version")
+                # Read current version from Redis
+                self._version = await self._read_redis_version()
 
                 logger.info(
-                    f"Loaded {len(stocks)} stocks from {stocks_file}, version: {self._version}"
+                    "Loaded %d stocks from stock_symbols table, version: %s",
+                    len(stocks), self._version,
                 )
                 return True
 
             except Exception as e:
-                logger.exception(f"Failed to load stock list: {e}")
+                logger.exception("Failed to load stock list from DB: %s", e)
                 return False
-
-    def _load_msgpack(self, file_path: Path) -> List[Dict[str, Any]]:
-        """Load data from msgpack file (synchronous)."""
-        with open(file_path, "rb") as f:
-            return msgpack.unpack(f, raw=False)
-
-    def _compute_sha256(self, file_path: Path) -> str:
-        """Compute SHA256 hash of a file."""
-        sha256_hash = hashlib.sha256()
-        with open(file_path, "rb") as f:
-            for chunk in iter(lambda: f.read(4096), b""):
-                sha256_hash.update(chunk)
-        return sha256_hash.hexdigest()
 
     def _build_index(self, stocks: List[LocalStock]) -> None:
         """Build all search indexes (synchronous, run in executor)."""
@@ -279,9 +249,12 @@ class StockListService:
                     self.pinyin_initial[prefix].add(idx)
 
         logger.debug(
-            f"Built indexes: symbol={len(self.symbol_prefix)}, "
-            f"name={len(self.name_prefix)}, name_zh={len(self.name_zh_ngram)}, "
-            f"pinyin={len(self.pinyin_full)}, initial={len(self.pinyin_initial)}"
+            "Built indexes: symbol=%d, name=%d, name_zh=%d, pinyin=%d, initial=%d",
+            len(self.symbol_prefix),
+            len(self.name_prefix),
+            len(self.name_zh_ngram),
+            len(self.pinyin_full),
+            len(self.pinyin_initial),
         )
 
     def build_index(self, stocks: List[LocalStock]) -> None:
@@ -438,15 +411,15 @@ class StockListService:
         return output
 
     async def reload(self) -> bool:
-        """Reload data from disk (hot reload)."""
+        """Reload data from database."""
         return await self.load(force=True)
 
     async def check_for_updates(self, force: bool = False) -> bool:
-        """
-        Check if the on-disk version differs from the in-memory version.
+        """Check if the Redis version differs from the in-memory version.
 
-        Uses a time-based cooldown to avoid hitting disk on every call.
-        When a version mismatch is detected, triggers an automatic reload.
+        Uses a time-based cooldown to avoid hitting Redis on every call.
+        When a version mismatch is detected, triggers an automatic reload
+        from the ``stock_symbols`` database table.
 
         Args:
             force: Skip the cooldown and check immediately
@@ -464,19 +437,12 @@ class StockListService:
         self._last_version_check = now
 
         try:
-            version_file = self.data_dir / "version.json"
-            if not version_file.exists():
-                return False
+            redis_version = await self._read_redis_version()
 
-            loop = asyncio.get_event_loop()
-            disk_version = await loop.run_in_executor(
-                None, self._read_disk_version, version_file
-            )
-
-            if disk_version and disk_version != self._version:
+            if redis_version and redis_version != self._version:
                 logger.info(
-                    "Stock list version mismatch: memory=%s, disk=%s — reloading",
-                    self._version, disk_version,
+                    "Stock list version mismatch: memory=%s, redis=%s — reloading",
+                    self._version, redis_version,
                 )
                 return await self.load(force=True)
 
@@ -486,57 +452,17 @@ class StockListService:
         return False
 
     @staticmethod
-    def _read_disk_version(version_file: Path) -> Optional[str]:
-        """Read version string from version.json (synchronous, run in executor)."""
+    async def _read_redis_version() -> Optional[str]:
+        """Read stock list version from Redis."""
         try:
-            data = json.loads(version_file.read_text())
-            return data.get("version")
+            from app.db.redis import get_redis
+            redis = await get_redis()
+            val = await redis.get(_VERSION_KEY)
+            if val is not None:
+                return val if isinstance(val, str) else val.decode()
         except Exception:
-            return None
-
-    def save(self, stocks: List[LocalStock]) -> bool:
-        """
-        Save stock data to msgpack file.
-
-        Args:
-            stocks: List of LocalStock objects to save
-
-        Returns:
-            True if saved successfully, False otherwise
-        """
-        try:
-            # Ensure data directory exists
-            self.data_dir.mkdir(parents=True, exist_ok=True)
-
-            stocks_file = self.data_dir / "stocks.msgpack"
-            sha256_file = self.data_dir / "stocks.msgpack.sha256"
-            version_file = self.data_dir / "version.json"
-
-            # Convert to dicts for serialization
-            data = [stock.to_dict() for stock in stocks]
-
-            # Save to msgpack
-            with open(stocks_file, "wb") as f:
-                msgpack.pack(data, f)
-
-            # Compute and save checksum
-            sha256_hash = self._compute_sha256(stocks_file)
-            sha256_file.write_text(sha256_hash)
-
-            # Save version info
-            version_data = {
-                "version": datetime.utcnow().strftime("%Y%m%d%H%M%S"),
-                "updated_at": datetime.utcnow().isoformat(),
-                "stock_count": len(stocks),
-            }
-            version_file.write_text(json.dumps(version_data, indent=2))
-
-            logger.info(f"Saved {len(stocks)} stocks to {stocks_file}")
-            return True
-
-        except Exception as e:
-            logger.exception(f"Failed to save stock list: {e}")
-            return False
+            pass
+        return None
 
     def get_stats(self) -> Dict[str, Any]:
         """Get service statistics."""
@@ -568,18 +494,14 @@ _stock_list_service: Optional[StockListService] = None
 _service_lock = asyncio.Lock()
 
 
-async def get_stock_list_service(
-    data_dir: Optional[Path] = None, auto_load: bool = True
-) -> StockListService:
-    """
-    Get the singleton StockListService instance.
+async def get_stock_list_service(auto_load: bool = True) -> StockListService:
+    """Get the singleton StockListService instance.
 
-    On each call, checks if the on-disk data has been updated by a Celery task
-    (using a 30s cooldown to avoid excessive disk reads). If a version mismatch
-    is detected, the service auto-reloads from disk.
+    On each call, checks if the stock list version in Redis has been updated by
+    data-service (using a 30s cooldown). If a version mismatch is detected, the
+    service auto-reloads from the ``stock_symbols`` PostgreSQL table.
 
     Args:
-        data_dir: Optional custom data directory
         auto_load: Whether to auto-load data on first access
 
     Returns:
@@ -590,11 +512,11 @@ async def get_stock_list_service(
     if _stock_list_service is None:
         async with _service_lock:
             if _stock_list_service is None:
-                _stock_list_service = await StockListService.get_instance(data_dir)
+                _stock_list_service = await StockListService.get_instance()
                 if auto_load:
                     await _stock_list_service.load()
     else:
-        # Check for updates from Celery tasks (cooldown-based, not every call)
+        # Check for updates from data-service (cooldown-based, not every call)
         await _stock_list_service.check_for_updates()
 
     return _stock_list_service

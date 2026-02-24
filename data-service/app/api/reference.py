@@ -1,8 +1,8 @@
 """Reference data API — stock lists and profiles.
 
 POST /v1/reference/stock-list
-    Build the full stock list (~37K symbols) from all markets.
-    Long-running (~2 min). Returns the complete list.
+    Build the full stock list (~37K symbols) and save to stock_symbols table.
+    Long-running (~2 min). Returns summary (total + by_market).
 
 POST /v1/reference/stock-profiles/{market}
     Collect stock profiles for a given market (cn, us, hk).
@@ -26,7 +26,6 @@ import time
 from typing import List, Optional
 
 from fastapi import APIRouter, Depends
-from fastapi.responses import Response
 from pydantic import BaseModel
 
 from app.core.auth import verify_internal_token
@@ -54,33 +53,30 @@ class ProfileRequest(BaseModel):
 
 @router.post("/stock-list", response_model=ApiResponse[StockListResult])
 async def build_stock_list_endpoint():
-    """Build the full stock list from all markets.
+    """Build the full stock list and save to the ``stock_symbols`` table.
 
     Fetches ~37K symbols from Finnhub (US) and AKShare (CN/HK) in parallel,
-    generates pinyin for Chinese names, deduplicates by symbol.
+    generates pinyin for Chinese names, deduplicates, and persists to PostgreSQL.
 
-    Timeout hint: 120s.
+    Timeout hint: 300s.
     """
-    from app.services.stock_list_service import build_stock_list
+    from app.services.stock_list_persistence import build_and_save_stock_list
 
     t0 = time.monotonic()
     try:
-        items = await build_stock_list()
+        result = await build_and_save_stock_list()
         elapsed_ms = int((time.monotonic() - t0) * 1000)
 
-        # Build by-market breakdown for logging
-        by_market: dict[str, int] = {}
-        for item in items:
-            m = item.get("market", "unknown")
-            by_market[m] = by_market.get(m, 0) + 1
-        logger.info(
-            "Stock list built: %d items in %dms — %s",
-            len(items), elapsed_ms, by_market,
-        )
+        if result.get("status") != "success":
+            return ApiResponse(
+                success=False,
+                error=result.get("reason", "unknown error"),
+                elapsed_ms=elapsed_ms,
+            )
 
         return ApiResponse(
             success=True,
-            data=StockListResult(items=items, count=len(items)),
+            data=StockListResult(items=[], count=result.get("total_stocks", 0)),
             source="finnhub+akshare",
             elapsed_ms=elapsed_ms,
         )
@@ -286,42 +282,3 @@ async def stock_profiles_batch_endpoint(body: BatchProfileRequest):
         )
 
 
-# ---------------------------------------------------------------------------
-# Stock list download (binary msgpack)
-# ---------------------------------------------------------------------------
-
-
-@router.get("/stock-list/download")
-async def download_stock_list():
-    """Return the pre-built stock list as binary msgpack.
-
-    The backend Celery task downloads this file and writes it to its own
-    local data directory for fast in-memory search.
-
-    Returns 404 if no stock list has been built yet.
-    """
-    from app.services.stock_list_persistence import (
-        get_stock_list_binary,
-        get_stock_list_metadata,
-    )
-
-    data = get_stock_list_binary()
-    if data is None:
-        return Response(
-            content='{"detail": "Stock list not available. Build it first."}',
-            status_code=404,
-            media_type="application/json",
-        )
-
-    # Include metadata in response headers for convenience
-    metadata = get_stock_list_metadata()
-    headers: dict[str, str] = {}
-    if metadata:
-        headers["X-Stock-Count"] = str(metadata.get("stock_count", 0))
-        headers["X-Stock-Version"] = str(metadata.get("version", ""))
-
-    return Response(
-        content=data,
-        media_type="application/x-msgpack",
-        headers=headers,
-    )

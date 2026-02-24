@@ -145,6 +145,9 @@ async def start_scheduler() -> None:
         "Scheduler started with 4 collection + 1 stock list + 2 profile jobs + heartbeat",
     )
 
+    # Check if stock_symbols table is empty — trigger immediate build on first deploy
+    asyncio.create_task(_check_empty_stock_list())
+
 
 async def stop_scheduler() -> None:
     """Stop the scheduler and release leadership.
@@ -198,7 +201,7 @@ async def _run_collection(market: str) -> None:
 
 
 async def _run_stock_list_update() -> None:
-    """Scheduled job: build the full stock list and save to disk.
+    """Scheduled job: build the full stock list and save to stock_symbols table.
 
     Checks leadership flag before running (guards against stale scheduler).
     Leadership verification and shutdown are handled exclusively by _heartbeat().
@@ -303,6 +306,41 @@ async def _run_concept_sync() -> None:
         logger.exception(
             "Scheduler: concept board sync failed: %s", exc,
         )
+
+
+async def _check_empty_stock_list() -> None:
+    """Check if stock_symbols table is empty and trigger a build if so.
+
+    Called once at startup (leader only) to ensure first-time deployments
+    have stock data within minutes of spinning up.
+
+    Retries with a delay because data-service may start before the app
+    container finishes running Alembic migrations (table may not exist yet).
+    """
+    for attempt in range(3):
+        try:
+            from app.services import stock_list_persistence
+
+            empty = await stock_list_persistence.is_table_empty()
+            if empty:
+                logger.info(
+                    "Scheduler: stock_symbols table is empty — triggering initial build"
+                )
+                await _run_stock_list_update()
+            else:
+                logger.info(
+                    "Scheduler: stock_symbols table already populated, skipping initial build"
+                )
+            return
+        except Exception as exc:
+            if attempt < 2:
+                logger.info(
+                    "Scheduler: stock list check attempt %d failed (%s), retrying in 30s",
+                    attempt + 1, exc,
+                )
+                await asyncio.sleep(30)
+            else:
+                logger.warning("Scheduler: startup stock list check failed after 3 attempts: %s", exc)
 
 
 _RENEW_LEADER_LUA = """

@@ -383,7 +383,11 @@ class DataServiceClient:
     # ==================================================================
 
     async def build_stock_list(self) -> Optional[Dict[str, Any]]:
-        """Build the full stock list from all markets (~37K symbols).
+        """Trigger data-service to build the stock list and write to DB.
+
+        Data-service fetches ~37K symbols from Finnhub + AKShare, writes
+        directly to the ``stock_symbols`` PostgreSQL table, and sets Redis
+        ``stock_list:version``.  Returns summary with total count.
 
         Uses very long timeout because the CN EastMoney API fetches ~5,800
         A-shares in 58 paginated requests (~160s).
@@ -392,44 +396,6 @@ class DataServiceClient:
             "POST", "/v1/reference/stock-list",
             timeout=_VERY_LONG_TIMEOUT,
         )
-
-    async def download_stock_list(self) -> Optional[bytes]:
-        """Download the pre-built stock list msgpack from data-service.
-
-        Returns the raw binary content if successful, or None on any error
-        (404, timeout, connection failure, etc.).
-        """
-        try:
-            extra_headers: Dict[str, str] = {}
-            rid = get_request_id()
-            if rid:
-                extra_headers["X-Request-ID"] = rid
-
-            resp = await self._client.request(
-                "GET",
-                "/v1/reference/stock-list/download",
-                timeout=_MEDIUM_TIMEOUT,  # 60s -- downloading a ~10MB file
-                headers=extra_headers,
-            )
-            if resp.status_code == 200:
-                logger.info(
-                    "Downloaded stock list from data-service: %d bytes",
-                    len(resp.content),
-                )
-                return resp.content
-            logger.warning(
-                "Stock list download returned HTTP %d", resp.status_code,
-            )
-            return None
-        except httpx.TimeoutException:
-            logger.error("Stock list download timed out")
-            return None
-        except httpx.ConnectError:
-            logger.error("Data-service unreachable for stock list download")
-            return None
-        except Exception:
-            logger.exception("Unexpected error downloading stock list")
-            return None
 
     async def collect_profiles(
         self, market: str, *, symbols: Optional[List[str]] = None,

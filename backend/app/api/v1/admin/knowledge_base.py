@@ -487,15 +487,17 @@ async def get_knowledge_base_stats(
         # Force version check (skip cooldown) so admin panel always shows latest
         await svc.check_for_updates(force=True)
         sl = svc.get_stats()
-        # Get last updated from version.json (inner try for file read safety)
+        # Derive lastUpdated from version string (format: YYYYMMDDHHmmSS)
         sl_last_updated = None
-        try:
-            version_file = svc.data_dir / "version.json"
-            if version_file.exists():
-                vdata = json.loads(version_file.read_text())
-                sl_last_updated = vdata.get("updated_at")
-        except Exception:
-            logger.debug("Failed to read stock list version.json")
+        if sl.get("version"):
+            try:
+                from datetime import datetime, timezone
+                dt = datetime.strptime(sl["version"], "%Y%m%d%H%M%S").replace(
+                    tzinfo=timezone.utc,
+                )
+                sl_last_updated = dt.isoformat()
+            except (ValueError, TypeError):
+                pass
         stock_list_stats = {
             "totalCount": sl["stock_count"],
             "version": sl["version"],
