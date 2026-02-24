@@ -17,6 +17,8 @@ import {
 } from 'lucide-react'
 import { createChart, type IChartApi } from 'lightweight-charts'
 
+import { useThemeStore } from '@/stores/themeStore'
+import { lightTheme, darkTheme } from '@/components/chart/chartTheme'
 import { cn } from '@/lib/utils'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
@@ -128,6 +130,7 @@ interface EquityCurveChartProps {
 }
 
 function EquityCurveChart({ data }: EquityCurveChartProps) {
+  const { resolvedTheme } = useThemeStore()
   const containerRef = useRef<HTMLDivElement>(null)
   const chartRef = useRef<IChartApi | null>(null)
   const seriesRef = useRef<ReturnType<IChartApi['addLineSeries']> | null>(null)
@@ -135,14 +138,14 @@ function EquityCurveChart({ data }: EquityCurveChartProps) {
   useEffect(() => {
     if (!containerRef.current || data.length === 0) return
 
+    const theme = resolvedTheme === 'dark' ? darkTheme : lightTheme
+
     const chart = createChart(containerRef.current, {
       width: containerRef.current.clientWidth,
       height: 350,
+      ...theme,
       layout: {
-        background: { color: 'transparent' },
-        textColor: getComputedStyle(document.documentElement)
-          .getPropertyValue('--foreground')
-          .trim() || '#333',
+        ...theme.layout,
         fontFamily: 'inherit',
       },
       grid: {
@@ -196,7 +199,7 @@ function EquityCurveChart({ data }: EquityCurveChartProps) {
       chartRef.current = null
       seriesRef.current = null
     }
-  }, [data])
+  }, [data, resolvedTheme])
 
   return <div ref={containerRef} className="w-full" />
 }

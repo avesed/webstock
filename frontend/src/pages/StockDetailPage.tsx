@@ -180,24 +180,32 @@ export default function StockDetailPage() {
   }, [chartData, latestBars])
 
   // Compute real-time bar from quote for series.update()
+  // Determine time type from actual data to match what lightweight-charts expects.
+  // This avoids type mismatch when INTRADAY_INTERVALS (used by getHistory) and
+  // isIntradayTimeframe (timeframe-based) disagree — e.g. 1M uses 1h interval
+  // (number timestamps) but isIntradayTimeframe is false.
   const latestBar = useMemo(() => {
     if (!quote) return null
-    if (isIntradayTimeframe) {
-      const last = mergedData[mergedData.length - 1]
-      return last ? synthesizeIntradayUpdate(quote, last) : null
+    const last = mergedData[mergedData.length - 1]
+    if (!last) return null
+
+    // If chart data uses number timestamps, synthesize a number-typed update
+    if (typeof last.time === 'number') {
+      return synthesizeIntradayUpdate(quote, last)
     }
+
+    // String-dated data (daily/weekly/monthly)
     const bar = synthesizeTodayBar(quote)
     if (!bar) return null
     // For weekly/monthly charts, the last bar's time is the period end date
     // (e.g., Sunday for weekly, month-end for monthly) which may be ahead of
     // today.  series.update() only accepts the latest time or later, so snap
     // to the last bar's time to avoid "Cannot update oldest data" errors.
-    const last = mergedData[mergedData.length - 1]
-    if (last && typeof last.time === 'string' && typeof bar.time === 'string' && last.time > bar.time) {
+    if (typeof last.time === 'string' && typeof bar.time === 'string' && last.time > bar.time) {
       bar.time = last.time
     }
     return bar
-  }, [quote, isIntradayTimeframe, mergedData])
+  }, [quote, mergedData])
 
   // Detect non-trading state from quote timestamp staleness
   const isMarketClosed = useMemo(() => {

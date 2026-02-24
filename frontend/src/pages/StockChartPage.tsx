@@ -122,21 +122,23 @@ export default function StockChartPage() {
     )
   }, [chartData, latestBars])
 
-  // Real-time bar from quote
+  // Real-time bar from quote — match time type to chart data
   const latestBar = useMemo(() => {
     if (!quote) return null
-    if (isIntradayTimeframe) {
-      const last = mergedData[mergedData.length - 1]
-      return last ? synthesizeIntradayUpdate(quote, last) : null
+    const last = mergedData[mergedData.length - 1]
+    if (!last) return null
+
+    if (typeof last.time === 'number') {
+      return synthesizeIntradayUpdate(quote, last)
     }
+
     const bar = synthesizeTodayBar(quote)
     if (!bar) return null
-    const last = mergedData[mergedData.length - 1]
-    if (last && typeof last.time === 'string' && typeof bar.time === 'string' && last.time > bar.time) {
+    if (typeof last.time === 'string' && typeof bar.time === 'string' && last.time > bar.time) {
       bar.time = last.time
     }
     return bar
-  }, [quote, isIntradayTimeframe, mergedData])
+  }, [quote, mergedData])
 
   // Market closed detection
   const isMarketClosed = useMemo(() => {

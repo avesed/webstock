@@ -28,7 +28,10 @@ interface SimpleChartProps {
 function convertToAreaData(data: CandlestickData[]): { time: Time; value: number }[] {
   if (!Array.isArray(data)) return []
   return data
-    .filter((item) => item.close != null)
+    .filter((item) =>
+      item.close != null
+      && (typeof item.time !== 'number' || Number.isFinite(item.time))
+    )
     .map((item) => ({ time: item.time as Time, value: item.close }))
 }
 

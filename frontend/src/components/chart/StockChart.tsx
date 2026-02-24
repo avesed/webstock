@@ -57,7 +57,11 @@ interface CrosshairData {
 function convertToChartData(data: CandlestickData[]): LWCandlestickData<Time>[] {
   if (!Array.isArray(data)) return []
   return data
-    .filter((item) => item.open != null && item.high != null && item.low != null && item.close != null)
+    .filter((item) =>
+      item.open != null && item.high != null && item.low != null && item.close != null
+      // Guard against NaN timestamps from toMarketLocalTimestamp on invalid dates
+      && (typeof item.time !== 'number' || Number.isFinite(item.time))
+    )
     .map((item) => ({
       time: item.time as Time,
       open: item.open,
