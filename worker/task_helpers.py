@@ -85,6 +85,22 @@ def _reset_singletons():
             logger.warning("Failed to call %s.%s: %s", module_path, func_name, e)
 
 
+def _quiet_exception_handler(loop, context):
+    """Suppress 'Event loop is closed' from deferred httpx transport cleanup.
+
+    OpenAI SDK's ``AsyncOpenAI.__del__`` calls
+    ``asyncio.get_running_loop().create_task(self.aclose())`` when GC
+    collects a stale client during a *later* task's event loop.  The task
+    fails (old transport bound to a closed loop) and ``Task.__del__`` calls
+    ``loop.call_exception_handler()`` on the *current* loop — producing
+    noisy "Task exception was never retrieved" log lines that are harmless.
+    """
+    exc = context.get("exception")
+    if isinstance(exc, RuntimeError) and "Event loop is closed" in str(exc):
+        return
+    loop.default_exception_handler(context)
+
+
 async def _close_async_clients():
     """Gracefully close async clients while the event loop is still alive.
 
@@ -155,6 +171,13 @@ def run_async_task(coro_func: Callable[..., T], *args, **kwargs) -> T:
     ensure_usage_recorder()
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
+    # Suppress "Event loop is closed" from deferred httpx transport cleanup.
+    # OpenAI SDK's AsyncOpenAI.__del__ calls
+    #   asyncio.get_running_loop().create_task(self.aclose())
+    # when GC collects an old client during a LATER task's execution.
+    # The task fails (old transport, closed loop) and Task.__del__ calls
+    # call_exception_handler() on THIS loop — so the handler must be here.
+    loop.set_exception_handler(_quiet_exception_handler)
     try:
         return loop.run_until_complete(coro_func(*args, **kwargs))
     finally:
@@ -170,20 +193,6 @@ def run_async_task(coro_func: Callable[..., T], *args, **kwargs) -> T:
             loop.run_until_complete(loop.shutdown_asyncgens())
         except Exception:
             pass
-        # Suppress "Event loop is closed" from deferred httpx transport
-        # cleanup.  httpx.__del__ → asyncio.Task(client.aclose()) can
-        # fire after loop.close(); Task.__del__ then calls
-        # loop.call_exception_handler() which still works on closed loops.
-        _orig_handler = loop.get_exception_handler()
-        def _quiet_handler(loop, context):
-            exc = context.get("exception")
-            if isinstance(exc, RuntimeError) and "Event loop is closed" in str(exc):
-                return
-            if _orig_handler:
-                _orig_handler(loop, context)
-            else:
-                loop.default_exception_handler(context)
-        loop.set_exception_handler(_quiet_handler)
         loop.close()
         _reset_singletons()
 
