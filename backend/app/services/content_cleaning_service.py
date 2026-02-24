@@ -278,11 +278,12 @@ class ContentCleaningService:
             has_visual_data = bool(result.get("has_critical_visual_data", False))
 
             # Safety: if cleaned text lost > 70% of original, LLM likely
-            # over-cleaned.  Use original text instead.  The 30% threshold
-            # accommodates short-form articles (flash news / telegrams) where
-            # sidebar / paywall-promo content extracted by trafilatura can
-            # exceed half the raw text.
-            if cleaned_text and len(cleaned_text) < len(full_text) * 0.3:
+            # over-cleaned.  Use original text instead.  Skip this check
+            # for short articles (<1000 chars) where sidebar/paywall content
+            # from trafilatura can easily exceed half the raw text.
+            if (cleaned_text
+                    and len(full_text) >= 1000
+                    and len(cleaned_text) < len(full_text) * 0.3):
                 logger.warning(
                     "[ContentCleaning] Cleaned text lost >70%% "
                     "(%d chars vs %d original) for %s. Using original.",
