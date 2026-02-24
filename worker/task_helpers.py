@@ -166,12 +166,24 @@ def run_async_task(coro_func: Callable[..., T], *args, **kwargs) -> T:
             loop.run_until_complete(_close_async_clients())
         except Exception as e:
             logger.warning("Error closing async clients: %s", e)
-        # Drain pending callbacks (e.g. transport.close() → call_soon)
-        # so they don't become orphaned after loop.close().
         try:
             loop.run_until_complete(loop.shutdown_asyncgens())
         except Exception:
             pass
+        # Suppress "Event loop is closed" from deferred httpx transport
+        # cleanup.  httpx.__del__ → asyncio.Task(client.aclose()) can
+        # fire after loop.close(); Task.__del__ then calls
+        # loop.call_exception_handler() which still works on closed loops.
+        _orig_handler = loop.get_exception_handler()
+        def _quiet_handler(loop, context):
+            exc = context.get("exception")
+            if isinstance(exc, RuntimeError) and "Event loop is closed" in str(exc):
+                return
+            if _orig_handler:
+                _orig_handler(loop, context)
+            else:
+                loop.default_exception_handler(context)
+        loop.set_exception_handler(_quiet_handler)
         loop.close()
         _reset_singletons()
 

@@ -7,7 +7,7 @@ resulting vectors in the document_embeddings table.
 """
 
 import logging
-from typing import Any, Dict, List
+from typing import Any, Dict
 
 from worker.celery_app import celery_app
 
@@ -52,20 +52,6 @@ def _release_embedding_lock(task_name: str) -> None:
         pass
 
 
-def _reset_singletons() -> None:
-    """Reset singleton clients after each Celery task event loop closes."""
-    try:
-        from app.core.llm import reset_llm_gateway
-        reset_llm_gateway()
-    except Exception as e:
-        logger.warning("Failed to reset LLM gateway in embedding task: %s", e)
-    try:
-        from app.services.rag import reset_index_service
-        reset_index_service()
-    except Exception as e:
-        logger.warning("Failed to reset IndexService in embedding task: %s", e)
-
-
 @celery_app.task(bind=True, max_retries=3)
 def embed_analysis_report(self, report_data: Dict[str, Any]):
     """
@@ -81,24 +67,16 @@ def embed_analysis_report(self, report_data: Dict[str, Any]):
             "content": str,
         }
     """
-    import asyncio
+    from worker.task_helpers import run_async_task
 
     try:
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        try:
-            result = loop.run_until_complete(
-                _embed_document_async(
-                    source_type="analysis",
-                    source_id=report_data["source_id"],
-                    content=report_data["content"],
-                    symbol=report_data.get("symbol"),
-                )
-            )
-            return result
-        finally:
-            loop.close()
-            _reset_singletons()
+        return run_async_task(
+            _embed_document_async,
+            source_type="analysis",
+            source_id=report_data["source_id"],
+            content=report_data["content"],
+            symbol=report_data.get("symbol"),
+        )
     except Exception as e:
         logger.exception("Embedding task failed for analysis report: %s", e)
         raise self.retry(exc=e, countdown=30 * (2 ** self.request.retries))
@@ -114,24 +92,16 @@ def embed_news_article(self, news_id: str, content: str, symbol: str = None):
         content: Text content to embed (title + summary)
         symbol: Associated stock symbol
     """
-    import asyncio
+    from worker.task_helpers import run_async_task
 
     try:
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        try:
-            result = loop.run_until_complete(
-                _embed_document_async(
-                    source_type="news",
-                    source_id=news_id,
-                    content=content,
-                    symbol=symbol,
-                )
-            )
-            return result
-        finally:
-            loop.close()
-            _reset_singletons()
+        return run_async_task(
+            _embed_document_async,
+            source_type="news",
+            source_id=news_id,
+            content=content,
+            symbol=symbol,
+        )
     except Exception as e:
         logger.exception("Embedding task failed for news %s: %s", news_id, e)
         raise self.retry(exc=e, countdown=30 * (2 ** self.request.retries))
@@ -147,24 +117,16 @@ def embed_report(self, report_id: str, content: str, symbol: str = None):
         content: Full report text
         symbol: Associated stock symbol (if report is symbol-specific)
     """
-    import asyncio
+    from worker.task_helpers import run_async_task
 
     try:
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        try:
-            result = loop.run_until_complete(
-                _embed_document_async(
-                    source_type="report",
-                    source_id=report_id,
-                    content=content,
-                    symbol=symbol,
-                )
-            )
-            return result
-        finally:
-            loop.close()
-            _reset_singletons()
+        return run_async_task(
+            _embed_document_async,
+            source_type="report",
+            source_id=report_id,
+            content=content,
+            symbol=symbol,
+        )
     except Exception as e:
         logger.exception("Embedding task failed for report %s: %s", report_id, e)
         raise self.retry(exc=e, countdown=30 * (2 ** self.request.retries))
