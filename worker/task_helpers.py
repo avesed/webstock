@@ -31,6 +31,7 @@ _SINGLETON_RESETS = [
     ("app.services.stock_list_service", "reset_stock_list_service_sync"),
     ("app.services.stock_profile_service", "reset_stock_profile_service_sync"),
     ("app.services.data_service_client", "reset_data_service_client"),
+    ("app.services.qlib_client", "reset_qlib_client"),
 ]
 
 
@@ -116,6 +117,15 @@ async def _close_async_clients():
     except Exception as e:
         logger.debug("DataServiceClient close: %s", e)
 
+    # QlibClient — close httpx.AsyncClient bound to current loop
+    try:
+        mod = importlib.import_module("app.services.qlib_client")
+        close_fn = getattr(mod, "close_qlib_client", None)
+        if close_fn:
+            await close_fn()
+    except Exception as e:
+        logger.debug("QlibClient close: %s", e)
+
     # Database engine — dispose pooled asyncpg connections.
     # The module-level engine in database.py keeps a connection pool;
     # those connections hold asyncpg protocol Futures bound to the
@@ -156,6 +166,12 @@ def run_async_task(coro_func: Callable[..., T], *args, **kwargs) -> T:
             loop.run_until_complete(_close_async_clients())
         except Exception as e:
             logger.warning("Error closing async clients: %s", e)
+        # Drain pending callbacks (e.g. transport.close() → call_soon)
+        # so they don't become orphaned after loop.close().
+        try:
+            loop.run_until_complete(loop.shutdown_asyncgens())
+        except Exception:
+            pass
         loop.close()
         _reset_singletons()
 

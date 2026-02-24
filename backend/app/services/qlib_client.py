@@ -386,3 +386,14 @@ async def close_qlib_client() -> None:
         if _client is not None:
             await _client.close()
             _client = None
+
+
+def reset_qlib_client() -> None:
+    """Reset the singleton without async close.
+
+    Used by Celery ``_reset_singletons()`` after the event loop has closed.
+    The next ``get_qlib_client()`` call will create a fresh instance on the
+    new event loop.
+    """
+    global _client
+    _client = None
