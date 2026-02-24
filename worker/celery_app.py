@@ -48,13 +48,17 @@ celery_app.conf.update(
 
     # Task routing
     # - scraping queue: I/O-bound tasks (HTTP fetching with controlled concurrency)
-    # - default queue: LLM-bound tasks (can safely scale concurrency)
+    # - news_llm queue: LLM-heavy news pipeline tasks (isolated to prevent starving
+    #   critical periodic tasks like price_monitor, qlib_sync when LLM is slow)
+    # - default queue: lightweight tasks that must stay responsive
     task_routes={
         "worker.tasks.full_content_tasks.batch_fetch_content": {"queue": "scraping"},
-        "worker.tasks.full_content_tasks.process_news_article": {"queue": "default"},
+        "worker.tasks.full_content_tasks.process_news_article": {"queue": "news_llm"},
         "worker.tasks.full_content_tasks.cleanup_expired_news": {"queue": "default"},
         "worker.tasks.full_content_tasks.cleanup_pipeline_events": {"queue": "default"},
         "worker.tasks.full_content_tasks.cleanup_old_usage_records": {"queue": "default"},
+        "worker.tasks.news_monitor.analyze_important_news": {"queue": "news_llm"},
+        "worker.tasks.news_monitor.retry_score_articles": {"queue": "news_llm"},
         # Daily bar tasks: thin proxies that delegate to data-service.
         # Kept on dedicated queue for admin UI backward compatibility.
         "worker.tasks.daily_bar_tasks.collect_market_daily_bars": {"queue": "daily_bars"},
