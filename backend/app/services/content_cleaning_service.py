@@ -11,7 +11,6 @@ Uses a small vision-capable LLM to:
 
 import json
 import logging
-import re
 import time
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
@@ -60,26 +59,7 @@ CLEANING_SYSTEM_PROMPT = """\
 
 如果没有图片或图片不包含有用数据，image_insights设为空字符串。
 
-## 输出JSON格式
-{
-  "cleaned_text": "清洗后的文本（应接近原文长度）",
-  "image_insights": "从图片中提取的数据描述",
-  "has_critical_visual_data": false
-}"""
-
-
-def _extract_json_from_response(text: str) -> Dict[str, Any]:
-    """Extract JSON from LLM response, handling markdown code blocks."""
-    text = text.strip()
-    if text.startswith("```"):
-        text = re.sub(r"^```(?:json)?\s*\n?", "", text)
-        text = re.sub(r"\n?```\s*$", "", text)
-
-    try:
-        return json.loads(text)
-    except json.JSONDecodeError as e:
-        logger.warning("Failed to parse cleaning JSON: %s, text: %s", e, text[:200])
-        return {}
+完成后，调用 `submit_cleaning` 工具提交结果。"""
 
 
 @dataclass
@@ -234,11 +214,18 @@ class ContentCleaningService:
         )
 
         try:
+            from app.skills.news.submit_cleaning import SubmitCleaningSkill
+            from app.skills.chat_adapter import skill_to_tool_definition
+
+            skill = SubmitCleaningSkill()
+            tools = [skill_to_tool_definition(skill)]
+
             gateway = get_llm_gateway()
             chat_request = ChatRequest(
                 model=model_name,
                 messages=messages,
-                response_format={"type": "json_object"},
+                tools=tools,
+                tool_choice="required",
                 temperature=0.1,
                 timeout=90,
             )
@@ -254,14 +241,28 @@ class ContentCleaningService:
             )
             llm_elapsed_ms = (time.monotonic() - llm_start) * 1000
 
-            content = response.content or ""
-            result = _extract_json_from_response(content)
+            # Read structured output from tool call arguments
+            result: Dict[str, Any] = {}
+            if response.tool_calls:
+                tc = response.tool_calls[0]
+                try:
+                    args = json.loads(tc.arguments)
+                    skill_result = await skill.safe_execute(timeout=5.0, **args)
+                    if skill_result.success and skill_result.data:
+                        result = skill_result.data
+                    else:
+                        result = args  # use raw args as fallback
+                except (json.JSONDecodeError, TypeError, ValueError) as e:
+                    logger.warning(
+                        "[ContentCleaning] Tool call parse failed for %s: %s",
+                        url_short, e,
+                    )
 
             if not result:
                 logger.warning(
-                    "[ContentCleaning] JSON parse failed for %s (%.0fms), "
-                    "response length=%d. Returning original text.",
-                    url_short, llm_elapsed_ms, len(content),
+                    "[ContentCleaning] No tool call result for %s (%.0fms). "
+                    "Returning original text.",
+                    url_short, llm_elapsed_ms,
                 )
                 return CleaningResult(
                     cleaned_text=full_text,

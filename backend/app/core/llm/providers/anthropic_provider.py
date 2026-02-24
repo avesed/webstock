@@ -204,7 +204,16 @@ class AnthropicProvider(LLMProvider):
             kwargs["tools"] = self._convert_tools(request.tools)
             if request.tool_choice:
                 # Map gateway tool_choice to Anthropic format
-                if request.tool_choice == "none":
+                if isinstance(request.tool_choice, dict):
+                    # Forced function: {"type":"function","function":{"name":"X"}}
+                    # → Anthropic: {"type":"tool","name":"X"}
+                    fn = request.tool_choice.get("function", {})
+                    fn_name = fn.get("name", "") if isinstance(fn, dict) else ""
+                    if fn_name:
+                        kwargs["tool_choice"] = {"type": "tool", "name": fn_name}
+                    else:
+                        kwargs["tool_choice"] = {"type": "any"}
+                elif request.tool_choice == "none":
                     # Anthropic doesn't have "none" — omit tools instead
                     del kwargs["tools"]
                 elif request.tool_choice == "required":

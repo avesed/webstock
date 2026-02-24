@@ -103,7 +103,7 @@ class ChatRequest:
     temperature: Optional[float] = None
     max_tokens: Optional[int] = None
     tools: Optional[List[ToolDefinition]] = None
-    tool_choice: Optional[str] = None   # "auto", "none", "required"
+    tool_choice: Optional[Union[str, Dict[str, Any]]] = None  # "auto", "none", "required", or {"type":"function","function":{"name":"..."}}
     stream: bool = False
     response_format: Optional[Dict[str, Any]] = None  # {"type": "json_object"} or {"type": "json_schema", ...}
     timeout: int = 120

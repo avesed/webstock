@@ -14,19 +14,24 @@ Routing decisions:
 Critical event keywords bypass LLM scoring entirely and route directly
 to ``full_analysis`` with an automatic 300-point score.
 
+Each agent uses ``tool_choice`` with a single ``submit_score`` tool
+that accepts a ``results`` array containing all articles' scores in one
+call.  This eliminates the ``response_format`` compatibility issue and
+guarantees structured output via the tool-call protocol.
+
 Prompt cache strategy:
+    tools  (submit_score definition — identical for all 3 agents)
     SYSTEM (scoring framework + all 3 rubrics ~800 tokens)  [cache_control]
     USER   (numbered article batch ~3000 tokens)            [cache_control]
     USER   (agent-specific perspective prompt)               [no cache]
 
-Agents 2 and 3 hit the prompt cache on the shared SYSTEM+batch prefix,
-reducing token costs by ~60-70% for the duplicated input.
+Agents 2 and 3 hit the prompt cache on the shared prefix (tools +
+SYSTEM + batch), reducing token costs by ~60-70%.
 """
 
 import asyncio
 import json
 import logging
-import re
 import time
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple
@@ -71,17 +76,15 @@ _SYSTEM_PROMPT = """\
 2. 再在该层级的分数范围内给出具体分数
 3. 必须同时返回层级名称和分数
 
-## 输出格式
+## 输出方式
 
-对每篇文章（按编号），返回 JSON：
-```json
-{{"1": {{"tier": "层级名称", "score": 75, "reason": "评分理由（20字内）"}}, "2": ...}}
-```
+调用一次 `submit_score` 工具，在 `results` 数组中包含所有文章的评分。
+不要遗漏任何一篇文章。
 
 **注意**：
+- index 为文章编号（从1开始）
 - score 必须在对应 tier 的分数范围内
 - reason 必须简洁，不超过20字
-- 只返回 JSON，不要添加其他内容
 
 ---
 
@@ -124,16 +127,16 @@ _SYSTEM_PROMPT = """\
 # Per-agent perspective prompts.  Appended as a second USER message.
 _AGENT_PROMPTS: Dict[str, str] = {
     "macro": (
-        "请从【宏观视角（视角A）】评估以上新闻的投资重要性。"
-        "使用宏观视角的层级定义进行评分。"
+        "请从【宏观视角（视角A）】评估以上每一篇新闻的投资重要性。"
+        "使用宏观视角的层级定义，调用 `submit_score` 工具提交所有文章的评分。"
     ),
     "market": (
-        "请从【市场视角（视角B）】评估以上新闻的投资重要性。"
-        "使用市场视角的层级定义进行评分。"
+        "请从【市场视角（视角B）】评估以上每一篇新闻的投资重要性。"
+        "使用市场视角的层级定义，调用 `submit_score` 工具提交所有文章的评分。"
     ),
     "signal": (
-        "请从【信息质量视角（视角C）】评估以上新闻的投资价值。"
-        "使用信息质量视角的层级定义进行评分。"
+        "请从【信息质量视角（视角C）】评估以上每一篇新闻的投资价值。"
+        "使用信息质量视角的层级定义，调用 `submit_score` 工具提交所有文章的评分。"
     ),
 }
 
@@ -176,36 +179,6 @@ class BatchScoringOutcome:
 
     results: List[Layer1ScoringResult]          # Successfully scored
     timed_out_articles: List[Dict[str, str]]    # Article dicts whose batch timed out
-
-
-# ---------------------------------------------------------------------------
-# JSON extraction helper
-# ---------------------------------------------------------------------------
-
-def _extract_json(text: str) -> Dict[str, Any]:
-    """Extract JSON from LLM response, handling markdown fences.
-
-    Reuses the same strategy as ``news_layer3_analysis_service.extract_json_from_response``
-    but kept local to avoid a hard import dependency on the layer 3 analysis service.
-
-    Args:
-        text: Raw LLM response text.
-
-    Returns:
-        Parsed JSON dict, or empty dict on failure.
-    """
-    text = text.strip()
-    if text.startswith("```"):
-        text = re.sub(r"^```(?:json)?\s*\n?", "", text)
-        text = re.sub(r"\n?```\s*$", "", text)
-
-    try:
-        return json.loads(text)
-    except json.JSONDecodeError as e:
-        logger.warning(
-            "Layer1 scoring JSON parse failed: %s, text: %s", e, text[:300],
-        )
-        return {}
 
 
 # ---------------------------------------------------------------------------
@@ -318,17 +291,23 @@ class Layer1ScoringService:
         base_messages: List[Message],
         model_config,
         batch_size: int,
+        tools: List,
     ) -> Tuple[str, Dict[str, Any], str]:
         """Run a single scoring agent against the shared batch.
+
+        The agent calls ``submit_score`` once with a ``results`` array
+        containing all articles' scores.  Results are extracted into a
+        dict keyed by article index (str, 1-based).
 
         Args:
             agent_name: One of ``"macro"``, ``"market"``, ``"signal"``.
             base_messages: Shared SYSTEM + batch USER messages (with cache hints).
             model_config: Resolved model configuration.
             batch_size: Number of articles in the batch (for validation).
+            tools: Shared tool definitions list (for prompt cache).
 
         Returns:
-            Tuple of (agent_name, parsed JSON dict, raw response text).
+            Tuple of (agent_name, parsed dict, raw debug string).
             On LLM or parse error, the dict is empty.
         """
         agent_prompt = _AGENT_PROMPTS[agent_name]
@@ -341,9 +320,12 @@ class Layer1ScoringService:
         chat_request = ChatRequest(
             model=model_config.model,
             messages=messages,
-            response_format={"type": "json_object"},
+            tools=tools,
+            tool_choice={
+                "type": "function",
+                "function": {"name": "submit_score"},
+            },
             temperature=0.2,
-            max_tokens=max(2000, batch_size * 80),
             timeout=60,
         )
 
@@ -375,13 +357,32 @@ class Layer1ScoringService:
                         "Token tracking failed for layer1_%s", agent_name, exc_info=True,
                     )
 
-            content = response.content or ""
-            raw = content[:5000]
-            parsed = _extract_json(content)
+            # Extract results array from the single tool call
+            parsed: Dict[str, Any] = {}
+            raw_parts: List[str] = []
+
+            if response.tool_calls:
+                tc = response.tool_calls[0]
+                try:
+                    args = json.loads(tc.arguments)
+                except (json.JSONDecodeError, TypeError):
+                    args = {}
+
+                results_list = args.get("results", [])
+                if isinstance(results_list, list):
+                    for item in results_list:
+                        if not isinstance(item, dict):
+                            continue
+                        idx = str(item.get("index", ""))
+                        if idx:
+                            parsed[idx] = item
+                            raw_parts.append(f"[{idx}] {item}")
+
+            raw = "; ".join(raw_parts)[:5000]
 
             logger.info(
                 "[Layer1/%s] LLM call completed, elapsed=%.0fms, "
-                "articles=%d, parsed_keys=%d",
+                "articles=%d, results_count=%d",
                 agent_name, elapsed_ms, batch_size, len(parsed),
             )
 
@@ -532,12 +533,20 @@ class Layer1ScoringService:
                 ),
             ]
 
-            # --- 3. Resolve model ---
+            # --- 3. Resolve model + build tools ---
             model_config = await self._resolve_model(db)
+
+            from app.skills.chat_adapter import skill_to_tool_definition
+            from app.skills.news.submit_score import SubmitScoreSkill
+
+            tools = [skill_to_tool_definition(SubmitScoreSkill())]
 
             # --- 4. Run 3 agents concurrently ---
             tasks = [
-                self._run_agent(name, base_messages, model_config, len(batch_articles))
+                self._run_agent(
+                    name, base_messages, model_config,
+                    len(batch_articles), tools,
+                )
                 for name in self.AGENT_NAMES
             ]
             raw_results = await asyncio.gather(*tasks, return_exceptions=True)

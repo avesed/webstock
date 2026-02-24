@@ -123,110 +123,109 @@ ENTITY_EXTRACTION_PROMPT = """你的角色：实体提取专家（带联想能�
 
 ## 工作流程
 1. 阅读新闻，识别核心主题和涉及的行业/概念
-2. 提取直接提及的实体（公司、指数、宏观因素）
-3. **验证代码**：对不确定的股票代码，调用 `search_stocks` 搜索公司名确认正确代码
-   - 例：不确定腾讯代码 → search_stocks("腾讯") → 确认 0700.HK
-4. **联想扩展**：如新闻涉及行业主题/政策/供应链，调用 `search_related_stocks` 搜索关联股票
-   - 关键词用行业/概念（如"人形机器人"、"AI芯片"、"新能源汽车产业链"）
-   - 可多次调用覆盖不同维度
-5. 从搜索结果中筛选真正相关的股票，编制最终实体列表
-6. **如果新闻只涉及单一公司且无行业主题，可跳过步骤4**
+2. 判断新闻**主要关联的市场**（cn=A股/hk=港股/us=美股）
+3. 提取直接提及的实体（公司、指数、宏观因素）
+4. 识别需要联想扩展的行业主题（如"人形机器人"、"AI芯片"、"新能源汽车产业链"）
+5. 调用 `submit_entities` 一次性提交所有结果（entities + themes + primary_market）
+   - 系统会**自动验证和修正**股票代码，你不需要自己查询
+   - 系统会根据 themes **自动搜索**知识库找到关联股票
+   - **primary_market** 告诉系统在哪个市场搜索关联股票
+6. **如果新闻只涉及单一公司且无行业主题，themes 留空即可**
 
-## 代码格式规则（严格遵守）
+## 代码格式规则（尽量遵守，系统会自动修正）
 | 市场 | 正确格式 | 常见错误 |
 |------|----------|----------|
 | A股 | 600519.SS, 000001.SZ | ~~600519~~, ~~SH600519~~, ~~000001~~ |
-| 港股 | 0700.HK, 9988.HK | ~~HK0700~~, ~~01810.HK~~(应为1810.HK), ~~BABA.HK~~(港股用数字代码) |
+| 港股 | 0700.HK, 9988.HK | ~~HK0700~~, ~~01810.HK~~(应为1810.HK) |
 | 美股 | AAPL, TSLA | ~~苹果~~(不可用中文名), ~~AAPL.US~~ |
 | 贵金属 | GC=F, SI=F, PL=F, PA=F | ~~XAU~~, ~~XAUUSD~~, ~~GOLD~~ |
 | 指数 | type=index: SPX, IXIC, 000001.SS, HSI | - |
 | 宏观 | type=macro: Fed利率, CPI, 美元指数 | - |
 
 **关键规则**：
-- A股6位数字必须带后缀：上海.SS，深圳.SZ
-- 港股4-5位数字+.HK，无前导零多余位（0700.HK而非00700.HK）
-- company_name是**必填字段**（stock类型），用于系统自动校验代码
-- 不确定代码时，填写company_name并用 `search_stocks` 查询确认
-
-## 输出JSON格式
-```json
-{
-  "entities": [
-    {"entity": "AAPL", "type": "stock", "company_name": "苹果公司", "relation": "direct", "score": 0.95},
-    {"entity": "600519.SS", "type": "stock", "company_name": "贵州茅台", "relation": "industry_peer", "score": 0.6},
-    {"entity": "Fed利率", "type": "macro", "company_name": "", "relation": "direct", "score": 0.7}
-  ]
-}
-```
+- company_name是**必填字段**（stock类型），系统用它来自动校验和修正代码
+- 不确定代码时，填写正确的company_name比猜测代码更重要
 
 ## 字段说明
-- **entity**: 股票代码或指数/宏观因素名称（严格遵守上述格式规则）
+- **entity**: 股票代码或指数/宏观因素名称
 - **type**: stock / index / macro
-- **company_name**: 公司中文或英文名（stock类型必填，不确定代码时尤其重要）
+- **company_name**: 公司中文或英文名（stock类型必填）
 - **relation**: direct / industry_peer / supply_chain / competitor / beneficiary / subsidiary
 - **score**: 0.8-1.0 直接提及 | 0.5-0.7 行业/供应链 | 0.3-0.5 间接关联
 
+## primary_market 判断规则
+- 中国国内政策、A股公司、人民币相关 → **cn**
+- 港股公司、港股政策 → **hk**
+- 美股公司、美国政策、美元相关 → **us**
+- 涉及多个市场时，选**最主要**的那个市场
+
 ## 限制
 - 最多15个实体，优先保留高相关度
-- 宁可填写company_name让系统校验，也不要猜测代码"""
+
+**重要**：你只能调用 `submit_entities` 工具，不要调用其他工具。"""
 
 SENTIMENT_TAGS_PROMPT = """你的角色：情绪与标签分析师
 判断新闻情绪和分类标签。
 
-输出JSON：
-{
-  "sentiment": "bullish/bearish/neutral",
-  "industry_tags": ["tech", "semiconductor"],
-  "event_tags": ["earnings", "guidance"]
-}
-
 industry_tags选项: tech/finance/healthcare/energy/consumer/industrial/materials/utilities/realestate/telecom
 event_tags选项: earnings/merger/ipo/regulatory/executive/product/lawsuit/dividend/buyback/guidance/macro
-- 每类最多5个标签"""
+- 每类最多5个标签
+
+**重要**：你只能调用 `submit_sentiment` 工具，不要调用其他工具。"""
 
 SUMMARY_GENERATION_PROMPT = """你的角色：摘要生成专家
 生成投资导向的摘要内容。
 
-输出JSON：
-{
-  "investment_summary": "1句话概况（不超过50字）",
-  "detailed_summary": "保留所有关键细节的完整总结，包含重要数据、时间线、人物、因果关系"
-}
-
 要求：
 - investment_summary: 精炼的1句话，不超过50字，用于卡片预览
-- detailed_summary: 保留所有关键信息，长度5-20句话，视复杂程度调整。删除冗余表述，但不能遗漏重要数据和因果关系"""
+- detailed_summary: 保留所有关键信息，长度5-20句话，视复杂程度调整。删除冗余表述，但不能遗漏重要数据和因果关系
+
+**重要**：你只能调用 `submit_summary` 工具，不要调用其他工具。"""
 
 IMPACT_ASSESSMENT_PROMPT = """你的角色：影响力评估师
 评估新闻对市场、行业和个股的影响。
 
-输出JSON：
-{
-  "market_impact": "对整体市场的影响分析",
-  "sector_impact": "对相关行业板块的影响",
-  "stock_impact": "对具体个股的影响分析",
-  "time_horizon": "short_term/medium_term/long_term",
-  "impact_magnitude": "high/medium/low"
-}
-
 要求：
-- 每个影响字段2-3句话，数据和结论要有理有据
+- market_impact/sector_impact/stock_impact: 每个影响字段2-3句话，数据和结论要有理有据
 - time_horizon: 影响的主要时间维度
-- impact_magnitude: 综合影响强度"""
+- impact_magnitude: 综合影响强度
+
+**重要**：你只能调用 `submit_impact` 工具，不要调用其他工具。"""
 
 REPORT_WRITING_PROMPT = """你的角色：报告撰写专家
 撰写Markdown格式的专业分析报告。
 
-**重要：analysis_report的值必须是一个Markdown字符串，不能是嵌套JSON对象。**
-用\\n表示换行，将整个报告放在一个字符串值中。
+报告模板（submit_report 工具的 analysis_report 参数）：
+## 核心解读
+用通俗易懂的语言解释...
 
-输出JSON：
-{
-  "analysis_report": "## 核心解读\\n用通俗易懂的语言解释...\\n\\n## 投资洞察\\n- **机会点**：...\\n- **关注点**：...\\n- **时间窗口**：...\\n\\n## 风险分析\\n- **短期风险**：...\\n- **长期风险**：...\\n- **不确定性**：...\\n\\n## 市场影响\\n- **直接影响板块**：...\\n- **间接影响**：...\\n\\n## 情绪指数\\n**综合情绪**：看涨/中性/看跌\\n**情绪强度**：X/5\\n**理由**：...\\n\\n## 专业信息\\n- **相关公司**：...\\n- **关键数据**：...\\n- **时间线**：..."
-}
+## 投资洞察
+- **机会点**：...
+- **关注点**：...
+- **时间窗口**：...
 
-报告必须包含6个章节（核心解读、投资洞察、风险分析、市场影响、情绪指数、专业信息）。
-每章节2-4句话，数据和结论要有理有据。"""
+## 风险分析
+- **短期风险**：...
+- **长期风险**：...
+- **不确定性**：...
+
+## 市场影响
+- **直接影响板块**：...
+- **间接影响**：...
+
+## 情绪指数
+**综合情绪**：看涨/中性/看跌
+**情绪强度**：X/5
+**理由**：...
+
+## 专业信息
+- **相关公司**：...
+- **关键数据**：...
+- **时间线**：...
+
+报告必须包含以上6个章节。每章节2-4句话，数据和结论要有理有据。
+
+**重要**：你只能调用 `submit_report` 工具，不要调用其他工具。"""
 
 # Agent name → instruction prompt mapping
 AGENT_PROMPTS: Dict[str, str] = {
@@ -241,70 +240,6 @@ AGENT_PROMPTS: Dict[str, str] = {
 # ---------------------------------------------------------------------------
 # Tool-call argument helpers
 # ---------------------------------------------------------------------------
-
-def _extract_first_json_object(raw: str) -> Optional[str]:
-    """Extract the first valid JSON object from a (possibly concatenated) string.
-
-    Some models (DeepSeek, Qwen) produce concatenated JSON like:
-        {"query":"AI"}{"query":"EV"}
-    This function returns '{"query":"AI"}' — the first valid object.
-    """
-    if not raw or not raw.strip().startswith("{"):
-        return None
-    depth = 0
-    in_string = False
-    escape_next = False
-    for i, ch in enumerate(raw):
-        if escape_next:
-            escape_next = False
-            continue
-        if ch == "\\":
-            escape_next = True
-            continue
-        if ch == '"' and not escape_next:
-            in_string = not in_string
-            continue
-        if in_string:
-            continue
-        if ch == "{":
-            depth += 1
-        elif ch == "}":
-            depth -= 1
-            if depth == 0:
-                candidate = raw[: i + 1]
-                try:
-                    json.loads(candidate)
-                    return candidate
-                except (json.JSONDecodeError, ValueError):
-                    return None
-    return None
-
-
-def _combine_concatenated_queries(raw: str) -> Optional[str]:
-    """If *raw* contains multiple concatenated JSON objects with "query" keys,
-    combine them into a single comma-separated query string.
-
-    Returns ``None`` if *raw* is a single valid JSON object (no combining needed).
-    """
-    if not raw or not raw.strip().startswith("{"):
-        return None
-    # Quick check: only act if there are multiple '}{' patterns
-    if "}{" not in raw:
-        return None
-    queries: list[str] = []
-    parts = re.split(r"(?<=\})\s*(?=\{)", raw.strip())
-    for part in parts:
-        try:
-            obj = json.loads(part)
-            q = obj.get("query", "")
-            if q:
-                queries.append(q)
-        except (json.JSONDecodeError, ValueError):
-            continue
-    if len(queries) <= 1:
-        return None
-    return ", ".join(queries)
-
 
 # ---------------------------------------------------------------------------
 # Result dataclass
@@ -436,30 +371,45 @@ class MultiAgentFilterService:
         ]
 
         # ------------------------------------------------------------------
-        # 3. Run 5 agents in parallel
+        # 3. Run 5 agents in parallel (all tool-based, shared tools for cache)
         # ------------------------------------------------------------------
-        # Entity extractor uses function calling (tool use) for associative
-        # stock lookup; all other agents use the standard path.
+        # All 5 agents receive the SAME tools list so the prompt prefix
+        # (tools + system + article) is identical → prompt cache hits on
+        # agents 2-5.  Each agent is forced to call its specific tool via
+        # named tool_choice={"type":"function","function":{"name":"..."}}.
+        from app.skills.chat_adapter import skill_to_tool_definition
+        from app.skills.knowledge.submit_entities import SubmitEntitiesSkill
+        from app.skills.news.submit_sentiment import SubmitSentimentSkill
+        from app.skills.news.submit_summary import SubmitSummarySkill
+        from app.skills.news.submit_impact import SubmitImpactSkill
+        from app.skills.news.submit_report import SubmitReportSkill
+
+        agent_skills: Dict[str, Any] = {
+            "entity_extractor": SubmitEntitiesSkill(),
+            "sentiment_tags": SubmitSentimentSkill(),
+            "summary_generator": SubmitSummarySkill(),
+            "impact_assessor": SubmitImpactSkill(),
+            "report_writer": SubmitReportSkill(),
+        }
+
+        # Build unified tools list once — identical across all 5 agents
+        all_tools = [skill_to_tool_definition(s) for s in agent_skills.values()]
+
         tasks = []
         for name, prompt in AGENT_PROMPTS.items():
-            if name == "entity_extractor":
-                tasks.append(
-                    self._run_entity_extractor_with_tools(
-                        base_messages=base_messages,
-                        instruction=prompt,
-                        model_config=model_config,
-                        db=db,
-                    )
+            # entity_extractor needs db for ticker resolution + theme expansion
+            extra_kwargs = {"db": db} if name == "entity_extractor" else None
+            tasks.append(
+                self._run_agent(
+                    agent_name=name,
+                    base_messages=base_messages,
+                    instruction=prompt,
+                    model_config=model_config,
+                    all_tools=all_tools,
+                    skill=agent_skills.get(name),
+                    skill_kwargs=extra_kwargs,
                 )
-            else:
-                tasks.append(
-                    self._run_agent(
-                        agent_name=name,
-                        base_messages=base_messages,
-                        instruction=prompt,
-                        model_config=model_config,
-                    )
-                )
+            )
 
         logger.info(
             "MultiAgentFilterService: starting 5 agents for symbol=%s title=%s",
@@ -510,7 +460,9 @@ class MultiAgentFilterService:
         merged = self._merge_agent_results(agent_responses)
 
         # ------------------------------------------------------------------
-        # 5b. Post-merge entity ticker validation
+        # 5b. Post-merge entity ticker validation (safety net)
+        # Normally done inside submit_entities skill, but needed for the
+        # fallback path where _run_agent() is used without tools.
         # ------------------------------------------------------------------
         if merged.entities:
             try:
@@ -610,8 +562,19 @@ class MultiAgentFilterService:
         base_messages: List[Message],
         instruction: str,
         model_config: Any,
+        all_tools: Optional[List[Any]] = None,
+        skill: Optional[Any] = None,
+        skill_kwargs: Optional[Dict[str, Any]] = None,
     ) -> _AgentResponse:
         """Run a single agent with shared prompt cache.
+
+        All agents receive the same ``all_tools`` list so the prompt prefix
+        (tools + system + article) is identical → prompt cache hits on
+        agents 2-5.  Each agent is forced to call its specific tool via
+        named ``tool_choice``.
+
+        When ``skill`` is None, falls back to free-text + JSON extraction
+        (legacy path, kept for resilience).
 
         Args:
             agent_name: Identifier for this agent (for logging/stats).
@@ -619,6 +582,10 @@ class MultiAgentFilterService:
                 (with cache_control already set).
             instruction: Agent-specific instruction prompt.
             model_config: ResolvedModelConfig from settings_service.
+            all_tools: Unified tools list shared by all agents (for cache).
+            skill: The specific BaseSkill this agent must call.
+            skill_kwargs: Extra kwargs to pass to ``skill.safe_execute()``
+                (e.g. ``db`` for entity_extractor).
 
         Returns:
             _AgentResponse with parsed JSON data and token usage.
@@ -632,10 +599,22 @@ class MultiAgentFilterService:
 
         gateway = get_llm_gateway()
 
+        # Build ChatRequest — with or without tool forcing
+        tools = None
+        tool_choice = None
+        if skill is not None:
+            tools = all_tools
+            tool_name = skill.definition().name
+            tool_choice = {
+                "type": "function",
+                "function": {"name": tool_name},
+            }
+
         chat_request = ChatRequest(
             model=model_config.model,
             messages=messages,
-            response_format={"type": "json_object"},
+            tools=tools,
+            tool_choice=tool_choice,
             temperature=0.3,
             timeout=AGENT_TIMEOUT,
         )
@@ -661,21 +640,81 @@ class MultiAgentFilterService:
                 completion_tokens = response.usage.completion_tokens
                 cached_tokens = response.usage.cached_tokens
 
-            # Parse JSON from response
-            content = response.content or ""
             data: dict = {}
-            try:
-                data = extract_json_from_response(content)
-            except (ValueError, Exception) as json_err:
-                logger.warning(
-                    "Agent '%s' JSON extraction failed: %s (%d chars)",
-                    agent_name, json_err, len(content),
-                )
+            raw_content = ""
+
+            if skill is not None and response.tool_calls:
+                # ── Tool-based path: read from tool_calls ──
+                tc = response.tool_calls[0]
+                expected_tool = skill.definition().name
+
+                # Verify the model called the correct tool
+                if tc.name != expected_tool:
+                    logger.warning(
+                        "Agent '%s': called '%s' instead of '%s' "
+                        "(proxy may not enforce named tool_choice)",
+                        agent_name, tc.name, expected_tool,
+                    )
+
+                try:
+                    args = json.loads(tc.arguments)
+                except (json.JSONDecodeError, TypeError, ValueError) as e:
+                    logger.warning(
+                        "Agent '%s': tool call args parse failed: %s",
+                        agent_name, e,
+                    )
+                    args = {}
+
+                if args:
+                    if tc.name == expected_tool:
+                        # Correct tool — run through skill validation
+                        try:
+                            extra = skill_kwargs or {}
+                            skill_result = await skill.safe_execute(
+                                timeout=60.0, **args, **extra,
+                            )
+                            if skill_result.success and skill_result.data:
+                                data = skill_result.data
+                            else:
+                                logger.warning(
+                                    "Agent '%s' skill failed: %s, using raw args",
+                                    agent_name, skill_result.error,
+                                )
+                                data = args
+                        except Exception as skill_err:
+                            logger.warning(
+                                "Agent '%s' skill error: %s, using raw args",
+                                agent_name, skill_err,
+                            )
+                            data = args
+                    else:
+                        # Wrong tool — use raw args as-is (best effort)
+                        data = args
+
+                raw_content = json.dumps(data, ensure_ascii=False)[:5000]
 
             if not data:
-                # Store raw content as fallback (useful for report_writer
-                # where the LLM may return raw markdown instead of JSON)
-                if content.strip():
+                # ── Free-text path: JSON extraction from content ──
+                content = response.content or ""
+                raw_content = content[:5000]
+
+                if skill is not None:
+                    # Forced tool_choice but no tool_calls — unexpected
+                    logger.warning(
+                        "Agent '%s': tool_choice=required but no tool_calls, "
+                        "trying content extraction (%d chars)",
+                        agent_name, len(content),
+                    )
+
+                try:
+                    data = extract_json_from_response(content)
+                except (ValueError, Exception) as json_err:
+                    logger.warning(
+                        "Agent '%s' JSON extraction failed: %s (%d chars)",
+                        agent_name, json_err, len(content),
+                    )
+
+                if not data and content.strip():
                     data = {"_raw_content": content.strip()}
                     logger.info(
                         "Agent '%s': stored raw content as fallback (%d chars)",
@@ -683,9 +722,8 @@ class MultiAgentFilterService:
                     )
 
             logger.debug(
-                "Agent '%s' completed: %d prompt tokens "
-                "(cached=%d), %d completion tokens, %.0fms, "
-                "keys=%s",
+                "Agent '%s' completed: %d prompt (cached=%d), "
+                "%d completion, %.0fms, keys=%s",
                 agent_name,
                 prompt_tokens,
                 cached_tokens,
@@ -697,7 +735,7 @@ class MultiAgentFilterService:
             return _AgentResponse(
                 agent_name=agent_name,
                 data=data,
-                raw_content=content[:5000],  # Retain for debugging (7d via pipeline_events)
+                raw_content=raw_content,
                 prompt_tokens=prompt_tokens,
                 completion_tokens=completion_tokens,
                 cached_tokens=cached_tokens,
@@ -720,365 +758,6 @@ class MultiAgentFilterService:
                 success=False,
                 error=str(e),
             )
-
-    async def _run_entity_extractor_with_tools(
-        self,
-        base_messages: List[Message],
-        instruction: str,
-        model_config: Any,
-        db: AsyncSession,
-    ) -> _AgentResponse:
-        """Run the entity extractor agent with function calling (tool use).
-
-        Unlike ``_run_agent()``, this method:
-        - Provides ``search_related_stocks`` + ``search_stocks`` as callable tools
-        - Does NOT use ``response_format={"type": "json_object"}``
-          (OpenAI disallows combining tools + response_format)
-        - Supports up to 3 tool call iterations (initial + 2 rounds)
-        - Falls back gracefully if the model doesn't support tools
-
-        Args:
-            base_messages: Shared system + article context messages.
-            instruction: Entity extraction prompt.
-            model_config: ResolvedModelConfig from settings_service.
-            db: Database session for executing the search skill.
-
-        Returns:
-            _AgentResponse with parsed entity data and token usage.
-        """
-        t0 = time.monotonic()
-        agent_name = "entity_extractor"
-
-        # Build tool definitions for both search skills
-        from app.skills.knowledge.search_related_stocks import SearchRelatedStocksSkill
-        from app.skills.market_data.search_stocks import SearchStocksSkill
-        from app.skills.chat_adapter import skill_to_tool_definition
-
-        related_skill = SearchRelatedStocksSkill()
-        search_skill = SearchStocksSkill()
-        tool_defs = [
-            skill_to_tool_definition(related_skill),
-            skill_to_tool_definition(search_skill),
-        ]
-
-        # Build messages: shared base + agent-specific instruction
-        messages = list(base_messages) + [
-            Message(role=Role.USER, content=instruction),
-        ]
-
-        gateway = get_llm_gateway()
-
-        # Accumulate token usage across iterations
-        total_prompt_tokens = 0
-        total_completion_tokens = 0
-        total_cached_tokens = 0
-        raw_contents: List[str] = []
-        had_tool_calls = False
-        max_iterations = 3  # initial call + up to 2 tool call rounds
-        entity_time_budget = 210.0  # seconds — agents run in parallel, Celery soft=480s
-
-        try:
-            for iteration in range(max_iterations):
-                # Guard: bail out if we've spent too long already
-                if (time.monotonic() - t0) > entity_time_budget:
-                    logger.info(
-                        "Entity extractor: time budget exceeded (%.0fs), "
-                        "stopping after %d iterations",
-                        time.monotonic() - t0, iteration,
-                    )
-                    break
-
-                chat_request = ChatRequest(
-                    model=model_config.model,
-                    messages=messages,
-                    tools=tool_defs,
-                    tool_choice="auto",
-                    temperature=0.3,
-                    timeout=AGENT_TIMEOUT,
-                    # Note: NO response_format — incompatible with tools
-                )
-
-                response = await gateway.chat(
-                    chat_request,
-                    system_api_key=model_config.api_key,
-                    system_base_url=model_config.base_url,
-                    use_user_config=False,
-                    purpose="layer3_analysis",
-                    usage_metadata={"agent": agent_name, "iteration": iteration},
-                )
-
-                # Accumulate tokens
-                if response.usage:
-                    total_prompt_tokens += response.usage.prompt_tokens
-                    total_completion_tokens += response.usage.completion_tokens
-                    total_cached_tokens += response.usage.cached_tokens
-
-                content = response.content or ""
-                if content:
-                    raw_contents.append(content)
-
-                # Check for tool calls
-                if not response.tool_calls:
-                    # No tool calls — LLM is done, parse the final response
-                    break
-
-                # Execute tool calls and append results to messages.
-                had_tool_calls = True
-                # ── Sanitize tool_calls ──
-                # Some models (DeepSeek, Qwen) produce concatenated JSON
-                # like {"query":"A"}{"query":"B"} — invalid for the API.
-                # We fix the arguments for the assistant message that gets
-                # re-sent, then combine the queries for execution.
-                raw_tool_calls = response.tool_calls
-                sanitized_tool_calls = []
-                for tc in raw_tool_calls:
-                    sanitized_args = tc.arguments
-                    try:
-                        json.loads(sanitized_args)
-                    except (json.JSONDecodeError, TypeError, ValueError):
-                        first_obj = _extract_first_json_object(sanitized_args)
-                        sanitized_args = (
-                            first_obj
-                            if first_obj
-                            else json.dumps({"query": sanitized_args[:500]})
-                        )
-                    sanitized_tool_calls.append(type(tc)(
-                        id=tc.id,
-                        name=tc.name,
-                        arguments=sanitized_args,
-                    ))
-
-                # Append assistant message with *sanitized* tool_calls
-                messages.append(Message(
-                    role=Role.ASSISTANT,
-                    content=content,
-                    tool_calls=sanitized_tool_calls,
-                ))
-
-                for tc_sanitized, tc_raw in zip(
-                    sanitized_tool_calls, raw_tool_calls
-                ):
-                    tool_name = tc_sanitized.name
-                    if tool_name not in (
-                        "search_related_stocks", "search_stocks"
-                    ):
-                        logger.warning(
-                            "Entity extractor called unexpected tool: %s",
-                            tool_name,
-                        )
-                        tool_result_content = json.dumps(
-                            {"error": f"Unknown tool: {tool_name}"}
-                        )
-                    else:
-                        # Parse sanitized arguments for execution
-                        try:
-                            args = json.loads(tc_sanitized.arguments)
-                        except (json.JSONDecodeError, TypeError):
-                            args = {"query": str(tc_sanitized.arguments)[:500]}
-
-                        # If the raw arguments were concatenated queries,
-                        # combine them into a single search query
-                        combined = _combine_concatenated_queries(
-                            tc_raw.arguments
-                        )
-                        if combined:
-                            args = {"query": combined}
-
-                        logger.info(
-                            "Entity extractor calling %s: %s",
-                            tool_name,
-                            args.get("query", "")[:100],
-                        )
-
-                        try:
-                            if tool_name == "search_related_stocks":
-                                # Use a fresh DB session to avoid event loop
-                                # conflicts in Celery workers where the parent
-                                # session may be on a different event loop.
-                                from app.db.task_session import get_task_session
-                                async with get_task_session() as skill_db:
-                                    skill_result = await related_skill.execute(
-                                        db=skill_db, **args
-                                    )
-                            else:
-                                # search_stocks uses in-memory index, no DB
-                                skill_result = await search_skill.execute(
-                                    **args
-                                )
-                            tool_result_content = json.dumps(
-                                skill_result.data if skill_result.success
-                                else {"error": skill_result.error},
-                                ensure_ascii=False,
-                            )
-                        except Exception as skill_err:
-                            logger.warning(
-                                "%s execution error: %s",
-                                tool_name,
-                                skill_err,
-                            )
-                            tool_result_content = json.dumps(
-                                {"error": str(skill_err)}
-                            )
-
-                    messages.append(Message(
-                        role=Role.TOOL,
-                        content=tool_result_content,
-                        tool_call_id=tc_sanitized.id,
-                    ))
-
-                logger.info(
-                    "Entity extractor iteration %d: %d tool calls processed",
-                    iteration, len(response.tool_calls),
-                )
-
-            # Parse final JSON from the last response content
-            elapsed_ms = (time.monotonic() - t0) * 1000
-            all_raw = "\n---\n".join(raw_contents)
-            data: dict = {}
-
-            try:
-                data = extract_json_from_response(content)
-            except (ValueError, Exception) as json_err:
-                logger.warning(
-                    "Entity extractor JSON extraction failed: %s (%d chars)",
-                    json_err, len(content),
-                )
-                # Try extracting from any accumulated raw content
-                for rc in reversed(raw_contents):
-                    try:
-                        data = extract_json_from_response(rc)
-                        if data:
-                            break
-                    except Exception:
-                        continue
-
-            # Recovery: if iterations used tool calls and we still have
-            # no valid JSON, make one final call WITHOUT tools to force the
-            # model to produce the structured entity output.
-            elapsed_so_far = time.monotonic() - t0
-            if not data and had_tool_calls and elapsed_so_far < entity_time_budget:
-                logger.info(
-                    "Entity extractor: no JSON after %d iterations, "
-                    "making recovery call without tools (%.0fs elapsed)",
-                    min(iteration + 1, max_iterations),
-                    elapsed_so_far,
-                )
-                try:
-                    recovery_request = ChatRequest(
-                        model=model_config.model,
-                        messages=messages + [
-                            Message(
-                                role=Role.USER,
-                                content=(
-                                    "Based on the search results above, "
-                                    "now output your final JSON response "
-                                    "with the entity extraction results."
-                                ),
-                            ),
-                        ],
-                        temperature=0.1,
-                        timeout=AGENT_TIMEOUT,
-                    )
-                    recovery_resp = await gateway.chat(
-                        recovery_request,
-                        system_api_key=model_config.api_key,
-                        system_base_url=model_config.base_url,
-                        use_user_config=False,
-                        purpose="layer3_analysis",
-                        usage_metadata={"agent": agent_name, "recovery": True},
-                    )
-                    if recovery_resp.usage:
-                        total_prompt_tokens += recovery_resp.usage.prompt_tokens
-                        total_completion_tokens += recovery_resp.usage.completion_tokens
-                        total_cached_tokens += recovery_resp.usage.cached_tokens
-                    recovery_content = recovery_resp.content or ""
-                    if recovery_content:
-                        raw_contents.append(recovery_content)
-                        all_raw = "\n---\n".join(raw_contents)
-                        try:
-                            data = extract_json_from_response(recovery_content)
-                        except Exception:
-                            pass
-                except Exception as recovery_err:
-                    logger.warning(
-                        "Entity extractor recovery call failed: %s",
-                        recovery_err,
-                    )
-
-            used_tools = had_tool_calls
-
-            elapsed_ms = (time.monotonic() - t0) * 1000
-            logger.info(
-                "Entity extractor completed: %d prompt tokens "
-                "(cached=%d), %d completion tokens, %.0fms, "
-                "iterations=%d, tool_calls=%s, has_data=%s",
-                total_prompt_tokens, total_cached_tokens,
-                total_completion_tokens, elapsed_ms,
-                min(iteration + 1, max_iterations),
-                "yes" if used_tools else "no",
-                "yes" if data else "no",
-            )
-
-            # If tool-calling approach produced no data, always fall back to
-            # standard extraction (without tools) which reliably produces
-            # structured JSON even without the knowledge base.
-            # _run_agent() is a single LLM call (~20s) — always worth trying.
-            if not data:
-                logger.info(
-                    "Entity extractor: tool approach produced no data after "
-                    "%.0fs, falling back to standard extraction",
-                    time.monotonic() - t0,
-                )
-                try:
-                    return await self._run_agent(
-                        agent_name=agent_name,
-                        base_messages=base_messages,
-                        instruction=instruction,
-                        model_config=model_config,
-                    )
-                except Exception as fb_err:
-                    logger.warning(
-                        "Entity extractor standard fallback failed: %s",
-                        fb_err,
-                    )
-
-            return _AgentResponse(
-                agent_name=agent_name,
-                data=data,
-                raw_content=all_raw[:5000],
-                prompt_tokens=total_prompt_tokens,
-                completion_tokens=total_completion_tokens,
-                cached_tokens=total_cached_tokens,
-                elapsed_ms=elapsed_ms,
-                success=bool(data),
-            )
-
-        except Exception as e:
-            elapsed_ms = (time.monotonic() - t0) * 1000
-            logger.error(
-                "Entity extractor with tools failed after %.0fms: %s",
-                elapsed_ms, e,
-            )
-            # Fallback: try running without tools (standard agent)
-            logger.info("Falling back to standard entity extraction (no tools)")
-            try:
-                return await self._run_agent(
-                    agent_name=agent_name,
-                    base_messages=base_messages,
-                    instruction=instruction,
-                    model_config=model_config,
-                )
-            except Exception as fallback_err:
-                logger.error(
-                    "Entity extractor fallback also failed: %s", fallback_err
-                )
-                return _AgentResponse(
-                    agent_name=agent_name,
-                    data={},
-                    elapsed_ms=elapsed_ms,
-                    success=False,
-                    error=str(e),
-                )
 
     def _merge_agent_results(
         self,
