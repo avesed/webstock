@@ -759,7 +759,8 @@ export const newsApi = {
       },
     })
     // Transform backend response to frontend PaginatedResponse format
-    const { news, total, page: currentPage, pageSize: size, hasMore } = response.data
+    const data = response.data ?? {} as Partial<FeedResponse>
+    const { news = [], total = 0, page: currentPage = page, pageSize: size = pageSize, hasMore = false } = data
     return {
       items: news,
       total,
@@ -790,7 +791,8 @@ export const newsApi = {
         ...(filters?.market ? { market: filters.market } : {}),
       },
     })
-    const { news, total, page: currentPage, pageSize: size, hasMore } = response.data
+    const mData = response.data ?? {} as Partial<MarketResponse>
+    const { news = [], total = 0, page: currentPage = page, pageSize: size = pageSize, hasMore = false } = mData
     return {
       items: news,
       total,

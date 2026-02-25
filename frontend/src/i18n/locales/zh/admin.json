@@ -179,7 +179,15 @@
       "cacheDescription": "启用 Prompt 缓存可节省高达90%的LLM成本",
       "cacheEnabled": "启用 Prompt 缓存",
       "cacheTtlMinutes": "缓存有效期（分钟）",
-      "cacheTtlMinutesHint": "缓存的 Prompt 在刷新之前保留的时间"
+      "cacheTtlMinutesHint": "缓存的 Prompt 在刷新之前保留的时间",
+      "agentModelsTitle": "L3 Agent 模型配置（高级）",
+      "agentModelsDescription": "为每个分析 Agent 单独配置模型。未配置的 Agent 将使用上方「Layer 3 深度分析」的模型。",
+      "newsEntity": "实体提取 (Entity)",
+      "newsSentiment": "情感分析 (Sentiment)",
+      "newsSummary": "摘要生成 (Summary)",
+      "newsImpact": "影响评估 (Impact)",
+      "newsReport": "报告撰写 (Report)",
+      "newsLightweightOverride": "轻量处理覆盖 (Override)"
     },
     "discussion": {
       "title": "讨论组设置",

@@ -224,7 +224,7 @@ export default function NewsCard({ article, compact = false, className, navigati
       )}
 
       {/* Tags row */}
-      {(article.symbol && article.symbol !== 'MARKET' || article.relatedEntities?.length || article.sentimentTag) && (
+      {((article.symbol && article.symbol !== 'MARKET') || (article.relatedEntities && article.relatedEntities.length > 0) || article.sentimentTag) && (
         <div className="flex flex-wrap items-center gap-1.5">
           {article.symbol && article.symbol !== 'MARKET' && (
             <span className="inline-flex items-center rounded-full bg-primary/10 px-2 py-0.5 text-[11px] font-medium text-primary">

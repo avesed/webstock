@@ -16,6 +16,35 @@ from app.models.user_settings import UserSettings
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
+# Purpose → (provider_id column, model column) mapping
+# Used by both resolve_model_provider() and resolve_model_with_fallback()
+# ---------------------------------------------------------------------------
+PURPOSE_MAP: Dict[str, tuple[str, str]] = {
+    "chat": ("chat_provider_id", "openai_model"),
+    "analysis": ("analysis_provider_id", "analysis_model"),
+    "synthesis": ("synthesis_provider_id", "synthesis_model"),
+    "embedding": ("embedding_provider_id", "embedding_model"),
+    "news_filter": ("news_filter_provider_id", "news_filter_model"),
+    "content_extraction": ("content_extraction_provider_id", "content_extraction_model"),
+    # Phase 2: 4-layer multi-agent architecture
+    "phase2_layer15_cleaning": ("phase2_layer15_cleaning_provider_id", "phase2_layer15_cleaning_model"),
+    "phase2_layer2_scoring": ("phase2_layer2_scoring_provider_id", "phase2_layer2_scoring_model"),
+    "phase2_layer2_analysis": ("phase2_layer2_analysis_provider_id", "phase2_layer2_analysis_model"),
+    "phase2_layer2_lightweight": ("phase2_layer2_lightweight_provider_id", "phase2_layer2_lightweight_model"),
+    # Layer 1: 3-agent scoring
+    "layer1_scoring": ("layer1_scoring_provider_id", "layer1_scoring_model"),
+    # L3 per-agent model overrides (NULL = fallback)
+    "news_entity": ("news_entity_provider_id", "news_entity_model"),
+    "news_sentiment": ("news_sentiment_provider_id", "news_sentiment_model"),
+    "news_summary": ("news_summary_provider_id", "news_summary_model"),
+    "news_impact": ("news_impact_provider_id", "news_impact_model"),
+    "news_report": ("news_report_provider_id", "news_report_model"),
+    "news_lightweight": ("news_lightweight_provider_id", "news_lightweight_model"),
+    # Discussion group
+    "discussion": ("discussion_provider_id", "discussion_model"),
+}
+
+# ---------------------------------------------------------------------------
 # Cached API-key resolver (no DB session required)
 # ---------------------------------------------------------------------------
 _SYSTEM_KEY_CACHE: Dict[str, Optional[str]] = {}
@@ -345,24 +374,7 @@ class SettingsService:
         """
         system = await self.get_system_settings(db)
 
-        # Map purpose to FK column and model column
-        purpose_map = {
-            "chat": ("chat_provider_id", "openai_model"),
-            "analysis": ("analysis_provider_id", "analysis_model"),
-            "synthesis": ("synthesis_provider_id", "synthesis_model"),
-            "embedding": ("embedding_provider_id", "embedding_model"),
-            "news_filter": ("news_filter_provider_id", "news_filter_model"),
-            "content_extraction": ("content_extraction_provider_id", "content_extraction_model"),
-            # Phase 2: 4-layer multi-agent architecture
-            "phase2_layer15_cleaning": ("phase2_layer15_cleaning_provider_id", "phase2_layer15_cleaning_model"),
-            "phase2_layer2_scoring": ("phase2_layer2_scoring_provider_id", "phase2_layer2_scoring_model"),
-            "phase2_layer2_analysis": ("phase2_layer2_analysis_provider_id", "phase2_layer2_analysis_model"),
-            "phase2_layer2_lightweight": ("phase2_layer2_lightweight_provider_id", "phase2_layer2_lightweight_model"),
-            # Layer 1: 3-agent scoring
-            "layer1_scoring": ("layer1_scoring_provider_id", "layer1_scoring_model"),
-            # Discussion group
-            "discussion": ("discussion_provider_id", "discussion_model"),
-        }
+        purpose_map = PURPOSE_MAP
 
         if purpose not in purpose_map:
             raise ValueError(f"Unknown purpose: {purpose}")
@@ -458,6 +470,70 @@ class SettingsService:
             provider_type=provider_type.value,
             api_key=api_key,
             base_url=base_url,
+        )
+
+    async def resolve_model_with_fallback(
+        self, db: AsyncSession, purposes: list[str]
+    ) -> ResolvedModelConfig:
+        """Try multiple purposes in order, returning the first that resolves.
+
+        This enables fallback chains like:
+            news_entity → phase2_layer2_analysis → news_filter → chat
+
+        A purpose is considered "not configured" if both its provider_id FK
+        and model name are NULL in system_settings.  In that case we skip
+        it and try the next purpose in the list.
+
+        Args:
+            db: Async database session
+            purposes: Ordered list of purpose strings to try.
+
+        Returns:
+            ResolvedModelConfig from the first purpose that resolves.
+
+        Raises:
+            ValueError: If none of the purposes can be resolved.
+        """
+        system = await self.get_system_settings(db)
+
+        purpose_map = PURPOSE_MAP
+
+        for purpose in purposes:
+            if purpose not in purpose_map:
+                logger.warning("Unknown purpose '%s' in fallback chain, skipping", purpose)
+                continue
+
+            provider_id_attr, model_attr = purpose_map[purpose]
+            provider_id = getattr(system, provider_id_attr, None)
+            model_name = getattr(system, model_attr, None)
+
+            # Skip if neither provider nor model is configured
+            if not provider_id and not model_name:
+                logger.debug(
+                    "Purpose '%s' not configured (both NULL), trying next fallback",
+                    purpose,
+                )
+                continue
+
+            # This purpose has some configuration — delegate to full resolution
+            try:
+                config = await self.resolve_model_provider(db, purpose)
+                logger.info(
+                    "模型解析: purpose='%s' → model='%s' (chain: %s)",
+                    purpose, config.model, " → ".join(purposes),
+                )
+                return config
+            except ValueError:
+                logger.info(
+                    "Purpose '%s' failed to resolve, trying next in chain: %s",
+                    purpose, " → ".join(purposes),
+                )
+                continue
+
+        # None of the purposes resolved — raise with the full chain for debugging
+        raise ValueError(
+            f"No model configured for any of: {' → '.join(purposes)}. "
+            f"Please configure at least one in Admin Settings."
         )
 
     async def get_langgraph_config(self, db: AsyncSession) -> LangGraphConfig:

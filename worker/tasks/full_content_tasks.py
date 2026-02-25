@@ -159,18 +159,29 @@ def batch_fetch_content(self, articles: List[Dict[str, Any]]):
 
 async def _batch_fetch_content_async(articles: List[Dict[str, Any]]) -> Dict[str, Any]:
     """Async implementation of batch content fetching with controlled concurrency."""
+    from app.core.request_id import request_id_var, get_request_id_short
+
     if not articles:
         logger.info("batch_fetch: empty batch, skipping")
         return {"status": "skipped", "reason": "empty_batch"}
 
     sem = asyncio.Semaphore(3)
     FETCH_DELAY = 1.0
+    batch_rid = get_request_id_short()  # e.g. "a1b2c3d4" or "-"
 
     async def fetch_one(article: Dict[str, Any]) -> Dict[str, Any]:
-        async with sem:
-            result = await _fetch_single_article(article)
-            await asyncio.sleep(FETCH_DELAY)
-            return result
+        # Set per-article request_id for traceable logging
+        news_id = article.get("news_id", "?")
+        short_nid = str(news_id)[:8]
+        article_rid = f"{batch_rid}-{short_nid}"
+        token = request_id_var.set(article_rid)
+        try:
+            async with sem:
+                result = await _fetch_single_article(article)
+                await asyncio.sleep(FETCH_DELAY)
+                return result
+        finally:
+            request_id_var.reset(token)
 
     logger.info("内容抓取：开始%d篇", len(articles))
 

@@ -167,7 +167,7 @@ class News(Base):
 
     # === 关联实体字段（LLM提取） ===
     related_entities: Mapped[Optional[list]] = mapped_column(
-        JSON,
+        JSONB,
         nullable=True,
         comment="关联实体及评分，格式: [{entity, type, score}, ...]",
     )
@@ -293,6 +293,9 @@ class News(Base):
         Index("ix_news_stock_entities_score", "has_stock_entities", "max_entity_score"),
         Index("ix_news_macro_entities_score", "has_macro_entities", "max_entity_score"),
         Index("ix_news_primary_entity", "primary_entity", "primary_entity_type"),
+        # Market news listing: WHERE market=X AND content_status=Y ORDER BY published_at DESC
+        # (created via migration 029; string columns here for Alembic alignment)
+        Index("ix_news_market_status_published", "market", "content_status", "published_at"),
     )
 
     def __repr__(self) -> str:

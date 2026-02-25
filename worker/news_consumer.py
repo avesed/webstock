@@ -161,9 +161,13 @@ class NewsConsumer:
                     message.get("task_type"), self._get_message_key(message),
                 )
                 await self._semaphore.acquire()
-                task = asyncio.create_task(
-                    self._process_with_isolation(message)
-                )
+                try:
+                    task = asyncio.create_task(
+                        self._process_with_isolation(message)
+                    )
+                except Exception:
+                    self._semaphore.release()
+                    raise
                 self._tasks.add(task)
                 task.add_done_callback(self._tasks.discard)
 

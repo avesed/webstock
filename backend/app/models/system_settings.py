@@ -431,6 +431,80 @@ class SystemSettings(Base):
         comment="Provider for MCP content extraction model",
     )
 
+    # === L3 Per-Agent Model Configuration ===
+    # NULL = fallback to phase2_layer2_analysis/lightweight general config
+    news_entity_provider_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("llm_providers.id", ondelete="SET NULL"),
+        nullable=True,
+        comment="L3实体提取Agent使用的Provider",
+    )
+    news_entity_model: Mapped[Optional[str]] = mapped_column(
+        String(100),
+        nullable=True,
+        comment="L3实体提取Agent模型名称",
+    )
+
+    news_sentiment_provider_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("llm_providers.id", ondelete="SET NULL"),
+        nullable=True,
+        comment="L3情感分析Agent使用的Provider",
+    )
+    news_sentiment_model: Mapped[Optional[str]] = mapped_column(
+        String(100),
+        nullable=True,
+        comment="L3情感分析Agent模型名称",
+    )
+
+    news_summary_provider_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("llm_providers.id", ondelete="SET NULL"),
+        nullable=True,
+        comment="L3摘要生成Agent使用的Provider",
+    )
+    news_summary_model: Mapped[Optional[str]] = mapped_column(
+        String(100),
+        nullable=True,
+        comment="L3摘要生成Agent模型名称",
+    )
+
+    news_impact_provider_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("llm_providers.id", ondelete="SET NULL"),
+        nullable=True,
+        comment="L3影响评估Agent使用的Provider",
+    )
+    news_impact_model: Mapped[Optional[str]] = mapped_column(
+        String(100),
+        nullable=True,
+        comment="L3影响评估Agent模型名称",
+    )
+
+    news_report_provider_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("llm_providers.id", ondelete="SET NULL"),
+        nullable=True,
+        comment="L3报告撰写Agent使用的Provider",
+    )
+    news_report_model: Mapped[Optional[str]] = mapped_column(
+        String(100),
+        nullable=True,
+        comment="L3报告撰写Agent模型名称",
+    )
+
+    news_lightweight_provider_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("llm_providers.id", ondelete="SET NULL"),
+        nullable=True,
+        comment="L3轻量处理Agent使用的Provider",
+    )
+    news_lightweight_model: Mapped[Optional[str]] = mapped_column(
+        String(100),
+        nullable=True,
+        comment="L3轻量处理Agent模型名称",
+    )
+
     # === Audit Fields ===
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
@@ -461,6 +535,12 @@ class SystemSettings(Base):
     phase2_layer2_lightweight_provider = relationship("LlmProvider", foreign_keys=[phase2_layer2_lightweight_provider_id])
     layer1_scoring_provider = relationship("LlmProvider", foreign_keys=[layer1_scoring_provider_id])
     discussion_provider = relationship("LlmProvider", foreign_keys=[discussion_provider_id])
+    news_entity_provider = relationship("LlmProvider", foreign_keys=[news_entity_provider_id])
+    news_sentiment_provider = relationship("LlmProvider", foreign_keys=[news_sentiment_provider_id])
+    news_summary_provider = relationship("LlmProvider", foreign_keys=[news_summary_provider_id])
+    news_impact_provider = relationship("LlmProvider", foreign_keys=[news_impact_provider_id])
+    news_report_provider = relationship("LlmProvider", foreign_keys=[news_report_provider_id])
+    news_lightweight_provider = relationship("LlmProvider", foreign_keys=[news_lightweight_provider_id])
 
     def __repr__(self) -> str:
         return f"<SystemSettings(id={self.id}, updated_at={self.updated_at})>"

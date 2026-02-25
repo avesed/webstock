@@ -22,6 +22,7 @@ import json
 import logging
 import re
 import time
+from collections import defaultdict
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
@@ -231,6 +232,15 @@ AGENT_PROMPTS: Dict[str, str] = {
     "summary_generator": SUMMARY_GENERATION_PROMPT,
     "impact_assessor": IMPACT_ASSESSMENT_PROMPT,
     "report_writer": REPORT_WRITING_PROMPT,
+}
+
+# Agent name → fallback purpose chain for model resolution
+AGENT_PURPOSE_CHAINS: Dict[str, list] = {
+    "entity_extractor": ["news_entity", "phase2_layer2_analysis", "news_filter"],
+    "sentiment_tags": ["news_sentiment", "phase2_layer2_analysis", "news_filter"],
+    "summary_generator": ["news_summary", "phase2_layer2_analysis", "news_filter"],
+    "impact_assessor": ["news_impact", "phase2_layer2_analysis", "news_filter"],
+    "report_writer": ["news_report", "phase2_layer2_analysis", "news_filter"],
 }
 
 # ---------------------------------------------------------------------------
@@ -447,28 +457,42 @@ class MultiAgentFilterService:
         t0 = time.monotonic()
 
         # ------------------------------------------------------------------
-        # 1. Resolve model config
+        # 1. Resolve per-agent model configs (with fallback chain)
         # ------------------------------------------------------------------
         from app.services.settings_service import get_settings_service
 
         settings_service = get_settings_service()
 
-        try:
-            model_config = await settings_service.resolve_model_provider(
-                db, "phase2_layer2_analysis"
+        agent_configs: Dict[str, Any] = {}  # agent_name -> ResolvedModelConfig
+        for agent_name in AGENT_PROMPTS:
+            chain = AGENT_PURPOSE_CHAINS.get(
+                agent_name, ["phase2_layer2_analysis", "news_filter"]
             )
-        except ValueError as e:
-            logger.error(
-                "MultiAgentFilterService: cannot resolve model config: %s", e
-            )
-            return self._empty_result(error_reason=str(e))
+            try:
+                agent_configs[agent_name] = (
+                    await settings_service.resolve_model_with_fallback(db, chain)
+                )
+            except ValueError as e:
+                logger.error(
+                    "Cannot resolve model for agent '%s': %s", agent_name, e
+                )
+                return self._empty_result(error_reason=str(e))
 
-        if not model_config.api_key:
+        # Log model assignment summary (CRITICAL for debugging)
+        model_map = {name: cfg.model for name, cfg in agent_configs.items()}
+        logger.info(
+            "L3深度分析模型分配: %s",
+            model_map,
+        )
+
+        # Check at least one has a valid API key
+        first_config = next(iter(agent_configs.values()))
+        if not first_config.api_key:
             logger.error(
-                "MultiAgentFilterService: no API key for phase2_layer2_analysis purpose"
+                "MultiAgentFilterService: no API key available"
             )
             return self._empty_result(
-                error_reason="No API key configured for news_filter"
+                error_reason="No API key configured for news analysis"
             )
 
         # ------------------------------------------------------------------
@@ -501,12 +525,29 @@ class MultiAgentFilterService:
         ]
 
         # ------------------------------------------------------------------
-        # 3. Run 5 agents in parallel (json_schema strict mode, no tools)
+        # 3. Group agents by model for prompt cache sharing
         # ------------------------------------------------------------------
-        # All 5 agents share the same message prefix (system + article)
-        # which is cached.  Each agent has its own json_schema in
-        # response_format — this does NOT affect the cache key, so all
-        # 5 agents benefit from prompt caching.
+        # Agents using the same model+endpoint share the cache prefix.
+        model_groups: Dict[str, list] = defaultdict(list)
+        for agent_name in AGENT_PROMPTS:
+            cfg = agent_configs[agent_name]
+            cache_key = f"{cfg.model}|{cfg.base_url or ''}"
+            model_groups[cache_key].append(agent_name)
+
+        if len(model_groups) > 1:
+            logger.warning(
+                "L3 Prompt缓存效率降低: %d个模型组（不同模型间无法共享缓存）: %s",
+                len(model_groups),
+                {k: v for k, v in model_groups.items()},
+            )
+
+        # ------------------------------------------------------------------
+        # 4. Run 5 agents in parallel (json_schema strict mode, no tools)
+        # ------------------------------------------------------------------
+        # All agents sharing the same model+endpoint share the cached
+        # message prefix (system + article context).  Each agent has its
+        # own json_schema in response_format -- this does NOT affect the
+        # cache key, so different schemas still share cache.
 
         tasks = []
         for name, prompt in AGENT_PROMPTS.items():
@@ -515,7 +556,7 @@ class MultiAgentFilterService:
                     agent_name=name,
                     base_messages=base_messages,
                     instruction=prompt,
-                    model_config=model_config,
+                    model_config=agent_configs[name],
                     response_schema=AGENT_SCHEMAS.get(name),
                     db=db if name == "entity_extractor" else None,
                 )
@@ -530,7 +571,7 @@ class MultiAgentFilterService:
         raw_results = await asyncio.gather(*tasks, return_exceptions=True)
 
         # ------------------------------------------------------------------
-        # 4. Collect agent responses, handle failures
+        # 5. Collect agent responses, handle failures
         # ------------------------------------------------------------------
         agent_responses: Dict[str, _AgentResponse] = {}
         for name, result in zip(AGENT_PROMPTS.keys(), raw_results):
@@ -565,12 +606,12 @@ class MultiAgentFilterService:
             )
 
         # ------------------------------------------------------------------
-        # 5. Merge results
+        # 6. Merge results
         # ------------------------------------------------------------------
         merged = self._merge_agent_results(agent_responses)
 
         # ------------------------------------------------------------------
-        # 5b. Post-merge entity ticker validation (safety net)
+        # 6b. Post-merge entity ticker validation (safety net)
         # Normally done inside submit_entities skill, but needed for the
         # fallback path where _run_agent() is used without tools.
         # ------------------------------------------------------------------
@@ -591,7 +632,7 @@ class MultiAgentFilterService:
                 )
 
         # ------------------------------------------------------------------
-        # 6. Compute cache statistics
+        # 7. Compute cache statistics
         # ------------------------------------------------------------------
         total_prompt = sum(r.prompt_tokens for r in agent_responses.values())
         total_completion = sum(
@@ -613,6 +654,7 @@ class MultiAgentFilterService:
             "agents_succeeded": succeeded,
             "agents_failed": failed,
             "elapsed_ms": round((time.monotonic() - t0) * 1000, 1),
+            "model_groups": {k: v for k, v in model_groups.items()},
             "per_agent": {
                 name: {
                     "success": resp.success,
@@ -620,6 +662,7 @@ class MultiAgentFilterService:
                     "prompt_tokens": resp.prompt_tokens,
                     "cached_tokens": resp.cached_tokens,
                     "completion_tokens": resp.completion_tokens,
+                    "model": agent_configs[name].model,
                     "raw_output": resp.raw_content,
                 }
                 for name, resp in agent_responses.items()
@@ -655,11 +698,13 @@ class MultiAgentFilterService:
         elapsed_total = (time.monotonic() - t0) * 1000
         logger.info(
             "MultiAgentFilterService complete: symbol=%s, "
-            "tokens=%d (cached=%d, hit_rate=%.1f%%), elapsed=%.0fms",
+            "tokens=%d (cached=%d, hit_rate=%.1f%%), "
+            "models=%d, elapsed=%.0fms",
             symbol,
             total_tokens,
             total_cached,
             cache_hit_rate * 100,
+            len(model_groups),
             elapsed_total,
         )
 

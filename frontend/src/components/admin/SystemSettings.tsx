@@ -37,8 +37,15 @@ const DEFAULT_PHASE2_CONFIG: Phase2Config = {
   fullAnalysisThreshold: 195,
   layer1Scoring: { providerId: null, model: 'gpt-4o-mini' },
   layer15Cleaning: { providerId: null, model: 'gpt-4o' },
+  layer2Scoring: { providerId: null, model: 'gpt-4o-mini' },
   layer2Analysis: { providerId: null, model: 'gpt-4o' },
   layer2Lightweight: { providerId: null, model: 'gpt-4o-mini' },
+  newsEntity: null,
+  newsSentiment: null,
+  newsSummary: null,
+  newsImpact: null,
+  newsReport: null,
+  newsLightweightOverride: null,
   cacheEnabled: true,
   cacheTtlMinutes: 60,
 }
@@ -286,21 +293,30 @@ export function SystemSettings() {
   }, [])
 
   // Phase 2 layer model changes (from News tab)
+  // L3 agent override keys — these can be set to null to inherit from layer2Analysis
+  const L3_OVERRIDE_KEYS = new Set(['newsEntity', 'newsSentiment', 'newsSummary', 'newsImpact', 'newsReport', 'newsLightweightOverride'])
+
   const handlePhase2LayerChange = useCallback((
-    layer: 'layer1Scoring' | 'layer15Cleaning' | 'layer2Analysis' | 'layer2Lightweight',
+    layer: 'layer1Scoring' | 'layer15Cleaning' | 'layer2Analysis' | 'layer2Lightweight' | 'newsEntity' | 'newsSentiment' | 'newsSummary' | 'newsImpact' | 'newsReport' | 'newsLightweightOverride',
     field: 'providerId' | 'model',
     value: string | null
   ) => {
     setFormData((prev) => {
       const phase2 = prev.phase2 ?? DEFAULT_PHASE2_CONFIG
+      const current = phase2[layer] ?? { providerId: null, model: '' }
+      const updated = {
+        ...current,
+        [field]: field === 'providerId' ? value : (value ?? ''),
+      }
+      // For L3 override keys: if both providerId and model are empty, set to null
+      // so the backend interprets it as "inherit from layer2Analysis default"
+      const isL3 = L3_OVERRIDE_KEYS.has(layer)
+      const isEmpty = !updated.providerId && !updated.model
       return {
         ...prev,
         phase2: {
           ...phase2,
-          [layer]: {
-            ...phase2[layer],
-            [field]: field === 'providerId' ? value : (value ?? ''),
-          },
+          [layer]: isL3 && isEmpty ? null : updated,
         },
       }
     })
@@ -406,6 +422,12 @@ export function SystemSettings() {
           layer15Cleaning: (config.phase2 ?? DEFAULT_PHASE2_CONFIG).layer15Cleaning,
           layer2Analysis: (config.phase2 ?? DEFAULT_PHASE2_CONFIG).layer2Analysis,
           layer2Lightweight: (config.phase2 ?? DEFAULT_PHASE2_CONFIG).layer2Lightweight,
+          newsEntity: (config.phase2 ?? DEFAULT_PHASE2_CONFIG).newsEntity,
+          newsSentiment: (config.phase2 ?? DEFAULT_PHASE2_CONFIG).newsSentiment,
+          newsSummary: (config.phase2 ?? DEFAULT_PHASE2_CONFIG).newsSummary,
+          newsImpact: (config.phase2 ?? DEFAULT_PHASE2_CONFIG).newsImpact,
+          newsReport: (config.phase2 ?? DEFAULT_PHASE2_CONFIG).newsReport,
+          newsLightweightOverride: (config.phase2 ?? DEFAULT_PHASE2_CONFIG).newsLightweightOverride,
         },
       }))
       setHasNewsChanges(false)
@@ -733,6 +755,34 @@ export function SystemSettings() {
                         ))}
                       </div>
                     )}
+
+                    {/* L3 Per-Agent Model Overrides (Advanced) */}
+                    <details className="mt-4">
+                      <summary className="cursor-pointer text-sm font-medium text-muted-foreground hover:text-foreground">
+                        {t('settings.phase2.agentModelsTitle' as never)}
+                      </summary>
+                      <div className="mt-3 space-y-4 pl-2 border-l-2 border-muted">
+                        <p className="text-xs text-muted-foreground">
+                          {t('settings.phase2.agentModelsDescription' as never)}
+                        </p>
+                        {enabledProviders.length > 0 && (
+                          <div className="space-y-4">
+                            {(['newsEntity', 'newsSentiment', 'newsSummary', 'newsImpact', 'newsReport', 'newsLightweightOverride'] as const).map((layer) => (
+                              <ModelSelectorRow
+                                key={layer}
+                                label={t(`settings.phase2.${layer}` as never)}
+                                providerId={phase2[layer]?.providerId ?? null}
+                                model={phase2[layer]?.model ?? ''}
+                                providers={enabledProviders}
+                                onProviderChange={(id) => handlePhase2LayerChange(layer, 'providerId', id)}
+                                onModelChange={(m) => handlePhase2LayerChange(layer, 'model', m)}
+                                t={t}
+                              />
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    </details>
                   </div>
                 </div>
 

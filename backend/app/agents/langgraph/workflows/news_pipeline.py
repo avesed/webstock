@@ -461,7 +461,11 @@ async def update_db_node(state: NewsProcessingState) -> dict:
 
     try:
         async with get_task_session() as db:
-            query = select(News).where(News.id == uuid.UUID(news_id))
+            query = (
+                select(News)
+                .where(News.id == uuid.UUID(news_id))
+                .with_for_update()
+            )
             res = await db.execute(query)
             news = res.scalar_one_or_none()
             if not news:

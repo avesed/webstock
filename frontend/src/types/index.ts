@@ -777,8 +777,16 @@ export interface Phase2Config {
   fullAnalysisThreshold: number
   layer1Scoring: Phase2ModelAssignment
   layer15Cleaning: Phase2ModelAssignment
+  layer2Scoring: Phase2ModelAssignment
   layer2Analysis: Phase2ModelAssignment
   layer2Lightweight: Phase2ModelAssignment
+  // L3 per-agent model overrides (null = use layer2Analysis fallback)
+  newsEntity: Phase2ModelAssignment | null
+  newsSentiment: Phase2ModelAssignment | null
+  newsSummary: Phase2ModelAssignment | null
+  newsImpact: Phase2ModelAssignment | null
+  newsReport: Phase2ModelAssignment | null
+  newsLightweightOverride: Phase2ModelAssignment | null
   cacheEnabled: boolean
   cacheTtlMinutes: number
 }

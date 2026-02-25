@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState } from 'react'
+import { Component, useMemo, useRef, useState, type ReactNode } from 'react'
 import { useParams, useLocation, useNavigate, Link } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
 import { useTranslation } from 'react-i18next'
@@ -23,6 +23,21 @@ interface LocationState {
   origin?: string
 }
 
+/** Lightweight error boundary for markdown rendering — shows raw text on failure */
+class MarkdownErrorBoundary extends Component<
+  { fallbackText: string; children: ReactNode },
+  { hasError: boolean }
+> {
+  state = { hasError: false }
+  static getDerivedStateFromError() { return { hasError: true } }
+  override render() {
+    if (this.state.hasError) {
+      return <pre className="whitespace-pre-wrap text-sm text-muted-foreground">{this.props.fallbackText}</pre>
+    }
+    return this.props.children
+  }
+}
+
 export default function NewsReaderPage() {
   const { newsId } = useParams<{ newsId: string }>()
   const location = useLocation()
@@ -41,6 +56,8 @@ export default function NewsReaderPage() {
     queryFn: () => newsApi.getArticle(newsId!),
     enabled: !passedArticle && !!newsId,
     staleTime: 5 * 60 * 1000,
+    retry: 2,
+    retryDelay: (attempt) => Math.min(1000 * 2 ** attempt, 8000),
   })
 
   const article = passedArticle ?? fetchedArticle
@@ -281,9 +298,11 @@ export default function NewsReaderPage() {
         {tabs.includes('analysis') && (
           <TabsContent value="analysis">
             <div className="prose prose-lg dark:prose-invert max-w-none">
-              <ReactMarkdown remarkPlugins={[remarkGfm]}>
-                {article.aiAnalysis ?? ''}
-              </ReactMarkdown>
+              <MarkdownErrorBoundary fallbackText={article.aiAnalysis ?? ''}>
+                <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                  {article.aiAnalysis ?? ''}
+                </ReactMarkdown>
+              </MarkdownErrorBoundary>
             </div>
           </TabsContent>
         )}

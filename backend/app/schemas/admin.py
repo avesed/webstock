@@ -249,6 +249,13 @@ class Phase2Config(CamelModel):
     layer2_scoring: Phase2ModelAssignment = Phase2ModelAssignment(model="gpt-4o-mini")
     layer2_analysis: Phase2ModelAssignment = Phase2ModelAssignment(model="gpt-4o")
     layer2_lightweight: Phase2ModelAssignment = Phase2ModelAssignment(model="gpt-4o-mini")
+    # L3 per-agent model overrides (null = use layer2Analysis fallback)
+    news_entity: Optional[Phase2ModelAssignment] = None
+    news_sentiment: Optional[Phase2ModelAssignment] = None
+    news_summary: Optional[Phase2ModelAssignment] = None
+    news_impact: Optional[Phase2ModelAssignment] = None
+    news_report: Optional[Phase2ModelAssignment] = None
+    news_lightweight_override: Optional[Phase2ModelAssignment] = None
     cache_enabled: bool = True
     cache_ttl_minutes: int = 60
 

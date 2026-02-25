@@ -179,7 +179,15 @@
       "cacheDescription": "Enable prompt caching to reduce LLM costs by up to 90%",
       "cacheEnabled": "Enable Prompt Caching",
       "cacheTtlMinutes": "Cache TTL (minutes)",
-      "cacheTtlMinutesHint": "How long to keep cached prompts before refreshing"
+      "cacheTtlMinutesHint": "How long to keep cached prompts before refreshing",
+      "agentModelsTitle": "L3 Agent Models (Advanced)",
+      "agentModelsDescription": "Configure models per analysis agent. Unconfigured agents use the Layer 3 Analysis model above.",
+      "newsEntity": "Entity Extraction",
+      "newsSentiment": "Sentiment Analysis",
+      "newsSummary": "Summary Generation",
+      "newsImpact": "Impact Assessment",
+      "newsReport": "Report Writing",
+      "newsLightweightOverride": "Lightweight Override"
     },
     "discussion": {
       "title": "Discussion Group",

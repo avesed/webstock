@@ -551,13 +551,28 @@ class Layer1ScoringService:
             ]
             raw_results = await asyncio.gather(*tasks, return_exceptions=True)
 
+            failed_agents: List[str] = []
             for item in raw_results:
                 if isinstance(item, Exception):
                     logger.error("[Layer1] Agent task raised exception: %s", item)
+                    failed_agents.append(str(item))
                     continue
                 agent_name, parsed, raw = item
                 agent_results_map[agent_name] = parsed
                 agent_raw_map[agent_name] = raw
+
+            # Check agent completeness — log missing agents for observability
+            missing_agents = [
+                name for name in self.AGENT_NAMES
+                if name not in agent_results_map
+            ]
+            if missing_agents:
+                logger.warning(
+                    "[Layer1] %d/%d agents failed (%s), scores will use "
+                    "fail-open defaults for missing agents",
+                    len(missing_agents), len(self.AGENT_NAMES),
+                    ", ".join(missing_agents),
+                )
 
         # --- 5. Assemble per-article results ---
         results: List[Layer1ScoringResult] = []
@@ -617,6 +632,8 @@ class Layer1ScoringService:
                     f"{s.agent}={s.score}({s.tier})" for s in agent_scores.values()
                 ]
                 reasoning = f"total={total_score}, {', '.join(reasoning_parts)}"
+                if missing_agents:
+                    reasoning += f" [failOpen: {','.join(missing_agents)}]"
 
                 results.append(Layer1ScoringResult(
                     url=url,

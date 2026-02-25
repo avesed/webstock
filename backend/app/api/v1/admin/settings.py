@@ -425,6 +425,31 @@ async def get_system_config(
                 provider_id=str(settings.phase2_layer2_lightweight_provider_id) if getattr(settings, 'phase2_layer2_lightweight_provider_id', None) else None,
                 model=getattr(settings, 'phase2_layer2_lightweight_model', '') or 'gpt-4o-mini',
             ),
+            # L3 per-agent overrides (None if not configured)
+            news_entity=Phase2ModelAssignment(
+                provider_id=str(settings.news_entity_provider_id) if getattr(settings, 'news_entity_provider_id', None) else None,
+                model=getattr(settings, 'news_entity_model', '') or '',
+            ) if getattr(settings, 'news_entity_provider_id', None) or getattr(settings, 'news_entity_model', None) else None,
+            news_sentiment=Phase2ModelAssignment(
+                provider_id=str(settings.news_sentiment_provider_id) if getattr(settings, 'news_sentiment_provider_id', None) else None,
+                model=getattr(settings, 'news_sentiment_model', '') or '',
+            ) if getattr(settings, 'news_sentiment_provider_id', None) or getattr(settings, 'news_sentiment_model', None) else None,
+            news_summary=Phase2ModelAssignment(
+                provider_id=str(settings.news_summary_provider_id) if getattr(settings, 'news_summary_provider_id', None) else None,
+                model=getattr(settings, 'news_summary_model', '') or '',
+            ) if getattr(settings, 'news_summary_provider_id', None) or getattr(settings, 'news_summary_model', None) else None,
+            news_impact=Phase2ModelAssignment(
+                provider_id=str(settings.news_impact_provider_id) if getattr(settings, 'news_impact_provider_id', None) else None,
+                model=getattr(settings, 'news_impact_model', '') or '',
+            ) if getattr(settings, 'news_impact_provider_id', None) or getattr(settings, 'news_impact_model', None) else None,
+            news_report=Phase2ModelAssignment(
+                provider_id=str(settings.news_report_provider_id) if getattr(settings, 'news_report_provider_id', None) else None,
+                model=getattr(settings, 'news_report_model', '') or '',
+            ) if getattr(settings, 'news_report_provider_id', None) or getattr(settings, 'news_report_model', None) else None,
+            news_lightweight_override=Phase2ModelAssignment(
+                provider_id=str(settings.news_lightweight_provider_id) if getattr(settings, 'news_lightweight_provider_id', None) else None,
+                model=getattr(settings, 'news_lightweight_model', '') or '',
+            ) if getattr(settings, 'news_lightweight_provider_id', None) or getattr(settings, 'news_lightweight_model', None) else None,
             cache_enabled=getattr(settings, 'phase2_cache_enabled', True),
             cache_ttl_minutes=getattr(settings, 'phase2_cache_ttl_minutes', 60),
         ),
@@ -559,6 +584,37 @@ async def update_system_config(
         if p2.layer2_lightweight:
             settings.phase2_layer2_lightweight_model = p2.layer2_lightweight.model or None
             settings.phase2_layer2_lightweight_provider_id = UUID(p2.layer2_lightweight.provider_id) if p2.layer2_lightweight.provider_id else None
+        # L3 per-agent model overrides (with audit logging)
+        _l3_changes = []
+        if p2.news_entity:
+            settings.news_entity_model = p2.news_entity.model or None
+            settings.news_entity_provider_id = UUID(p2.news_entity.provider_id) if p2.news_entity.provider_id else None
+            _l3_changes.append(f"entity={p2.news_entity.model or 'cleared'}")
+        if p2.news_sentiment:
+            settings.news_sentiment_model = p2.news_sentiment.model or None
+            settings.news_sentiment_provider_id = UUID(p2.news_sentiment.provider_id) if p2.news_sentiment.provider_id else None
+            _l3_changes.append(f"sentiment={p2.news_sentiment.model or 'cleared'}")
+        if p2.news_summary:
+            settings.news_summary_model = p2.news_summary.model or None
+            settings.news_summary_provider_id = UUID(p2.news_summary.provider_id) if p2.news_summary.provider_id else None
+            _l3_changes.append(f"summary={p2.news_summary.model or 'cleared'}")
+        if p2.news_impact:
+            settings.news_impact_model = p2.news_impact.model or None
+            settings.news_impact_provider_id = UUID(p2.news_impact.provider_id) if p2.news_impact.provider_id else None
+            _l3_changes.append(f"impact={p2.news_impact.model or 'cleared'}")
+        if p2.news_report:
+            settings.news_report_model = p2.news_report.model or None
+            settings.news_report_provider_id = UUID(p2.news_report.provider_id) if p2.news_report.provider_id else None
+            _l3_changes.append(f"report={p2.news_report.model or 'cleared'}")
+        if p2.news_lightweight_override:
+            settings.news_lightweight_model = p2.news_lightweight_override.model or None
+            settings.news_lightweight_provider_id = UUID(p2.news_lightweight_override.provider_id) if p2.news_lightweight_override.provider_id else None
+            _l3_changes.append(f"lightweight={p2.news_lightweight_override.model or 'cleared'}")
+        if _l3_changes:
+            logger.info(
+                "[AUDIT] Admin %s 更新L3 Agent模型配置: %s",
+                admin.email, ", ".join(_l3_changes),
+            )
         if p2.cache_enabled is not None:
             settings.phase2_cache_enabled = p2.cache_enabled
         if p2.cache_ttl_minutes is not None:

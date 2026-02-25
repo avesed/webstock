@@ -37,6 +37,8 @@ export default function NewsFeed({
   const loadMoreRef = useRef<HTMLDivElement>(null)
   const isMobile = useIsMobile()
 
+  const containerRef = useRef<HTMLDivElement>(null)
+
   const {
     data,
     isLoading,
@@ -71,6 +73,7 @@ export default function NewsFeed({
     },
     getNextPageParam: (lastPage) => {
       if (mode === 'trending') return undefined
+      // Use totalPages directly — derived from backend's hasMore flag
       if (lastPage.page < lastPage.totalPages) {
         return lastPage.page + 1
       }
@@ -78,6 +81,8 @@ export default function NewsFeed({
     },
     initialPageParam: 1,
     enabled: mode !== 'symbol' || !!symbol,
+    // Show previous data while new filter results load (avoids flash of empty)
+    placeholderData: (prev) => prev,
   })
 
   // Intersection observer for infinite scroll
@@ -97,6 +102,11 @@ export default function NewsFeed({
 
     return () => observer.disconnect()
   }, [fetchNextPage, hasNextPage, isFetchingNextPage])
+
+  // Scroll to top when filters change (new query starts)
+  useEffect(() => {
+    containerRef.current?.scrollTo({ top: 0 })
+  }, [filters?.search, filters?.sentimentTag, filters?.market])
 
   const handleSymbolClick = (clickedSymbol: string) => {
     navigate(`/stock/${clickedSymbol}`)
@@ -186,6 +196,7 @@ export default function NewsFeed({
   if (maxHeight) {
     return (
       <div
+        ref={containerRef}
         style={{ maxHeight }}
         className={cn('overflow-y-auto pr-2 scrollbar-thin scrollbar-thumb-border scrollbar-track-transparent', className)}
       >

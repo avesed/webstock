@@ -97,12 +97,13 @@ class LightweightFilterService:
         t0 = time.monotonic()
 
         try:
-            # 1. Resolve model config
+            # 1. Resolve model config (fallback chain)
             from app.services.settings_service import get_settings_service
 
             settings_service = get_settings_service()
-            model_config = await settings_service.resolve_model_provider(
-                db, "phase2_layer2_lightweight"
+            model_config = await settings_service.resolve_model_with_fallback(
+                db,
+                ["news_lightweight", "phase2_layer2_lightweight", "news_filter"],
             )
 
             # 2. Build prompt with truncated text
