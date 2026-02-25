@@ -16,17 +16,14 @@ export default function ArticleScoreBadge({ article }: ArticleScoreBadgeProps) {
   const details = article.scoreDetails
   const dims = details?.dimensionScores
   const isCritical = details?.isCriticalEvent
-  const path = article.processingPath
 
-  if (score == null && !path) return null
+  if (score == null) return null
 
   const scoreColor = isCritical
     ? 'bg-red-500/15 text-red-500 border-red-500/30'
-    : (score ?? 0) >= 195
+    : (score ?? 0) >= 200
       ? 'bg-green-500/15 text-green-500 border-green-500/30'
-      : (score ?? 0) >= 105
-        ? 'bg-yellow-500/15 text-yellow-500 border-yellow-500/30'
-        : 'bg-muted text-muted-foreground border-border'
+      : 'bg-yellow-500/15 text-yellow-500 border-yellow-500/30'
 
   return (
     <div className="inline-flex flex-col">

@@ -148,8 +148,6 @@
     "dimMacro": "宏观",
     "dimMarket": "市场",
     "dimSignal": "信号",
-    "pathFull": "深度",
-    "pathLite": "轻量",
     "statusKept": "已保留",
     "statusDeleted": "已跳过",
     "statusFailed": "抓取失败",

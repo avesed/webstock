@@ -55,11 +55,9 @@ function StatusBadge({ article }: { article: NewsArticle }) {
     text = String(score)
     color = isCritical
       ? 'bg-red-500/15 text-red-500 border-red-500/30'
-      : score >= 195
+      : score >= 200
         ? 'bg-green-500/15 text-green-500 border-green-500/30'
-        : score >= 105
-          ? 'bg-yellow-500/15 text-yellow-500 border-yellow-500/30'
-          : 'bg-muted text-muted-foreground border-border'
+        : 'bg-yellow-500/15 text-yellow-500 border-yellow-500/30'
     Icon = isCritical ? Zap : undefined
   } else if (cs === 'deleted' || fs === 'delete') {
     text = t('news.statusDeleted', 'Filtered')

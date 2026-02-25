@@ -148,8 +148,6 @@
     "dimMacro": "Macro",
     "dimMarket": "Market",
     "dimSignal": "Signal",
-    "pathFull": "Full",
-    "pathLite": "Lite",
     "statusKept": "Kept",
     "statusDeleted": "Filtered",
     "statusFailed": "Failed",
