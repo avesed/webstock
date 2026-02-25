@@ -268,7 +268,7 @@ class NewsConsumer:
                 source=message.get("source", ""),
                 file_path=message.get("file_path"),
                 content_score=message.get("content_score", 0),
-                processing_path=message.get("processing_path", "lightweight"),
+                processing_path=message.get("processing_path", "full_analysis"),
                 score_details=message.get("score_details"),
             )
             status = final_state.get("final_status", "unknown")
@@ -305,7 +305,7 @@ class NewsConsumer:
                 # Cap retries at 3 total attempts (matching Celery max_retries=2).
                 if retry_num >= 2:
                     logger.warning(
-                        "retry_score部分超时已达最大重试(%d次): %d篇转轻量处理",
+                        "retry_score部分超时已达最大重试(%d次): %d篇转全量分析",
                         retry_num + 1, len(e.timed_out_data),
                     )
                     await self._fail_open_retry_score(
@@ -429,7 +429,7 @@ class NewsConsumer:
         """Fail-open for retry_score that exhausted retries.
 
         Delegates to the existing _fail_open_store() which stores articles
-        with lightweight processing path.
+        with full_analysis processing path.
         """
         articles_data = message.get("articles_data", [])
         if not articles_data:

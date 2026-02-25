@@ -368,7 +368,7 @@ export default function NewsReaderPage() {
 
         {tabs.includes('summary') && (
           <TabsContent value="summary">
-            <div className="prose prose-lg dark:prose-invert max-w-none">
+            <div className="prose dark:prose-invert max-w-none">
               <p className="text-lg leading-relaxed">
                 {decodeHtmlEntities(article.investmentSummary ?? article.summary ?? t('news.reader.noContent'))}
               </p>
@@ -378,7 +378,7 @@ export default function NewsReaderPage() {
 
         {tabs.includes('detailed') && (
           <TabsContent value="detailed">
-            <div className="prose prose-lg dark:prose-invert max-w-none">
+            <div className="prose dark:prose-invert max-w-none">
               <div className="whitespace-pre-wrap leading-loose">
                 {article.detailedSummary}
               </div>
@@ -388,7 +388,7 @@ export default function NewsReaderPage() {
 
         {tabs.includes('analysis') && (
           <TabsContent value="analysis">
-            <div className="prose prose-lg dark:prose-invert max-w-none">
+            <div className="prose dark:prose-invert max-w-none">
               {effectiveAnalysis ? (
                 <>
                   <MarkdownErrorBoundary fallbackText={effectiveAnalysis}>

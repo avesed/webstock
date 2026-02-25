@@ -117,23 +117,15 @@ async def read_file_node(state: NewsProcessingState) -> dict:
 def route_by_processing_path(state: NewsProcessingState) -> str:
     """Route based on processing_path set by Layer 1 scoring.
 
-    The processing_path is determined by Layer 1 scoring in the monitor tasks
-    and passed through via Celery task args. No LLM call needed.
+    All non-failed articles go through full 2-agent analysis.
 
     Returns:
-        "full_analysis" -- high-score articles for 2-agent deep analysis
-        "lightweight"   -- low-score articles for quick extraction
-        "end"           -- skip processing (read failed or no path set)
+        "full_analysis" -- articles for 2-agent deep analysis
+        "end"           -- skip processing (read failed)
     """
     if state.get("final_status") == "failed":
         return "end"
-    path = state.get("processing_path")
-    if path == "full_analysis":
-        return "full_analysis"
-    if path == "lightweight":
-        return "lightweight"
-    # Default: lightweight for unknown paths
-    return "lightweight"
+    return "full_analysis"
 
 
 async def multi_agent_analysis_node(state: NewsProcessingState) -> dict:
@@ -697,7 +689,6 @@ def create_news_pipeline() -> StateGraph:
     Simplified graph (scoring done in Layer 1, cleaning in Layer 2):
         START -> read_file -> route_by_processing_path
           |-- "full_analysis" -> multi_agent_analysis -> route_decision
-          |-- "lightweight"   -> lightweight_filter   -> route_decision
           +-- "end"           -> update_db (skip processing on read failure)
                                   route_decision:
                                     |-- "keep"   -> embed -> update_db -> END
@@ -708,7 +699,6 @@ def create_news_pipeline() -> StateGraph:
     # Add nodes
     workflow.add_node("read_file", read_file_node)
     workflow.add_node("multi_agent_analysis", multi_agent_analysis_node)
-    workflow.add_node("lightweight_filter", lightweight_filter_node)
     workflow.add_node("embed", embed_node)
     workflow.add_node("mark_deleted", mark_deleted_node)
     workflow.add_node("update_db", update_db_node)
@@ -722,20 +712,13 @@ def create_news_pipeline() -> StateGraph:
         route_by_processing_path,
         {
             "full_analysis": "multi_agent_analysis",
-            "lightweight": "lightweight_filter",
             "end": "update_db",
         },
     )
 
-    # Analysis nodes -> route by decision
+    # Analysis -> route by decision
     workflow.add_conditional_edges(
         "multi_agent_analysis",
-        route_decision,
-        {"keep": "embed", "delete": "mark_deleted"},
-    )
-
-    workflow.add_conditional_edges(
-        "lightweight_filter",
         route_decision,
         {"keep": "embed", "delete": "mark_deleted"},
     )

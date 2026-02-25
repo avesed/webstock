@@ -40,7 +40,7 @@ def process_news_article(
     file_path: str = None,
     # Scoring data from Layer 1 (replaces use_two_phase)
     content_score: int = 0,
-    processing_path: str = "lightweight",
+    processing_path: str = "full_analysis",
     score_details: dict = None,
 ):
     """
@@ -48,9 +48,9 @@ def process_news_article(
 
     Content is pre-fetched and cleaned by Layer 2 (batch_fetch_content).
     This task reads the content from file, routes by processing_path,
-    runs analysis or lightweight filtering, and embeds for RAG.
+    runs 2-agent analysis and embeds for RAG.
 
-    Pipeline: read_file -> route -> analyze/lightweight -> embed -> update_db
+    Pipeline: read_file -> multi_agent_analysis -> embed -> update_db
 
     Args:
         news_id: UUID of the news article
@@ -63,7 +63,7 @@ def process_news_article(
         source: News source name (e.g. 'reuters', 'eastmoney')
         file_path: Path to pre-fetched content JSON file (set by Layer 2)
         content_score: 100-point content quality score from Layer 1
-        processing_path: Routing decision from Layer 1 ('full_analysis' or 'lightweight')
+        processing_path: Routing decision from Layer 1 (always 'full_analysis')
         score_details: Dimension scores, reasoning, and critical flag from scoring
     """
     try:
@@ -227,7 +227,7 @@ async def _batch_fetch_content_async(articles: List[Dict[str, Any]]) -> Dict[str
                     summary=article.get("summary", ""),
                     published_at=article.get("published_at"),
                     content_score=article.get("content_score", 0),
-                    processing_path=article.get("processing_path", "lightweight"),
+                    processing_path=article.get("processing_path", "full_analysis"),
                     score_details=article.get("score_details"),
                 )
                 dispatched_count += 1

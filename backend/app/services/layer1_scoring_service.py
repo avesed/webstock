@@ -8,8 +8,7 @@ range.
 
 Routing decisions:
 - ``discard``:       total_score < layer1_discard_threshold (default 105)
-- ``lightweight``:   total_score < layer1_full_analysis_threshold (default 195)
-- ``full_analysis``: total_score >= layer1_full_analysis_threshold
+- ``full_analysis``: total_score >= layer1_discard_threshold
 
 Critical event keywords bypass LLM scoring entirely and route directly
 to ``full_analysis`` with an automatic 300-point score.
@@ -57,7 +56,6 @@ _DEFAULT_AGENT_SCORE = 50
 
 # Default routing thresholds (overridden by system_settings when available).
 _DEFAULT_DISCARD_THRESHOLD = 105
-_DEFAULT_FULL_ANALYSIS_THRESHOLD = 195
 
 
 # ---------------------------------------------------------------------------
@@ -162,7 +160,7 @@ class Layer1ScoringResult:
     url: str
     total_score: int                        # 0-300 (sum of 3 agents)
     agent_scores: Dict[str, AgentScore]     # Keyed by agent name
-    routing_decision: str                   # "discard", "lightweight", "full_analysis"
+    routing_decision: str                   # "discard" or "full_analysis"
     is_critical: bool
     reasoning: str
     raw_responses: Dict[str, str] = field(default_factory=dict)
@@ -193,8 +191,7 @@ class Layer1ScoringService:
     a tier-first rubric.  The total score (0-300) determines routing:
 
     - ``discard``:       below ``layer1_discard_threshold`` (default 105)
-    - ``lightweight``:   below ``layer1_full_analysis_threshold`` (default 195)
-    - ``full_analysis``: at or above full-analysis threshold
+    - ``full_analysis``: at or above discard threshold
 
     A prompt-cache-friendly message layout is used: the SYSTEM and batch
     USER messages carry ``cache_control`` hints so that agents 2 and 3
@@ -209,26 +206,23 @@ class Layer1ScoringService:
     # ------------------------------------------------------------------
 
     @staticmethod
-    async def _get_thresholds(db: AsyncSession) -> Tuple[int, int]:
-        """Read scoring thresholds from system_settings.
+    async def _get_thresholds(db: AsyncSession) -> int:
+        """Read discard threshold from system_settings.
 
         Returns:
-            Tuple of (discard_threshold, full_analysis_threshold).
-            Falls back to defaults on any error.
+            discard_threshold. Falls back to default on any error.
         """
         try:
             from app.services.settings_service import get_settings_service
 
             settings_service = get_settings_service()
             system = await settings_service.get_system_settings(db)
-            discard = getattr(system, "layer1_discard_threshold", _DEFAULT_DISCARD_THRESHOLD) or _DEFAULT_DISCARD_THRESHOLD
-            full_analysis = getattr(system, "layer1_full_analysis_threshold", _DEFAULT_FULL_ANALYSIS_THRESHOLD) or _DEFAULT_FULL_ANALYSIS_THRESHOLD
-            return discard, full_analysis
+            return getattr(system, "layer1_discard_threshold", _DEFAULT_DISCARD_THRESHOLD) or _DEFAULT_DISCARD_THRESHOLD
         except Exception as e:
             logger.warning(
-                "Failed to read Layer 1 thresholds, using defaults: %s", e,
+                "Failed to read Layer 1 threshold, using default: %s", e,
             )
-            return _DEFAULT_DISCARD_THRESHOLD, _DEFAULT_FULL_ANALYSIS_THRESHOLD
+            return _DEFAULT_DISCARD_THRESHOLD
 
     # ------------------------------------------------------------------
     # Model resolution
@@ -462,8 +456,6 @@ class Layer1ScoringService:
             for result in results:
                 if result.routing_decision == "discard":
                     await stats.increment("layer1_discard")
-                elif result.routing_decision == "lightweight":
-                    await stats.increment("layer1_lightweight")
                 elif result.routing_decision == "full_analysis":
                     await stats.increment("layer1_full_analysis")
                 if result.is_critical:
@@ -480,7 +472,6 @@ class Layer1ScoringService:
         db: AsyncSession,
         articles: List[Dict[str, str]],
         discard_threshold: int,
-        full_analysis_threshold: int,
     ) -> List[Layer1ScoringResult]:
         """Score a single batch of articles with 3 concurrent agents.
 
@@ -488,7 +479,6 @@ class Layer1ScoringService:
             db: Database session for model config resolution.
             articles: Batch of articles (each has ``url``, ``title``, ``text``).
             discard_threshold: Score below which articles are discarded.
-            full_analysis_threshold: Score at or above which articles get full analysis.
 
         Returns:
             List of ``Layer1ScoringResult``, one per article (in input order).
@@ -620,11 +610,9 @@ class Layer1ScoringService:
 
                 total_score = sum(s.score for s in agent_scores.values())
 
-                # Routing decision
+                # Routing decision: discard or full_analysis
                 if total_score < discard_threshold:
                     routing = "discard"
-                elif total_score < full_analysis_threshold:
-                    routing = "lightweight"
                 else:
                     routing = "full_analysis"
 
@@ -656,9 +644,9 @@ class Layer1ScoringService:
 
         logger.info(
             "[Layer1] Batch scored %d articles (%.0fms): "
-            "critical=%d, routing=%s, thresholds=(%d/%d)",
+            "critical=%d, routing=%s, discard_threshold=%d",
             batch_size, elapsed_ms, critical_count, routing_counts,
-            discard_threshold, full_analysis_threshold,
+            discard_threshold,
         )
 
         return results
@@ -707,8 +695,8 @@ class Layer1ScoringService:
         t0 = time.monotonic()
 
         try:
-            # Read thresholds once for the entire scoring run.
-            discard_threshold, full_analysis_threshold = await self._get_thresholds(db)
+            # Read threshold once for the entire scoring run.
+            discard_threshold = await self._get_thresholds(db)
 
             all_results: List[Layer1ScoringResult] = []
             all_timed_out: List[Dict[str, str]] = []
@@ -720,7 +708,7 @@ class Layer1ScoringService:
                 try:
                     batch_results = await asyncio.wait_for(
                         self._score_batch(
-                            db, batch, discard_threshold, full_analysis_threshold,
+                            db, batch, discard_threshold,
                         ),
                         timeout=batch_timeout,
                     )

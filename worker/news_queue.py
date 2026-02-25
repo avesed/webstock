@@ -38,7 +38,7 @@ async def enqueue_process_article(
     summary: str = "",
     published_at: Optional[str] = None,
     content_score: int = 0,
-    processing_path: str = "lightweight",
+    processing_path: str = "full_analysis",
     score_details: Optional[dict] = None,
 ) -> int:
     """Enqueue a process_article task to the news consumer.

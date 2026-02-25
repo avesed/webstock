@@ -34,18 +34,15 @@ const DEFAULT_MODEL_ASSIGNMENTS: ModelAssignmentsConfig = {
 const DEFAULT_PHASE2_CONFIG: Phase2Config = {
   enableLlmPipeline: false,
   discardThreshold: 105,
-  fullAnalysisThreshold: 195,
   layer1Scoring: { providerId: null, model: 'gpt-4o-mini' },
   layer15Cleaning: { providerId: null, model: 'gpt-4o' },
   layer2Scoring: { providerId: null, model: 'gpt-4o-mini' },
   layer2Analysis: { providerId: null, model: 'gpt-4o' },
-  layer2Lightweight: { providerId: null, model: 'gpt-4o-mini' },
   newsEntity: null,
   newsSentiment: null,
   newsSummary: null,
   newsImpact: null,
   newsReport: null,
-  newsLightweightOverride: null, // hidden from UI — lightweight uses pipeline "Layer 3 轻量处理" config
   cacheEnabled: true,
   cacheTtlMinutes: 60,
 }
@@ -297,7 +294,7 @@ export function SystemSettings() {
   const L3_OVERRIDE_KEYS = new Set(['newsEntity', 'newsSentiment', 'newsSummary', 'newsImpact', 'newsReport'])
 
   const handlePhase2LayerChange = useCallback((
-    layer: 'layer1Scoring' | 'layer15Cleaning' | 'layer2Analysis' | 'layer2Lightweight' | 'newsEntity' | 'newsSentiment' | 'newsSummary' | 'newsImpact' | 'newsReport',
+    layer: 'layer1Scoring' | 'layer15Cleaning' | 'layer2Analysis' | 'newsEntity' | 'newsSentiment' | 'newsSummary' | 'newsImpact' | 'newsReport',
     field: 'providerId' | 'model',
     value: string | null
   ) => {
@@ -417,17 +414,14 @@ export function SystemSettings() {
           ...(prev.phase2 ?? DEFAULT_PHASE2_CONFIG),
           enableLlmPipeline: (config.phase2 ?? DEFAULT_PHASE2_CONFIG).enableLlmPipeline,
           discardThreshold: (config.phase2 ?? DEFAULT_PHASE2_CONFIG).discardThreshold,
-          fullAnalysisThreshold: (config.phase2 ?? DEFAULT_PHASE2_CONFIG).fullAnalysisThreshold,
           layer1Scoring: (config.phase2 ?? DEFAULT_PHASE2_CONFIG).layer1Scoring,
           layer15Cleaning: (config.phase2 ?? DEFAULT_PHASE2_CONFIG).layer15Cleaning,
           layer2Analysis: (config.phase2 ?? DEFAULT_PHASE2_CONFIG).layer2Analysis,
-          layer2Lightweight: (config.phase2 ?? DEFAULT_PHASE2_CONFIG).layer2Lightweight,
           newsEntity: (config.phase2 ?? DEFAULT_PHASE2_CONFIG).newsEntity,
           newsSentiment: (config.phase2 ?? DEFAULT_PHASE2_CONFIG).newsSentiment,
           newsSummary: (config.phase2 ?? DEFAULT_PHASE2_CONFIG).newsSummary,
           newsImpact: (config.phase2 ?? DEFAULT_PHASE2_CONFIG).newsImpact,
           newsReport: (config.phase2 ?? DEFAULT_PHASE2_CONFIG).newsReport,
-          newsLightweightOverride: (config.phase2 ?? DEFAULT_PHASE2_CONFIG).newsLightweightOverride, // kept for data integrity
         },
       }))
       setHasNewsChanges(false)
@@ -700,32 +694,17 @@ export function SystemSettings() {
                     />
                   </div>
 
-                  <div className="grid gap-4 sm:grid-cols-2">
-                    <div className="space-y-2">
-                      <Label htmlFor="phase2-discard-threshold">{t('settings.phase2.discardThreshold')}</Label>
-                      <Input
-                        id="phase2-discard-threshold"
-                        type="number"
-                        min={0}
-                        max={300}
-                        value={phase2.discardThreshold}
-                        onChange={(e) => handlePhase2Change('discardThreshold', parseInt(e.target.value) || 0)}
-                      />
-                      <p className="text-xs text-muted-foreground">{t('settings.phase2.discardThresholdHint')}</p>
-                    </div>
-
-                    <div className="space-y-2">
-                      <Label htmlFor="phase2-full-analysis-threshold">{t('settings.phase2.fullAnalysisThreshold')}</Label>
-                      <Input
-                        id="phase2-full-analysis-threshold"
-                        type="number"
-                        min={0}
-                        max={300}
-                        value={phase2.fullAnalysisThreshold}
-                        onChange={(e) => handlePhase2Change('fullAnalysisThreshold', parseInt(e.target.value) || 0)}
-                      />
-                      <p className="text-xs text-muted-foreground">{t('settings.phase2.fullAnalysisThresholdHint')}</p>
-                    </div>
+                  <div className="space-y-2">
+                    <Label htmlFor="phase2-discard-threshold">{t('settings.phase2.discardThreshold')}</Label>
+                    <Input
+                      id="phase2-discard-threshold"
+                      type="number"
+                      min={0}
+                      max={300}
+                      value={phase2.discardThreshold}
+                      onChange={(e) => handlePhase2Change('discardThreshold', parseInt(e.target.value) || 0)}
+                    />
+                    <p className="text-xs text-muted-foreground">{t('settings.phase2.discardThresholdHint')}</p>
                   </div>
 
                   {/* Pipeline Layer Models (dimmed when disabled) */}
@@ -741,7 +720,7 @@ export function SystemSettings() {
                       </p>
                     ) : (
                       <div className="space-y-4">
-                        {(['layer1Scoring', 'layer15Cleaning', 'layer2Analysis', 'layer2Lightweight'] as const).map((layer) => (
+                        {(['layer1Scoring', 'layer15Cleaning', 'layer2Analysis'] as const).map((layer) => (
                           <ModelSelectorRow
                             key={layer}
                             label={t(`settings.phase2.${layer}` as never)}

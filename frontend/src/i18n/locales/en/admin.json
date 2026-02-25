@@ -166,15 +166,12 @@
       "title": "News Processing Pipeline",
       "description": "Configure the 3-layer news processing pipeline: Layer 1 scoring \u2192 Layer 2 content fetch \u2192 Layer 3 analysis",
       "discardThreshold": "Discard Threshold",
-      "discardThresholdHint": "Articles scoring below this threshold (0-300) are discarded. Default: 105",
-      "fullAnalysisThreshold": "Full Analysis Threshold",
-      "fullAnalysisThresholdHint": "Articles scoring above this threshold (0-300) get full multi-agent analysis. Default: 195",
+      "discardThresholdHint": "Articles scoring below this threshold (0-300) are discarded. Articles at or above this score enter full L3 analysis. Default: 105",
       "modelsTitle": "Pipeline Layer Models",
       "modelsDescription": "Configure which provider and model to use for each processing layer",
       "layer1Scoring": "Layer 1 Scoring",
       "layer15Cleaning": "Layer 2 Cleaning",
       "layer2Analysis": "Layer 3 Analysis",
-      "layer2Lightweight": "Layer 3 Lightweight",
       "cacheTitle": "Prompt Caching",
       "cacheDescription": "Enable prompt caching to reduce LLM costs by up to 90%",
       "cacheEnabled": "Enable Prompt Caching",
@@ -186,8 +183,7 @@
       "newsSentiment": "Sentiment Analysis",
       "newsSummary": "Summary & Sentiment",
       "newsImpact": "Impact Assessment",
-      "newsReport": "Deep Analysis (On-Demand)",
-      "newsLightweightOverride": "Lightweight Override"
+      "newsReport": "Deep Analysis (On-Demand)"
     },
     "discussion": {
       "title": "Discussion Group",

@@ -39,11 +39,6 @@ export default function ArticleScoreBadge({ article }: ArticleScoreBadgeProps) {
       >
         {isCritical && <Zap className="h-3 w-3" />}
         {score != null ? `${score}/300` : t('news.statusPending')}
-        {path && (
-          <span className="text-[10px] font-normal opacity-70">
-            {path === 'full_analysis' ? t('news.pathFull') : t('news.pathLite')}
-          </span>
-        )}
         <ChevronDown className={cn('h-3 w-3 transition-transform', isExpanded && 'rotate-180')} />
       </button>
 

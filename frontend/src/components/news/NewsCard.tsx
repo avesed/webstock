@@ -44,7 +44,6 @@ function StatusBadge({ article }: { article: NewsArticle }) {
   if (!cs && !fs && score == null && !path) return null
 
   let text: string
-  let label: string | undefined
   let color: string
   let Icon: typeof Zap | undefined
 
@@ -52,11 +51,8 @@ function StatusBadge({ article }: { article: NewsArticle }) {
     text = t('news.statusScoringError', 'Score Error')
     color = 'bg-orange-500/10 text-orange-400 border-orange-500/20'
     Icon = AlertTriangle
-  } else if (score != null && path) {
+  } else if (score != null) {
     text = String(score)
-    label = path === 'full_analysis'
-      ? t('news.pathFull', 'Full')
-      : t('news.pathLite', 'Lite')
     color = isCritical
       ? 'bg-red-500/15 text-red-500 border-red-500/30'
       : score >= 195
@@ -96,7 +92,6 @@ function StatusBadge({ article }: { article: NewsArticle }) {
     >
       {Icon && <Icon className="h-2.5 w-2.5" />}
       {text}
-      {label && <span className="text-[9px] font-normal opacity-70">{label}</span>}
     </span>
   )
 
@@ -184,7 +179,7 @@ export default function NewsCard({ article, compact = false, className, navigati
   }
 
   // Full mode: compact clickable row → navigates to reader page
-  const hasReaderContent = !!(article.detailedSummary || article.investmentSummary || article.aiAnalysis)
+  const hasReaderContent = !!(article.detailedSummary || article.investmentSummary || article.aiAnalysis || article.summary)
   const isProcessing = article.contentStatus === 'fetched' || article.contentStatus === 'partial'
   const summaryText = article.investmentSummary ?? article.summary
 

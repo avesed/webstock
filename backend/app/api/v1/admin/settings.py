@@ -404,7 +404,6 @@ async def get_system_config(
         phase2=Phase2Config(
             enable_llm_pipeline=settings.enable_llm_pipeline,
             discard_threshold=getattr(settings, 'layer1_discard_threshold', 105),
-            full_analysis_threshold=getattr(settings, 'layer1_full_analysis_threshold', 195),
             layer1_scoring=Phase2ModelAssignment(
                 provider_id=str(settings.layer1_scoring_provider_id) if getattr(settings, 'layer1_scoring_provider_id', None) else None,
                 model=getattr(settings, 'layer1_scoring_model', '') or 'gpt-4o-mini',
@@ -420,10 +419,6 @@ async def get_system_config(
             layer2_analysis=Phase2ModelAssignment(
                 provider_id=str(settings.phase2_layer2_analysis_provider_id) if getattr(settings, 'phase2_layer2_analysis_provider_id', None) else None,
                 model=getattr(settings, 'phase2_layer2_analysis_model', '') or 'gpt-4o',
-            ),
-            layer2_lightweight=Phase2ModelAssignment(
-                provider_id=str(settings.phase2_layer2_lightweight_provider_id) if getattr(settings, 'phase2_layer2_lightweight_provider_id', None) else None,
-                model=getattr(settings, 'phase2_layer2_lightweight_model', '') or 'gpt-4o-mini',
             ),
             # L3 per-agent overrides (None if not configured)
             news_entity=Phase2ModelAssignment(
@@ -446,10 +441,6 @@ async def get_system_config(
                 provider_id=str(settings.news_report_provider_id) if getattr(settings, 'news_report_provider_id', None) else None,
                 model=getattr(settings, 'news_report_model', '') or '',
             ) if getattr(settings, 'news_report_provider_id', None) or getattr(settings, 'news_report_model', None) else None,
-            news_lightweight_override=Phase2ModelAssignment(
-                provider_id=str(settings.news_lightweight_provider_id) if getattr(settings, 'news_lightweight_provider_id', None) else None,
-                model=getattr(settings, 'news_lightweight_model', '') or '',
-            ) if getattr(settings, 'news_lightweight_provider_id', None) or getattr(settings, 'news_lightweight_model', None) else None,
             cache_enabled=getattr(settings, 'phase2_cache_enabled', True),
             cache_ttl_minutes=getattr(settings, 'phase2_cache_ttl_minutes', 60),
         ),
@@ -568,7 +559,6 @@ async def update_system_config(
         p2 = data.phase2
         settings.enable_llm_pipeline = p2.enable_llm_pipeline
         settings.layer1_discard_threshold = p2.discard_threshold
-        settings.layer1_full_analysis_threshold = p2.full_analysis_threshold
         if p2.layer1_scoring:
             settings.layer1_scoring_model = p2.layer1_scoring.model or None
             settings.layer1_scoring_provider_id = UUID(p2.layer1_scoring.provider_id) if p2.layer1_scoring.provider_id else None
@@ -581,9 +571,6 @@ async def update_system_config(
         if p2.layer2_analysis:
             settings.phase2_layer2_analysis_model = p2.layer2_analysis.model or None
             settings.phase2_layer2_analysis_provider_id = UUID(p2.layer2_analysis.provider_id) if p2.layer2_analysis.provider_id else None
-        if p2.layer2_lightweight:
-            settings.phase2_layer2_lightweight_model = p2.layer2_lightweight.model or None
-            settings.phase2_layer2_lightweight_provider_id = UUID(p2.layer2_lightweight.provider_id) if p2.layer2_lightweight.provider_id else None
         # L3 per-agent model overrides (with audit logging)
         _l3_changes = []
         if p2.news_entity:
@@ -606,10 +593,6 @@ async def update_system_config(
             settings.news_report_model = p2.news_report.model or None
             settings.news_report_provider_id = UUID(p2.news_report.provider_id) if p2.news_report.provider_id else None
             _l3_changes.append(f"report={p2.news_report.model or 'cleared'}")
-        if p2.news_lightweight_override:
-            settings.news_lightweight_model = p2.news_lightweight_override.model or None
-            settings.news_lightweight_provider_id = UUID(p2.news_lightweight_override.provider_id) if p2.news_lightweight_override.provider_id else None
-            _l3_changes.append(f"lightweight={p2.news_lightweight_override.model or 'cleared'}")
         if _l3_changes:
             logger.info(
                 "[AUDIT] Admin %s 更新L3 Agent模型配置: %s",

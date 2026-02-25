@@ -166,15 +166,12 @@
       "title": "新闻处理管线",
       "description": "配置三层新闻处理管线：Layer 1 评分 → Layer 2 内容抓取 → Layer 3 分析",
       "discardThreshold": "丢弃阈值",
-      "discardThresholdHint": "评分低于此阈值（0-300）的文章将被丢弃，默认: 105",
-      "fullAnalysisThreshold": "深度分析阈值",
-      "fullAnalysisThresholdHint": "评分高于此阈值（0-300）的文章进入完整多智能体分析，默认: 195",
+      "discardThresholdHint": "评分低于此阈值（0-300）的文章将被丢弃，达到或超过此分数的文章进入完整 L3 分析，默认: 105",
       "modelsTitle": "管线模型分配",
       "modelsDescription": "为每个处理层配置使用的供应商和模型",
       "layer1Scoring": "Layer 1 评分",
       "layer15Cleaning": "Layer 2 清洗",
       "layer2Analysis": "Layer 3 深度分析",
-      "layer2Lightweight": "Layer 3 轻量处理",
       "cacheTitle": "Prompt 缓存",
       "cacheDescription": "启用 Prompt 缓存可节省高达90%的LLM成本",
       "cacheEnabled": "启用 Prompt 缓存",
@@ -186,8 +183,7 @@
       "newsSentiment": "情感分析 (Sentiment)",
       "newsSummary": "摘要+情感 (Summary+Sentiment)",
       "newsImpact": "影响评估 (Impact)",
-      "newsReport": "深度分析 (On-Demand)",
-      "newsLightweightOverride": "轻量处理覆盖 (Override)"
+      "newsReport": "深度分析 (On-Demand)"
     },
     "discussion": {
       "title": "讨论组设置",

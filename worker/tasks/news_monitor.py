@@ -313,7 +313,7 @@ async def _monitor_news_async() -> Dict[str, Any]:
                         scoring_results = outcome.results
                         timed_out_articles = outcome.timed_out_articles
                     except Exception as e:
-                        logger.warning("Layer 1: Scoring failed, all articles default to lightweight: %s", e)
+                        logger.warning("Layer 1: Scoring failed, all articles default to full_analysis: %s", e)
 
                     # Handle timed-out articles → Redis pending + retry task
                     if timed_out_articles:
@@ -398,7 +398,7 @@ async def _monitor_news_async() -> Dict[str, Any]:
                         if scoring:
                             filter_status = FilterStatus.INITIAL_USEFUL.value
                             content_score = scoring.total_score
-                            processing_path = scoring.routing_decision  # "lightweight" or "full_analysis"
+                            processing_path = scoring.routing_decision
                             score_details = build_score_details(scoring)
                             is_critical = scoring.is_critical
                             decision_label = scoring.routing_decision
@@ -406,18 +406,16 @@ async def _monitor_news_async() -> Dict[str, Any]:
 
                             if scoring.routing_decision == "full_analysis":
                                 stats["layer1_full_analysis"] += 1
-                            else:
-                                stats["layer1_lightweight"] += 1
                             if scoring.is_critical:
                                 stats["layer1_critical"] += 1
                         else:
-                            # No scoring result (scoring failed) -- default to lightweight
+                            # No scoring result (scoring failed) -- default to full_analysis
                             filter_status = FilterStatus.INITIAL_USEFUL.value
                             content_score = 0
-                            processing_path = "lightweight"
+                            processing_path = "full_analysis"
                             score_details = None
                             is_critical = False
-                            decision_label = "lightweight"
+                            decision_label = "full_analysis"
                             reasoning = "scoring_unavailable"
 
                         news = News(
@@ -458,9 +456,8 @@ async def _monitor_news_async() -> Dict[str, Any]:
                             )
 
                     logger.info(
-                        "新闻监控L1：丢弃=%d 轻量=%d 深度=%d 关键=%d 超时=%d",
+                        "新闻监控L1：丢弃=%d 全量=%d 关键=%d 超时=%d",
                         stats["layer1_discard"],
-                        stats["layer1_lightweight"],
                         stats["layer1_full_analysis"],
                         stats["layer1_critical"],
                         len(timed_out_articles),
@@ -628,7 +625,7 @@ async def _monitor_news_async() -> Dict[str, Any]:
                                     logger.error("新闻监控自选：评分重试入队失败: %s", eq_err)
                     except Exception as e:
                         logger.warning(
-                            "Watchlist: Layer 1 scoring failed, defaulting to lightweight: %s", e
+                            "Watchlist: Layer 1 scoring failed, defaulting to full_analysis: %s", e
                         )
 
                 for symbol, article_data in new_watchlist:
@@ -677,19 +674,16 @@ async def _monitor_news_async() -> Dict[str, Any]:
                         score_details = build_score_details(scoring)
                         decision_label = scoring.routing_decision
                         reasoning = scoring.reasoning
-                        if scoring.routing_decision == "full_analysis":
-                            stats["layer1_full_analysis"] += 1
-                        else:
-                            stats["layer1_lightweight"] += 1
+                        stats["layer1_full_analysis"] += 1
                         if scoring.is_critical:
                             stats["layer1_critical"] += 1
                     elif enable_pipeline:
-                        # Scoring failed or unavailable — default to lightweight
+                        # Scoring failed or unavailable — default to full_analysis
                         filter_status = FilterStatus.INITIAL_USEFUL.value
                         content_score = 0
-                        processing_path = "lightweight"
+                        processing_path = "full_analysis"
                         score_details = None
-                        decision_label = "lightweight"
+                        decision_label = "full_analysis"
                         reasoning = "scoring_unavailable"
                     else:
                         filter_status = None
@@ -815,7 +809,7 @@ async def _monitor_news_async() -> Dict[str, Any]:
                                 "content_source": "trafilatura",
                                 # Scoring data flows through to Layer 3
                                 "content_score": news_obj.content_score or 0,
-                                "processing_path": news_obj.processing_path or "lightweight",
+                                "processing_path": news_obj.processing_path or "full_analysis",
                                 "score_details": news_obj.score_details,
                             })
                     except Exception as e:
@@ -963,7 +957,7 @@ def retry_score_articles(self, articles_data: list):
     """Retry Layer 1 scoring for timed-out articles.
 
     max_retries=2 means 3 total attempts (original dispatch + 2 retries).
-    After all 3 failures, fail-open to lightweight processing.
+    After all 3 failures, fail-open to full_analysis processing.
 
     Args:
         articles_data: List of article dicts with url, title, summary,
@@ -985,12 +979,12 @@ def retry_score_articles(self, articles_data: list):
             )
         except self.MaxRetriesExceededError:
             logger.warning(
-                "评分重试3次均失败，%d篇转轻量处理", len(e.timed_out_data),
+                "评分重试3次均失败，%d篇转全量分析", len(e.timed_out_data),
             )
             try:
                 return run_async_task(_fail_open_store, e.timed_out_data)
             except Exception as fail_err:
-                logger.error("轻量兜底也失败：%s", fail_err)
+                logger.error("全量兜底也失败：%s", fail_err)
                 # Clean up Redis pending set so next monitor run can re-fetch
                 run_async_task(
                     _cleanup_pending_urls,
@@ -1006,12 +1000,12 @@ def retry_score_articles(self, articles_data: list):
             raise self.retry(exc=e, countdown=30 * (2 ** self.request.retries))
         except self.MaxRetriesExceededError:
             logger.warning(
-                "评分重试3次均失败，%d篇转轻量处理", len(articles_data),
+                "评分重试3次均失败，%d篇转全量分析", len(articles_data),
             )
             try:
                 return run_async_task(_fail_open_store, articles_data)
             except Exception as fail_err:
-                logger.error("轻量兜底也失败：%s", fail_err)
+                logger.error("全量兜底也失败：%s", fail_err)
                 run_async_task(
                     _cleanup_pending_urls,
                     [a.get("url", "") for a in articles_data],
@@ -1137,7 +1131,7 @@ async def _retry_score_async(articles_data: list, retry_num: int) -> Dict[str, A
                             "published_at": news_obj.published_at.isoformat() if news_obj.published_at else None,
                             "content_source": "trafilatura",
                             "content_score": news_obj.content_score or 0,
-                            "processing_path": news_obj.processing_path or "lightweight",
+                            "processing_path": news_obj.processing_path or "full_analysis",
                             "score_details": news_obj.score_details,
                         })
 
@@ -1176,17 +1170,17 @@ async def _retry_score_async(articles_data: list, retry_num: int) -> Dict[str, A
 
 
 async def _fail_open_store(articles_data: list) -> Dict[str, Any]:
-    """Store articles with lightweight routing after all retry attempts failed.
+    """Store articles with full_analysis routing after all retry attempts failed.
 
     This is the fail-open path: articles get stored in DB with
-    processing_path="lightweight" and a marker in score_details so
+    processing_path="full_analysis" and a marker in score_details so
     downstream processing knows these were not properly scored.
     """
     from sqlalchemy.exc import IntegrityError
     from app.models.news import News, FilterStatus
     from worker.task_helpers import remove_scoring_pending
 
-    logger.info("轻量兜底：%d篇文章", len(articles_data))
+    logger.info("全量兜底：%d篇文章", len(articles_data))
 
     stored_count = 0
     all_urls = []
@@ -1215,7 +1209,7 @@ async def _fail_open_store(articles_data: list) -> Dict[str, Any]:
                 primary_entity_type=None,
                 filter_status=FilterStatus.INITIAL_USEFUL.value,
                 content_score=0,
-                processing_path="lightweight",
+                processing_path="full_analysis",
                 score_details={"failOpen": True, "reason": "scoring_retry_exhausted"},
             )
 
@@ -1226,14 +1220,14 @@ async def _fail_open_store(articles_data: list) -> Dict[str, Any]:
                 stored_count += 1
                 dispatch_articles.append(news)
             except IntegrityError:
-                logger.debug("轻量兜底：URL已存在(并发插入) %s", url[:80])
+                logger.debug("全量兜底：URL已存在(并发插入) %s", url[:80])
 
         if stored_count > 0:
             try:
                 await db.commit()
-                logger.debug("轻量兜底：已提交%d篇", stored_count)
+                logger.debug("全量兜底：已提交%d篇", stored_count)
             except Exception as e:
-                logger.error("轻量兜底：提交失败: %s", e)
+                logger.error("全量兜底：提交失败: %s", e)
                 raise
 
         # Remove from Redis pending set (always, even if all existed)
@@ -1256,7 +1250,7 @@ async def _fail_open_store(articles_data: list) -> Dict[str, Any]:
                         "published_at": news_obj.published_at.isoformat() if news_obj.published_at else None,
                         "content_source": "trafilatura",
                         "content_score": 0,
-                        "processing_path": "lightweight",
+                        "processing_path": "full_analysis",
                         "score_details": news_obj.score_details,
                     })
 
@@ -1266,7 +1260,7 @@ async def _fail_open_store(articles_data: list) -> Dict[str, Any]:
                     chunk = dispatch_batch[i:i + BATCH_CHUNK_SIZE]
                     batch_fetch_content.delay(chunk)
 
-    logger.info("轻量兜底完成：入库%d篇", stored_count)
+    logger.info("全量兜底完成：入库%d篇", stored_count)
 
     return {
         "status": "fail_open",

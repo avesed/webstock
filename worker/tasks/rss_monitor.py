@@ -254,17 +254,14 @@ async def _monitor_rss_feeds_async() -> Dict[str, Any]:
                         article.content_score = scoring.total_score
                         article.processing_path = scoring.routing_decision
                         article.score_details = build_score_details(scoring)
-                        if scoring.routing_decision == "full_analysis":
-                            stats["layer1_full_analysis"] += 1
-                        else:
-                            stats["layer1_lightweight"] += 1
+                        stats["layer1_full_analysis"] += 1
                         if scoring.is_critical:
                             stats["layer1_critical"] += 1
                     else:
-                        # No scoring result (scoring failed) -- default to lightweight
+                        # No scoring result (scoring failed) -- default to full_analysis
                         article.filter_status = FilterStatus.INITIAL_USEFUL.value
                         article.content_score = 0
-                        article.processing_path = "lightweight"
+                        article.processing_path = "full_analysis"
 
                     dispatching_articles.append(article)
 
@@ -321,7 +318,7 @@ async def _monitor_rss_feeds_async() -> Dict[str, Any]:
                                 "content_source": "trafilatura",
                                 # Scoring data flows through to Layer 3
                                 "content_score": news_obj.content_score or 0,
-                                "processing_path": news_obj.processing_path or "lightweight",
+                                "processing_path": news_obj.processing_path or "full_analysis",
                                 "score_details": news_obj.score_details,
                             })
                     except Exception as e:
