@@ -200,6 +200,44 @@ services:
         max-file: "5"
 
   # ===========================================================================
+  # AI Gateway (LLM proxy microservice)
+  # ===========================================================================
+  ai-gateway:
+    build:
+      context: ./ai-gateway
+      dockerfile: Dockerfile
+    container_name: webstock-ai-gateway
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - webstock-network
+    environment:
+      - DATABASE_URL=postgresql://webstock:${POSTGRES_PASSWORD:-webstock}@postgres:5432/webstock
+      - INTERNAL_API_TOKEN=${INTERNAL_API_TOKEN:-}
+      - LOG_LEVEL=${AI_GATEWAY_LOG_LEVEL:-info}
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://127.0.0.1:8004/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          cpus: "2"
+          memory: 2G
+        reservations:
+          cpus: "0.25"
+          memory: 512M
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "50m"
+        max-file: "5"
+
+  # ===========================================================================
   # App (Backend + Frontend + Worker + Beat + Nginx)
   # ===========================================================================
   app:
@@ -235,6 +273,8 @@ services:
       - PLAYWRIGHT_SERVICE_URL=${PLAYWRIGHT_SERVICE_URL:-}
       - INTERNAL_API_TOKEN=${INTERNAL_API_TOKEN:-}
       - DATA_SERVICE_URL=http://data-service:8003
+      - AI_GATEWAY_URL=http://ai-gateway:8004
+      - USE_AI_GATEWAY=${USE_AI_GATEWAY:-false}
     volumes:
       - app_data:/app/data
       - ./nginx/ssl:/etc/nginx/ssl:ro
@@ -244,6 +284,8 @@ services:
       redis:
         condition: service_healthy
       data-service:
+        condition: service_healthy
+      ai-gateway:
         condition: service_healthy
     restart: unless-stopped
     networks:

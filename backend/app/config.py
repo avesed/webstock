@@ -132,6 +132,10 @@ class Settings(BaseSettings):
     # Qlib Service
     QLIB_SERVICE_URL: str = "http://qlib-service:8001"
 
+    # AI Gateway (LLM proxy microservice)
+    AI_GATEWAY_URL: str = "http://ai-gateway:8004"
+    USE_AI_GATEWAY: bool = False  # Feature flag: route LLM calls through ai-gateway
+
     # RSSHub
     RSSHUB_URL: str = "http://rsshub:1200"
     RSSHUB_ACCESS_KEY: str = ""

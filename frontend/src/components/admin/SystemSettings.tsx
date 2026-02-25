@@ -45,7 +45,7 @@ const DEFAULT_PHASE2_CONFIG: Phase2Config = {
   newsSummary: null,
   newsImpact: null,
   newsReport: null,
-  newsLightweightOverride: null,
+  newsLightweightOverride: null, // hidden from UI — lightweight uses pipeline "Layer 3 轻量处理" config
   cacheEnabled: true,
   cacheTtlMinutes: 60,
 }
@@ -294,10 +294,10 @@ export function SystemSettings() {
 
   // Phase 2 layer model changes (from News tab)
   // L3 agent override keys — these can be set to null to inherit from layer2Analysis
-  const L3_OVERRIDE_KEYS = new Set(['newsEntity', 'newsSentiment', 'newsSummary', 'newsImpact', 'newsReport', 'newsLightweightOverride'])
+  const L3_OVERRIDE_KEYS = new Set(['newsEntity', 'newsSentiment', 'newsSummary', 'newsImpact', 'newsReport'])
 
   const handlePhase2LayerChange = useCallback((
-    layer: 'layer1Scoring' | 'layer15Cleaning' | 'layer2Analysis' | 'layer2Lightweight' | 'newsEntity' | 'newsSentiment' | 'newsSummary' | 'newsImpact' | 'newsReport' | 'newsLightweightOverride',
+    layer: 'layer1Scoring' | 'layer15Cleaning' | 'layer2Analysis' | 'layer2Lightweight' | 'newsEntity' | 'newsSentiment' | 'newsSummary' | 'newsImpact' | 'newsReport',
     field: 'providerId' | 'model',
     value: string | null
   ) => {
@@ -427,7 +427,7 @@ export function SystemSettings() {
           newsSummary: (config.phase2 ?? DEFAULT_PHASE2_CONFIG).newsSummary,
           newsImpact: (config.phase2 ?? DEFAULT_PHASE2_CONFIG).newsImpact,
           newsReport: (config.phase2 ?? DEFAULT_PHASE2_CONFIG).newsReport,
-          newsLightweightOverride: (config.phase2 ?? DEFAULT_PHASE2_CONFIG).newsLightweightOverride,
+          newsLightweightOverride: (config.phase2 ?? DEFAULT_PHASE2_CONFIG).newsLightweightOverride, // kept for data integrity
         },
       }))
       setHasNewsChanges(false)
@@ -767,7 +767,7 @@ export function SystemSettings() {
                         </p>
                         {enabledProviders.length > 0 && (
                           <div className="space-y-4">
-                            {(['newsEntity', 'newsSentiment', 'newsSummary', 'newsImpact', 'newsReport', 'newsLightweightOverride'] as const).map((layer) => (
+                            {(['newsEntity', 'newsSentiment', 'newsSummary', 'newsImpact', 'newsReport'] as const).map((layer) => (
                               <ModelSelectorRow
                                 key={layer}
                                 label={t(`settings.phase2.${layer}` as never)}

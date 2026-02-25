@@ -1,9 +1,14 @@
-"""LLM Gateway — the single entry point for all LLM API calls.
+"""LLM Gateway -- the single entry point for all LLM API calls.
 
 All services call this instead of directly creating OpenAI/Anthropic clients.
 Manages provider instances, config resolution, and lifecycle.
 
-Provider caching policy:
+When USE_AI_GATEWAY is enabled, LLM calls are routed through the ai-gateway
+microservice (http://ai-gateway:8004) using the X-Provider-Id header for
+provider selection.  Per-user API key overrides bypass the gateway and
+use local providers directly.
+
+Provider caching policy (local path):
 - Environment-sourced providers: cached (reuse HTTP connections)
 - DB-sourced providers: NOT cached (admin may change keys at any time)
 - Per-user providers: NOT cached (request-scoped)
@@ -13,12 +18,6 @@ import logging
 from typing import Any, AsyncIterator, Callable, Coroutine, Dict, Optional
 
 from app.config import settings
-from app.core.llm.config import (
-    ProviderConfig,
-    ProviderType,
-    resolve_provider_config,
-)
-from app.core.llm.providers.base import LLMProvider
 from app.core.llm.types import (
     ChatRequest,
     ChatResponse,
@@ -32,7 +31,7 @@ from app.core.llm.types import (
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
-# Module-level usage recorder — survives reset_llm_gateway() in Celery workers
+# Module-level usage recorder -- survives reset_llm_gateway() in Celery workers
 # ---------------------------------------------------------------------------
 
 # Signature: async (purpose, model, usage: TokenUsage, user_id?, metadata?) -> None
@@ -60,21 +59,25 @@ class LLMGateway:
     - Config resolution (user -> system -> env)
     - Provider instance caching (env-sourced only)
     - Celery worker compatibility (reset)
+    - Optional routing through ai-gateway microservice
     """
 
     def __init__(self) -> None:
         # Only cache env-sourced providers to reuse connections
-        self._env_providers: Dict[str, LLMProvider] = {}
+        self._env_providers: Dict[str, "LLMProvider"] = {}
 
     # ------------------------------------------------------------------
-    # Provider management
+    # Local provider management (used when USE_AI_GATEWAY=False or
+    # when per-user API key overrides bypass the gateway)
     # ------------------------------------------------------------------
 
-    def _cache_key(self, config: ProviderConfig) -> str:
+    def _cache_key(self, config) -> str:
         return f"{config.provider_type}:{config.base_url or 'default'}"
 
-    def _create_provider(self, config: ProviderConfig) -> LLMProvider:
+    def _create_provider(self, config):
         """Create a new provider instance from config."""
+        from app.core.llm.config import ProviderType
+
         if config.provider_type == ProviderType.OPENAI:
             from app.core.llm.providers.openai_provider import OpenAIProvider
             return OpenAIProvider(api_key=config.api_key, base_url=config.base_url)
@@ -87,16 +90,12 @@ class LLMGateway:
         )
         raise ValueError(f"Unknown provider type: {config.provider_type}")
 
-    def _get_env_provider(self, config: ProviderConfig) -> LLMProvider:
+    def _get_env_provider(self, config):
         """Get cached env-sourced provider or create one."""
         key = self._cache_key(config)
         if key not in self._env_providers:
             self._env_providers[key] = self._create_provider(config)
         return self._env_providers[key]
-
-    # ------------------------------------------------------------------
-    # Config resolution
-    # ------------------------------------------------------------------
 
     def _resolve_and_get_provider(
         self,
@@ -109,8 +108,8 @@ class LLMGateway:
         local_llm_base_url: Optional[str] = None,
         use_local_models: bool = False,
         use_user_config: bool = True,
-    ) -> LLMProvider:
-        """Resolve config and return the appropriate provider.
+    ):
+        """Resolve config and return the appropriate local provider.
 
         Args:
             model: Model name
@@ -122,6 +121,8 @@ class LLMGateway:
             use_local_models: Whether to use local models
             use_user_config: Whether to read current_user_ai_config (False for Celery)
         """
+        from app.core.llm.config import resolve_provider_config
+
         # Read per-request user override
         user_api_key = None
         user_base_url = None
@@ -155,6 +156,48 @@ class LLMGateway:
             return self._create_provider(config)
         else:
             return self._get_env_provider(config)
+
+    # ------------------------------------------------------------------
+    # Gateway path helpers
+    # ------------------------------------------------------------------
+
+    def _has_user_override(self, use_user_config: bool = True) -> bool:
+        """Check if the current request has per-user API key override.
+
+        Per-user overrides bypass the gateway and use local providers
+        directly, so the user's own API key is used.
+        """
+        if not use_user_config:
+            return False
+        try:
+            from app.core.user_ai_config import current_user_ai_config
+            user_config = current_user_ai_config.get()
+            return bool(user_config and (user_config.api_key or user_config.base_url))
+        except Exception:
+            return False
+
+    async def _resolve_provider_id(self, purpose: str) -> Optional[tuple]:
+        """Resolve purpose to (model, provider_id) via settings_service.
+
+        Returns (model, provider_id) or None if resolution fails.
+        Falls back to None so the caller can use the local provider path.
+        """
+        if not purpose:
+            return None
+        try:
+            from app.services.settings_service import get_settings_service
+            from app.db.database import get_async_session
+
+            async with get_async_session() as db:
+                service = get_settings_service()
+                resolved = await service.resolve_model_provider(db, purpose)
+                return resolved.model, resolved.provider_id
+        except Exception as e:
+            logger.warning(
+                "Gateway: failed to resolve provider for purpose '%s': %s",
+                purpose, e,
+            )
+            return None
 
     # ------------------------------------------------------------------
     # Internal: fire usage recording callback
@@ -204,6 +247,31 @@ class LLMGateway:
         use_user_config: bool = True,
     ) -> ChatResponse:
         """Non-streaming chat completion through the appropriate provider."""
+        # Gateway path: route through ai-gateway microservice
+        if settings.USE_AI_GATEWAY and not self._has_user_override(use_user_config):
+            resolved = await self._resolve_provider_id(purpose)
+            if resolved:
+                model, provider_id = resolved
+                # Override model in request if purpose resolved a different one
+                if model and model != request.model:
+                    from dataclasses import replace
+                    request = replace(request, model=model)
+
+                try:
+                    from app.services.ai_gateway_client import get_ai_gateway_client
+                    client = await get_ai_gateway_client()
+                    response = await client.chat(request, provider_id=provider_id)
+                    await self._record_usage(
+                        purpose, request.model, response.usage, user_id, usage_metadata,
+                    )
+                    return response
+                except Exception as e:
+                    logger.warning(
+                        "Gateway chat failed (purpose=%s), falling back to local: %s",
+                        purpose, e,
+                    )
+
+        # Local path: direct provider call (original logic)
         provider = self._resolve_and_get_provider(
             request.model,
             system_api_key=system_api_key,
@@ -240,6 +308,45 @@ class LLMGateway:
         use_user_config: bool = True,
     ) -> AsyncIterator[StreamEvent]:
         """Streaming chat completion through the appropriate provider."""
+        # Gateway path
+        if settings.USE_AI_GATEWAY and not self._has_user_override(use_user_config):
+            resolved = await self._resolve_provider_id(purpose)
+            if resolved:
+                model, provider_id = resolved
+                if model and model != request.model:
+                    from dataclasses import replace
+                    request = replace(request, model=model)
+
+                try:
+                    from app.services.ai_gateway_client import get_ai_gateway_client
+                    client = await get_ai_gateway_client()
+                    captured_usage: Optional[TokenUsage] = None
+                    yielded_any = False
+                    async for event in client.chat_stream(request, provider_id=provider_id):
+                        if isinstance(event, UsageInfo):
+                            captured_usage = event.usage
+                        yielded_any = True
+                        yield event
+                    await self._record_usage(
+                        purpose, request.model, captured_usage, user_id, usage_metadata,
+                    )
+                    return
+                except Exception as e:
+                    if yielded_any:
+                        # Already yielded partial events — cannot fallback without
+                        # corrupting the stream. Re-raise to let the caller handle it.
+                        logger.error(
+                            "Gateway stream failed AFTER yielding events (purpose=%s): %s",
+                            purpose, e,
+                        )
+                        raise
+                    logger.warning(
+                        "Gateway stream failed before yielding (purpose=%s), "
+                        "falling back to local: %s",
+                        purpose, e,
+                    )
+
+        # Local path: direct provider call (original logic)
         provider = self._resolve_and_get_provider(
             request.model,
             system_api_key=system_api_key,
@@ -261,7 +368,7 @@ class LLMGateway:
         )
 
     # ------------------------------------------------------------------
-    # Embeddings (always OpenAI)
+    # Embeddings
     # ------------------------------------------------------------------
 
     async def embed(
@@ -275,7 +382,32 @@ class LLMGateway:
         system_base_url: Optional[str] = None,
         use_user_config: bool = True,
     ) -> EmbeddingResponse:
-        """Generate embeddings (always uses OpenAI provider)."""
+        """Generate embeddings (always uses OpenAI provider locally)."""
+        # Gateway path
+        if settings.USE_AI_GATEWAY and not self._has_user_override(use_user_config):
+            resolved = await self._resolve_provider_id(purpose or "embedding")
+            if resolved:
+                model, provider_id = resolved
+                try:
+                    from app.services.ai_gateway_client import get_ai_gateway_client
+                    client = await get_ai_gateway_client()
+                    response = await client.embed(
+                        request.model, request.input,
+                        provider_id=provider_id,
+                        dimensions=request.dimensions,
+                    )
+                    await self._record_usage(
+                        purpose or "embedding", request.model, response.usage,
+                        user_id, usage_metadata,
+                    )
+                    return response
+                except Exception as e:
+                    logger.warning(
+                        "Gateway embed failed (purpose=%s), falling back to local: %s",
+                        purpose or "embedding", e,
+                    )
+
+        # Local path: direct provider call (original logic)
         provider = self._resolve_and_get_provider(
             request.model,  # Embedding models are always OpenAI
             system_api_key=system_api_key,
@@ -293,7 +425,8 @@ class LLMGateway:
             )
         response = await provider.embed(request)
         await self._record_usage(
-            purpose, request.model, response.usage, user_id, usage_metadata,
+            purpose or "embedding", request.model, response.usage,
+            user_id, usage_metadata,
         )
         return response
 
@@ -302,7 +435,7 @@ class LLMGateway:
     # ------------------------------------------------------------------
 
     async def close(self) -> None:
-        """Graceful shutdown — close all cached providers."""
+        """Graceful shutdown -- close all cached providers."""
         for provider in self._env_providers.values():
             await provider.close()
         self._env_providers.clear()

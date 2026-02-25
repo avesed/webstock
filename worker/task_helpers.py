@@ -32,6 +32,7 @@ _SINGLETON_RESETS = [
     ("app.services.stock_profile_service", "reset_stock_profile_service_sync"),
     ("app.services.data_service_client", "reset_data_service_client"),
     ("app.services.qlib_client", "reset_qlib_client"),
+    ("app.services.ai_gateway_client", "reset_ai_gateway_client"),
 ]
 
 
@@ -141,6 +142,15 @@ async def _close_async_clients():
             await close_fn()
     except Exception as e:
         logger.debug("QlibClient close: %s", e)
+
+    # AiGatewayClient — close httpx.AsyncClient bound to current loop
+    try:
+        mod = importlib.import_module("app.services.ai_gateway_client")
+        close_fn = getattr(mod, "close_ai_gateway_client", None)
+        if close_fn:
+            await close_fn()
+    except Exception as e:
+        logger.debug("AiGatewayClient close: %s", e)
 
     # Database engine — dispose pooled asyncpg connections.
     # The module-level engine in database.py keeps a connection pool;

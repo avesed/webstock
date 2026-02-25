@@ -109,6 +109,7 @@ class ResolvedModelConfig:
     provider_type: str  # "openai" or "anthropic"
     api_key: Optional[str]
     base_url: Optional[str]
+    provider_id: Optional[str] = None  # UUID as string, for ai-gateway routing
 
 
 @dataclass
@@ -402,6 +403,7 @@ class SettingsService:
                     provider_type=provider.provider_type,
                     api_key=provider.api_key,
                     base_url=provider.base_url,
+                    provider_id=str(provider_id),
                 )
             else:
                 logger.warning(
@@ -440,6 +442,7 @@ class SettingsService:
                 provider_type=matched_provider.provider_type,
                 api_key=matched_provider.api_key,
                 base_url=matched_provider.base_url,
+                provider_id=str(matched_provider.id),
             )
 
         # Final fallback: legacy flat columns
