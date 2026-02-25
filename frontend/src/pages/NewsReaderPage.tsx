@@ -1,10 +1,10 @@
-import { Component, useMemo, useRef, useState, type ReactNode } from 'react'
+import { Component, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { useParams, useLocation, useNavigate, Link } from 'react-router-dom'
-import { useQuery } from '@tanstack/react-query'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useTranslation } from 'react-i18next'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
-import { ArrowLeft, ExternalLink, Clock, Loader2, FileWarning } from 'lucide-react'
+import { ArrowLeft, ExternalLink, Clock, Loader2, FileWarning, Brain } from 'lucide-react'
 import { useDrag } from '@use-gesture/react'
 import { Button } from '@/components/ui/button'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
@@ -38,11 +38,14 @@ class MarkdownErrorBoundary extends Component<
   }
 }
 
+type AnalysisStatus = 'idle' | 'streaming' | 'complete' | 'error'
+
 export default function NewsReaderPage() {
   const { newsId } = useParams<{ newsId: string }>()
   const location = useLocation()
   const navigate = useNavigate()
   const { t } = useTranslation('dashboard')
+  const queryClient = useQueryClient()
 
   const locationState = location.state as LocationState | undefined
   const passedArticle = locationState?.article
@@ -62,6 +65,24 @@ export default function NewsReaderPage() {
 
   const article = passedArticle ?? fetchedArticle
 
+  // On-demand analysis state
+  const [analysisContent, setAnalysisContent] = useState('')
+  const [analysisStatus, setAnalysisStatus] = useState<AnalysisStatus>('idle')
+  const abortRef = useRef<AbortController | null>(null)
+  const newsIdRef = useRef(newsId)
+  newsIdRef.current = newsId
+
+  // Seed React Query cache when article comes from router state (passedArticle)
+  // so that streaming completion can find & update the cached entry
+  useEffect(() => {
+    if (passedArticle && newsId) {
+      queryClient.setQueryData(['news', 'article', newsId], passedArticle)
+    }
+  }, [passedArticle, newsId, queryClient])
+
+  // Effective analysis: prefer streaming content (re-analysis) over cached DB
+  const effectiveAnalysis = analysisContent || article?.aiAnalysis
+
   // Determine which tabs to show and the default
   const { tabs, resolvedDefault } = useMemo(() => {
     if (!article) return { tabs: [] as string[], resolvedDefault: 'summary' }
@@ -69,21 +90,91 @@ export default function NewsReaderPage() {
     const available: string[] = []
     if (article.investmentSummary || article.summary) available.push('summary')
     if (article.detailedSummary) available.push('detailed')
-    if (article.aiAnalysis) available.push('analysis')
+    // Analysis tab is always available
+    available.push('analysis')
 
-    // If nothing available, at least show summary tab
-    if (available.length === 0) available.push('summary')
+    // If nothing available except analysis, add summary too
+    if (available.length === 1) available.unshift('summary')
 
     let def = defaultTab
     if (!def || !available.includes(def)) {
-      // Auto-select: prefer detailed > analysis > summary
+      // Auto-select: prefer detailed > summary (analysis requires manual trigger)
       if (available.includes('detailed')) def = 'detailed'
-      else if (available.includes('analysis')) def = 'analysis'
       else def = 'summary'
     }
 
     return { tabs: available, resolvedDefault: def }
   }, [article, defaultTab])
+
+  // Start streaming analysis
+  const startAnalysis = useCallback((forceNew = false) => {
+    if (!newsId) return
+
+    // Capture newsId for stale-closure guard
+    const targetId = newsId
+
+    // Cancel any previous stream
+    abortRef.current?.abort()
+
+    setAnalysisContent('')
+    setAnalysisStatus('streaming')
+
+    const controller = newsApi.streamNewsAnalysis(
+      newsId,
+      (data) => {
+        // Stale-closure guard: ignore events if user navigated to a different article
+        if (newsIdRef.current !== targetId) return
+
+        const type = data.type as string
+        if (type === 'analysis_chunk') {
+          const chunk = (data.data as Record<string, unknown>)?.content as string
+          if (chunk) {
+            setAnalysisContent(prev => prev + chunk)
+          }
+        } else if (type === 'complete') {
+          setAnalysisStatus('complete')
+          const report = (data.data as Record<string, unknown>)?.report as string
+          if (report) {
+            setAnalysisContent(report)
+            // Update React Query cache so the article shows as analyzed
+            queryClient.setQueryData<NewsArticle>(
+              ['news', 'article', targetId],
+              (old) => old ? { ...old, aiAnalysis: report } : old,
+            )
+          }
+          // M4: complete without report — keep whatever streamed content we have
+        } else if (type === 'error') {
+          setAnalysisStatus('error')
+        }
+      },
+      () => {
+        if (newsIdRef.current !== targetId) return
+        setAnalysisStatus(prev => prev === 'streaming' ? 'error' : prev)
+      },
+      () => {
+        // onDone — stream ended; only treat as error if we got no content at all
+        if (newsIdRef.current !== targetId) return
+        setAnalysisStatus(prev => {
+          if (prev !== 'streaming') return prev
+          // If we accumulated content but never got a 'complete' event,
+          // treat as complete (premature close with partial content is OK)
+          return 'complete'
+        })
+      },
+      { forceNew },
+    )
+
+    abortRef.current = controller
+  }, [newsId, queryClient])
+
+  // Reset analysis state and cleanup on article change
+  useEffect(() => {
+    setAnalysisContent('')
+    setAnalysisStatus('idle')
+    return () => {
+      abortRef.current?.abort()
+    }
+  }, [newsId])
 
   // Swipe gesture hooks - must be called unconditionally before any returns
   const isMobile = useIsMobile()
@@ -298,11 +389,41 @@ export default function NewsReaderPage() {
         {tabs.includes('analysis') && (
           <TabsContent value="analysis">
             <div className="prose prose-lg dark:prose-invert max-w-none">
-              <MarkdownErrorBoundary fallbackText={article.aiAnalysis ?? ''}>
-                <ReactMarkdown remarkPlugins={[remarkGfm]}>
-                  {article.aiAnalysis ?? ''}
-                </ReactMarkdown>
-              </MarkdownErrorBoundary>
+              {effectiveAnalysis ? (
+                <>
+                  <MarkdownErrorBoundary fallbackText={effectiveAnalysis}>
+                    <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                      {effectiveAnalysis}
+                    </ReactMarkdown>
+                  </MarkdownErrorBoundary>
+                  {analysisStatus === 'streaming' && (
+                    <div className="flex items-center gap-2 mt-4 text-sm text-muted-foreground">
+                      <Loader2 className="h-4 w-4 animate-spin" />
+                      {t('news.reader.generating')}
+                    </div>
+                  )}
+                </>
+              ) : analysisStatus === 'error' ? (
+                <div className="flex flex-col items-center py-12 text-center">
+                  <p className="text-sm text-destructive mb-4">{t('news.reader.analysisError')}</p>
+                  <Button variant="outline" size="sm" onClick={() => startAnalysis(true)}>
+                    {t('news.reader.retryAnalysis')}
+                  </Button>
+                </div>
+              ) : analysisStatus === 'streaming' ? (
+                <div className="flex items-center justify-center py-12">
+                  <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
+                </div>
+              ) : (
+                <div className="flex flex-col items-center py-12 text-center">
+                  <Brain className="h-10 w-10 text-muted-foreground/50 mb-3" />
+                  <p className="text-sm text-muted-foreground mb-4">{t('news.reader.noAnalysisYet')}</p>
+                  <Button variant="outline" size="sm" onClick={() => startAnalysis()}>
+                    <Brain className="mr-2 h-4 w-4" />
+                    {t('news.reader.generateAnalysis')}
+                  </Button>
+                </div>
+              )}
             </div>
           </TabsContent>
         )}

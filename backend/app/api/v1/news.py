@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 from typing import List, Optional
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from sqlalchemy import delete, select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -77,6 +77,20 @@ SYMBOL_NEWS_RATE_LIMIT = rate_limit(max_requests=100, window_seconds=60, key_pre
 FEED_RATE_LIMIT = rate_limit(max_requests=30, window_seconds=60, key_prefix="news_feed")
 # Analyze: 10 requests per minute (uses AI)
 ANALYZE_RATE_LIMIT = rate_limit(max_requests=10, window_seconds=60, key_prefix="news_analyze")
+
+
+async def news_analysis_stream_rate_limit(
+    request: Request,
+    last_event_id: str = Query("0-0", alias="lastEventId"),
+    force_new: bool = Query(False, alias="forceNew"),
+):
+    """Only rate-limit new analysis requests, not SSE reconnections."""
+    is_new_request = (last_event_id == "0-0") or force_new
+    if is_new_request:
+        limiter = rate_limit(max_requests=10, window_seconds=60, key_prefix="news_analysis_stream")
+        await limiter(request)
+
+
 # Alerts CRUD: 60 requests per minute
 ALERTS_RATE_LIMIT = rate_limit(max_requests=60, window_seconds=60, key_prefix="news_alerts")
 # Full content: 30 requests per minute
@@ -643,6 +657,100 @@ async def get_news_article(
             detail="News article not found",
         )
     return _news_to_response(article)
+
+
+@router.get(
+    "/article/{news_id}/stream/analysis",
+    summary="Stream deep analysis for a news article",
+    description="Generate or retrieve a deep AI analysis report via SSE streaming.",
+)
+async def stream_news_analysis(
+    news_id: str,
+    last_event_id: str = Query("0-0", alias="lastEventId"),
+    force_new: bool = Query(False, alias="forceNew"),
+    current_user: User = Depends(get_current_user),
+    _rate_limit: None = Depends(news_analysis_stream_rate_limit),
+):
+    """
+    Stream deep analysis for a news article.
+
+    If the article already has a cached analysis, returns it immediately.
+    Otherwise generates a new report via LLM streaming (SSE).
+
+    Query params:
+    - `lastEventId`: Redis Stream ID to resume from (default "0-0")
+    - `forceNew`: Force regeneration even if cached
+
+    Rate limit: 10/min per user. SSE reconnections (lastEventId != "0-0")
+    bypass rate limit via news_analysis_stream_rate_limit dependency.
+    """
+    import asyncio
+
+    from fastapi.responses import StreamingResponse
+
+    from app.services.sse_helpers import reconnectable_sse_generator
+    from app.services.task_manager import get_task_manager
+
+    task_manager = get_task_manager()
+
+    # SSE reconnection: resume existing task stream
+    if last_event_id != "0-0":
+        # Try to find existing task for this news article
+        existing = await task_manager.find_active_task(
+            "news_analysis", current_user.id, news_id,
+            include_completed=True,
+        )
+        if existing:
+            return StreamingResponse(
+                reconnectable_sse_generator(existing, last_event_id, timeout_seconds=300),
+                media_type="text/event-stream",
+                headers={
+                    "Cache-Control": "no-cache",
+                    "Connection": "keep-alive",
+                    "X-Accel-Buffering": "no",
+                },
+            )
+
+    # Force new: cancel existing task
+    if force_new:
+        existing = await task_manager.find_active_task(
+            "news_analysis", current_user.id, news_id,
+            include_completed=True,
+        )
+        if existing:
+            await task_manager.cancel_task(existing)
+            await asyncio.sleep(0.2)
+
+    async def workflow_factory():
+        """Background task that streams analysis events."""
+        from app.db.task_session import get_task_session
+        from app.services.news_analysis_service import get_news_analysis_service
+
+        service = get_news_analysis_service()
+        async with get_task_session() as task_db:
+            async for event in service.stream_analysis(
+                task_db, news_id, force_new=force_new,
+            ):
+                yield event
+
+    task_id, _is_new = await task_manager.get_or_create_task(
+        task_type="news_analysis",
+        user_id=current_user.id,
+        symbol=news_id,  # Use news_id as the dedup key
+        market="",
+        language="zh",
+        workflow_factory=workflow_factory,
+    )
+
+    return StreamingResponse(
+        reconnectable_sse_generator(task_id, last_event_id, timeout_seconds=300),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
 
 
 @router.get(

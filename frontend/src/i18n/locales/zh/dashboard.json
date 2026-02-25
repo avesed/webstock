@@ -192,7 +192,12 @@
       "nextArticle": "下一篇",
       "viewOriginal": "查看原文",
       "articleNotFound": "文章未找到",
-      "articleNotFoundDesc": "该文章可能已被删除或链接无效。"
+      "articleNotFoundDesc": "该文章可能已被删除或链接无效。",
+      "noAnalysisYet": "此文章尚未生成深度分析",
+      "generateAnalysis": "生成分析",
+      "analysisError": "分析生成失败，请重试",
+      "retryAnalysis": "重试",
+      "generating": "正在生成分析..."
     },
     "filter": {
       "searchPlaceholder": "搜索文章...",

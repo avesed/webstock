@@ -72,14 +72,8 @@ class FilterStatsService:
         # Layer 3 per-agent token tracking
         "agent_entity_extractor_input_tokens",
         "agent_entity_extractor_output_tokens",
-        "agent_sentiment_tags_input_tokens",
-        "agent_sentiment_tags_output_tokens",
-        "agent_summary_generator_input_tokens",
-        "agent_summary_generator_output_tokens",
-        "agent_impact_assessor_input_tokens",
-        "agent_impact_assessor_output_tokens",
-        "agent_report_writer_input_tokens",
-        "agent_report_writer_output_tokens",
+        "agent_summary_sentiment_input_tokens",
+        "agent_summary_sentiment_output_tokens",
         # Layer 1 three-agent token tracking
         "layer1_macro_input_tokens",
         "layer1_macro_output_tokens",
@@ -131,9 +125,7 @@ class FilterStatsService:
             "initial", "deep",
             "layer2_scoring", "deep_multi_agent", "lightweight",
             "layer1_macro", "layer1_market", "layer1_signal",
-            "agent_entity_extractor", "agent_sentiment_tags",
-            "agent_summary_generator", "agent_impact_assessor",
-            "agent_report_writer",
+            "agent_entity_extractor", "agent_summary_sentiment",
         )
         if stage not in valid_stages:
             logger.warning(f"Unknown filter stage: {stage}")
@@ -457,10 +449,9 @@ class FilterStatsService:
                 "estimated_cost_usd": round(cost, 4),
             }
 
-        # Per-agent token breakdown (5 analysis agents, all use gpt-4o rate)
+        # Per-agent token breakdown (2 analysis agents, all use gpt-4o rate)
         agent_names = [
-            "entity_extractor", "sentiment_tags", "summary_generator",
-            "impact_assessor", "report_writer",
+            "entity_extractor", "summary_sentiment",
         ]
         per_agent = {}
         for name in agent_names:

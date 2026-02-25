@@ -181,12 +181,12 @@
       "cacheTtlMinutes": "缓存有效期（分钟）",
       "cacheTtlMinutesHint": "缓存的 Prompt 在刷新之前保留的时间",
       "agentModelsTitle": "L3 Agent 模型配置（高级）",
-      "agentModelsDescription": "为每个分析 Agent 单独配置模型。未配置的 Agent 将使用上方「Layer 3 深度分析」的模型。",
+      "agentModelsDescription": "为 Pipeline 的 2 个分析 Agent 和按需深度分析单独配置模型。未配置的将使用上方「Layer 3 深度分析」的模型。",
       "newsEntity": "实体提取 (Entity)",
       "newsSentiment": "情感分析 (Sentiment)",
-      "newsSummary": "摘要生成 (Summary)",
+      "newsSummary": "摘要+情感 (Summary+Sentiment)",
       "newsImpact": "影响评估 (Impact)",
-      "newsReport": "报告撰写 (Report)",
+      "newsReport": "深度分析 (On-Demand)",
       "newsLightweightOverride": "轻量处理覆盖 (Override)"
     },
     "discussion": {

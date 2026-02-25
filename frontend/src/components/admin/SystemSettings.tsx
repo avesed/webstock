@@ -767,7 +767,7 @@ export function SystemSettings() {
                         </p>
                         {enabledProviders.length > 0 && (
                           <div className="space-y-4">
-                            {(['newsEntity', 'newsSentiment', 'newsSummary', 'newsImpact', 'newsReport'] as const).map((layer) => (
+                            {(['newsEntity', 'newsSummary', 'newsReport'] as const).map((layer) => (
                               <ModelSelectorRow
                                 key={layer}
                                 label={t(`settings.phase2.${layer}` as never)}

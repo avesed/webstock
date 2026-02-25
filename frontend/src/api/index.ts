@@ -911,6 +911,71 @@ export const newsApi = {
       sentimentScore: analysis.sentiment_score,
     }
   },
+
+  /**
+   * Stream deep analysis for a news article via SSE.
+   * Returns an AbortController so the caller can cancel.
+   */
+  streamNewsAnalysis: (
+    newsId: string,
+    onEvent: (data: Record<string, unknown>, eventId: string | null) => void,
+    onError: (err: unknown) => void,
+    onDone: () => void,
+    options?: { lastEventId?: string; forceNew?: boolean },
+  ): AbortController => {
+    const controller = new AbortController()
+
+    const run = async () => {
+      try {
+        const { createSSEParser } = await import('./sse')
+
+        const token = await getValidAccessToken()
+        const params = new URLSearchParams()
+        if (options?.lastEventId && options.lastEventId !== '0-0') {
+          params.set('lastEventId', options.lastEventId)
+        }
+        if (options?.forceNew) {
+          params.set('forceNew', 'true')
+        }
+
+        const resp = await fetch(`/api/v1/news/article/${newsId}/stream/analysis?${params}`, {
+          method: 'GET',
+          headers: {
+            Accept: 'text/event-stream',
+            ...(token ? { Authorization: `Bearer ${token}` } : {}),
+          },
+          credentials: 'include',
+          signal: controller.signal,
+        })
+
+        if (!resp.ok) {
+          throw new Error(`HTTP ${resp.status}`)
+        }
+
+        const reader = resp.body?.getReader()
+        if (!reader) throw new Error('No response body')
+
+        const parser = createSSEParser<Record<string, unknown>>()
+
+        while (true) {
+          const { done, value } = await reader.read()
+          if (done) break
+          for (const { eventId, data } of parser.feed(value)) {
+            onEvent(data, eventId)
+          }
+        }
+
+        onDone()
+      } catch (err) {
+        if ((err as Error).name !== 'AbortError') {
+          onError(err)
+        }
+      }
+    }
+
+    run()
+    return controller
+  },
 }
 
 // Chat API

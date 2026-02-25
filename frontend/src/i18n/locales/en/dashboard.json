@@ -192,7 +192,12 @@
       "nextArticle": "Next",
       "viewOriginal": "View Original",
       "articleNotFound": "Article not found",
-      "articleNotFoundDesc": "This article may have been removed or the link is invalid."
+      "articleNotFoundDesc": "This article may have been removed or the link is invalid.",
+      "noAnalysisYet": "This article hasn't been analyzed yet",
+      "generateAnalysis": "Generate Analysis",
+      "analysisError": "Analysis generation failed. Try again.",
+      "retryAnalysis": "Retry",
+      "generating": "Generating analysis..."
     },
     "filter": {
       "searchPlaceholder": "Search articles...",

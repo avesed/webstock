@@ -19,6 +19,7 @@ logger = logging.getLogger(__name__)
 # TTLs in seconds
 ANALYSIS_TTL = 600        # 10 minutes (analysis takes ~2 min)
 DISCUSSION_TTL = 1800     # 30 minutes (discussion can take ~10 min)
+NEWS_ANALYSIS_TTL = 300   # 5 minutes (report generation takes ~30-60s)
 STREAM_MAXLEN = 2000      # Max events per Redis Stream (approximate trim)
 HEARTBEAT_UPDATE_INTERVAL = 30   # seconds between metadata heartbeat updates
 HEARTBEAT_INTERVAL = 15          # seconds between synthetic heartbeats to SSE consumer
@@ -61,7 +62,12 @@ class TaskManager:
 
         redis = await get_redis()
         active_key = f"task:active:{task_type}:{user_id}:{symbol}"
-        ttl = DISCUSSION_TTL if task_type == "discussion" else ANALYSIS_TTL
+        if task_type == "discussion":
+            ttl = DISCUSSION_TTL
+        elif task_type == "news_analysis":
+            ttl = NEWS_ANALYSIS_TTL
+        else:
+            ttl = ANALYSIS_TTL
 
         # Check for existing active task
         existing_task_id = await redis.get(active_key)

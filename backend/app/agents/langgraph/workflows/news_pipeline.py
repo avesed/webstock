@@ -121,7 +121,7 @@ def route_by_processing_path(state: NewsProcessingState) -> str:
     and passed through via Celery task args. No LLM call needed.
 
     Returns:
-        "full_analysis" -- high-score articles for 5-agent deep analysis
+        "full_analysis" -- high-score articles for 2-agent deep analysis
         "lightweight"   -- low-score articles for quick extraction
         "end"           -- skip processing (read failed or no path set)
     """
@@ -137,7 +137,7 @@ def route_by_processing_path(state: NewsProcessingState) -> str:
 
 
 async def multi_agent_analysis_node(state: NewsProcessingState) -> dict:
-    """Run 5-agent parallel deep analysis (full_analysis path)."""
+    """Run 2-agent parallel deep analysis (full_analysis path)."""
     from app.db.task_session import get_task_session
     from app.services.multi_agent_filter_service import get_multi_agent_filter_service
     from app.services.pipeline_trace_service import PipelineTraceService

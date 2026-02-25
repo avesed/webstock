@@ -181,12 +181,12 @@
       "cacheTtlMinutes": "Cache TTL (minutes)",
       "cacheTtlMinutesHint": "How long to keep cached prompts before refreshing",
       "agentModelsTitle": "L3 Agent Models (Advanced)",
-      "agentModelsDescription": "Configure models per analysis agent. Unconfigured agents use the Layer 3 Analysis model above.",
+      "agentModelsDescription": "Configure models for the 2 pipeline agents and on-demand deep analysis. Unconfigured agents use the Layer 3 Analysis model above.",
       "newsEntity": "Entity Extraction",
       "newsSentiment": "Sentiment Analysis",
-      "newsSummary": "Summary Generation",
+      "newsSummary": "Summary & Sentiment",
       "newsImpact": "Impact Assessment",
-      "newsReport": "Report Writing",
+      "newsReport": "Deep Analysis (On-Demand)",
       "newsLightweightOverride": "Lightweight Override"
     },
     "discussion": {

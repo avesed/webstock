@@ -1,10 +1,11 @@
 """Layer 2 multi-agent deep analysis service.
 
-Runs 5 specialized agents in parallel with shared prompt cache for
-comprehensive article analysis.  Each agent receives the same system
-message + article context (with cache_control=ephemeral), then a
-unique instruction message.  Agent 1 writes the cache; Agents 2-5
-read from cache (~90% cost saving on input tokens).
+Runs 2 specialized agents in parallel with shared prompt cache for
+article analysis: entity_extractor (entities + themes) and
+summary_sentiment (sentiment + tags + summaries).  Each agent receives
+the same system message + article context (with cache_control=ephemeral),
+then a unique instruction message.  Agent 1 writes the cache; Agent 2
+reads from cache (~90% cost saving on input tokens).
 
 Structured output uses ``response_format={"type":"json_schema"}``
 (strict mode) instead of tool calling.  This provides:
@@ -20,7 +21,6 @@ with high content_score (full_analysis path).
 import asyncio
 import json
 import logging
-import re
 import time
 from collections import defaultdict
 from dataclasses import dataclass, field
@@ -44,7 +44,7 @@ MAX_CONTENT_LENGTH = 20000  # Max chars of cleaned article text sent to LLM
 AGENT_TIMEOUT = 120  # Seconds per agent LLM call
 
 # ---------------------------------------------------------------------------
-# Shared prompt (cached across all 5 agents)
+# Shared prompt (cached across all agents)
 # ---------------------------------------------------------------------------
 
 BASE_ANALYSIS_SYSTEM = """你是专业的金融新闻分析团队的一员。你将分析以下新闻文章，根据你的专业角色提供结构化的分析结果。所有输出必须为JSON格式。
@@ -170,77 +170,31 @@ ENTITY_EXTRACTION_PROMPT = """你的角色：实体提取专家（带联想能�
 ## 限制
 - 最多15个实体，优先保留高相关度"""
 
-SENTIMENT_TAGS_PROMPT = """你的角色：情绪与标签分析师
-判断新闻情绪和分类标签。
+SUMMARY_SENTIMENT_PROMPT = """你的角色：摘要与情绪分析师
+综合分析新闻情绪并生成投资导向的摘要内容。
 
-industry_tags选项: tech/finance/healthcare/energy/consumer/industrial/materials/utilities/realestate/telecom
-event_tags选项: earnings/merger/ipo/regulatory/executive/product/lawsuit/dividend/buyback/guidance/macro
-- 每类最多5个标签"""
+情绪判断：
+- sentiment: bullish/bearish/neutral
 
-SUMMARY_GENERATION_PROMPT = """你的角色：摘要生成专家
-生成投资导向的摘要内容。
+标签分类：
+- industry_tags选项: tech/finance/healthcare/energy/consumer/industrial/materials/utilities/realestate/telecom
+- event_tags选项: earnings/merger/ipo/regulatory/executive/product/lawsuit/dividend/buyback/guidance/macro
+- 每类最多5个标签
 
-要求：
+摘要要求：
 - investment_summary: 精炼的1句话，不超过50字，用于卡片预览
 - detailed_summary: 保留所有关键信息，长度5-20句话，视复杂程度调整。删除冗余表述，但不能遗漏重要数据和因果关系"""
-
-IMPACT_ASSESSMENT_PROMPT = """你的角色：影响力评估师
-评估新闻对市场、行业和个股的影响。
-
-要求：
-- market_impact/sector_impact/stock_impact: 每个影响字段2-3句话，数据和结论要有理有据
-- time_horizon: 影响的主要时间维度
-- impact_magnitude: 综合影响强度"""
-
-REPORT_WRITING_PROMPT = """你的角色：报告撰写专家
-撰写Markdown格式的专业分析报告。
-
-报告模板（analysis_report 字段）：
-## 核心解读
-用通俗易懂的语言解释...
-
-## 投资洞察
-- **机会点**：...
-- **关注点**：...
-- **时间窗口**：...
-
-## 风险分析
-- **短期风险**：...
-- **长期风险**：...
-- **不确定性**：...
-
-## 市场影响
-- **直接影响板块**：...
-- **间接影响**：...
-
-## 情绪指数
-**综合情绪**：看涨/中性/看跌
-**情绪强度**：X/5
-**依据**：...
-
-## 专业信息
-- **相关公司**：...
-- **关键数据**：...
-- **时间线**：...
-
-报告必须包含以上6个章节。每章节2-4句话，数据和结论要有理有据。"""
 
 # Agent name → instruction prompt mapping
 AGENT_PROMPTS: Dict[str, str] = {
     "entity_extractor": ENTITY_EXTRACTION_PROMPT,
-    "sentiment_tags": SENTIMENT_TAGS_PROMPT,
-    "summary_generator": SUMMARY_GENERATION_PROMPT,
-    "impact_assessor": IMPACT_ASSESSMENT_PROMPT,
-    "report_writer": REPORT_WRITING_PROMPT,
+    "summary_sentiment": SUMMARY_SENTIMENT_PROMPT,
 }
 
 # Agent name → fallback purpose chain for model resolution
 AGENT_PURPOSE_CHAINS: Dict[str, list] = {
     "entity_extractor": ["news_entity", "phase2_layer2_analysis", "news_filter"],
-    "sentiment_tags": ["news_sentiment", "phase2_layer2_analysis", "news_filter"],
-    "summary_generator": ["news_summary", "phase2_layer2_analysis", "news_filter"],
-    "impact_assessor": ["news_impact", "phase2_layer2_analysis", "news_filter"],
-    "report_writer": ["news_report", "phase2_layer2_analysis", "news_filter"],
+    "summary_sentiment": ["news_summary", "phase2_layer2_analysis", "news_filter"],
 }
 
 # ---------------------------------------------------------------------------
@@ -291,10 +245,10 @@ AGENT_SCHEMAS: Dict[str, Dict] = {
             },
         },
     },
-    "sentiment_tags": {
+    "summary_sentiment": {
         "type": "json_schema",
         "json_schema": {
-            "name": "sentiment_result",
+            "name": "summary_sentiment_result",
             "strict": True,
             "schema": {
                 "type": "object",
@@ -311,65 +265,11 @@ AGENT_SCHEMAS: Dict[str, Dict] = {
                         "type": "array",
                         "items": {"type": "string"},
                     },
-                },
-                "required": ["sentiment", "industry_tags", "event_tags"],
-                "additionalProperties": False,
-            },
-        },
-    },
-    "summary_generator": {
-        "type": "json_schema",
-        "json_schema": {
-            "name": "summary_result",
-            "strict": True,
-            "schema": {
-                "type": "object",
-                "properties": {
                     "investment_summary": {"type": "string"},
                     "detailed_summary": {"type": "string"},
                 },
-                "required": ["investment_summary", "detailed_summary"],
-                "additionalProperties": False,
-            },
-        },
-    },
-    "impact_assessor": {
-        "type": "json_schema",
-        "json_schema": {
-            "name": "impact_result",
-            "strict": True,
-            "schema": {
-                "type": "object",
-                "properties": {
-                    "market_impact": {"type": "string"},
-                    "sector_impact": {"type": "string"},
-                    "stock_impact": {"type": "string"},
-                    "time_horizon": {
-                        "type": "string",
-                        "enum": ["short_term", "medium_term", "long_term"],
-                    },
-                    "impact_magnitude": {
-                        "type": "string",
-                        "enum": ["high", "medium", "low"],
-                    },
-                },
-                "required": ["market_impact", "sector_impact", "stock_impact",
-                             "time_horizon", "impact_magnitude"],
-                "additionalProperties": False,
-            },
-        },
-    },
-    "report_writer": {
-        "type": "json_schema",
-        "json_schema": {
-            "name": "report_result",
-            "strict": True,
-            "schema": {
-                "type": "object",
-                "properties": {
-                    "analysis_report": {"type": "string"},
-                },
-                "required": ["analysis_report"],
+                "required": ["sentiment", "industry_tags", "event_tags",
+                             "investment_summary", "detailed_summary"],
                 "additionalProperties": False,
             },
         },
@@ -387,7 +287,7 @@ AGENT_SCHEMAS: Dict[str, Dict] = {
 
 @dataclass
 class MultiAgentResult:
-    """Combined result from 5-agent analysis."""
+    """Combined result from 2-agent analysis."""
 
     decision: str  # always "keep" for articles that reach this service
     entities: List[Dict[str, Any]]
@@ -396,8 +296,7 @@ class MultiAgentResult:
     event_tags: List[str]
     investment_summary: str
     detailed_summary: str
-    analysis_report: str
-    market_context: Optional[Dict[str, Any]]
+    analysis_report: str  # Always "" — deep analysis is now on-demand
     cache_stats: Dict[str, Any] = field(default_factory=dict)
 
 
@@ -425,11 +324,11 @@ class _AgentResponse:
 # ---------------------------------------------------------------------------
 
 class MultiAgentFilterService:
-    """5-Agent parallel analysis with shared prompt cache.
+    """2-Agent parallel analysis with shared prompt cache.
 
-    All 5 agents share the same system message + article context which
+    Both agents share the same system message + article context which
     is marked with ``cache_control={"type": "ephemeral"}`` so that the
-    first agent populates the prompt cache and subsequent agents read
+    first agent populates the prompt cache and the second agent reads
     from it (Anthropic / OpenAI prompt caching).
     """
 
@@ -441,7 +340,7 @@ class MultiAgentFilterService:
         image_insights: str,
         symbol: str,
     ) -> MultiAgentResult:
-        """Run 5 agents in parallel with shared prompt cache.
+        """Run 2 agents in parallel with shared prompt cache.
 
         Args:
             db: Database session for resolving model config.
@@ -542,7 +441,7 @@ class MultiAgentFilterService:
             )
 
         # ------------------------------------------------------------------
-        # 4. Run 5 agents in parallel (json_schema strict mode, no tools)
+        # 4. Run 2 agents in parallel (json_schema strict mode, no tools)
         # ------------------------------------------------------------------
         # All agents sharing the same model+endpoint share the cached
         # message prefix (system + article context).  Each agent has its
@@ -563,7 +462,7 @@ class MultiAgentFilterService:
             )
 
         logger.info(
-            "MultiAgentFilterService: starting 5 agents for symbol=%s title=%s",
+            "MultiAgentFilterService: starting 2 agents for symbol=%s title=%s",
             symbol,
             title[:80],
         )
@@ -889,17 +788,7 @@ class MultiAgentFilterService:
         self,
         agent_responses: Dict[str, _AgentResponse],
     ) -> MultiAgentResult:
-        """Merge outputs from all 5 agents into a single result.
-
-        Uses default values for any agent that failed or returned
-        incomplete data.
-
-        Args:
-            agent_responses: Map of agent_name to _AgentResponse.
-
-        Returns:
-            MultiAgentResult with merged data.
-        """
+        """Merge outputs from 2 agents into a single result."""
         # --- Entity Extractor ---
         entity_data = agent_responses.get("entity_extractor")
         raw_entities: List[Any] = []
@@ -907,17 +796,20 @@ class MultiAgentFilterService:
             raw_entities = entity_data.data.get("entities", [])
         entities = validate_entities(raw_entities, max_entities=15)
 
-        # --- Sentiment & Tags ---
-        sentiment_data = agent_responses.get("sentiment_tags")
+        # --- Summary & Sentiment (merged agent) ---
+        ss_data = agent_responses.get("summary_sentiment")
         sentiment = "neutral"
         industry_tags: List[str] = []
         event_tags: List[str] = []
-        if sentiment_data and sentiment_data.success:
-            raw_sentiment = sentiment_data.data.get("sentiment", "neutral")
+        investment_summary = ""
+        detailed_summary = ""
+
+        if ss_data and ss_data.success:
+            raw_sentiment = ss_data.data.get("sentiment", "neutral")
             if raw_sentiment in ("bullish", "bearish", "neutral"):
                 sentiment = raw_sentiment
-            industry_tags = sentiment_data.data.get("industry_tags", [])[:5]
-            event_tags = sentiment_data.data.get("event_tags", [])[:5]
+            industry_tags = ss_data.data.get("industry_tags", [])[:5]
+            event_tags = ss_data.data.get("event_tags", [])[:5]
 
             # Validate tag values
             valid_industry = {
@@ -928,23 +820,14 @@ class MultiAgentFilterService:
                 "earnings", "merger", "ipo", "regulatory", "executive",
                 "product", "lawsuit", "dividend", "buyback", "guidance", "macro",
             }
-            industry_tags = [
-                t for t in industry_tags if t in valid_industry
-            ]
-            event_tags = [
-                t for t in event_tags if t in valid_events
-            ]
+            industry_tags = [t for t in industry_tags if t in valid_industry]
+            event_tags = [t for t in event_tags if t in valid_events]
 
-        # --- Summary Generator ---
-        summary_data = agent_responses.get("summary_generator")
-        investment_summary = ""
-        detailed_summary = ""
-        if summary_data and summary_data.success:
             investment_summary = (
-                summary_data.data.get("investment_summary", "") or ""
+                ss_data.data.get("investment_summary", "") or ""
             )[:500]
             detailed_summary = (
-                summary_data.data.get("detailed_summary", "") or ""
+                ss_data.data.get("detailed_summary", "") or ""
             )
 
             # Validate minimum quality
@@ -961,109 +844,6 @@ class MultiAgentFilterService:
                 )
                 detailed_summary = ""
 
-        # --- Impact Assessor ---
-        impact_data = agent_responses.get("impact_assessor")
-        market_context: Optional[Dict[str, Any]] = None
-        if impact_data and impact_data.success and impact_data.data:
-            # Validate expected fields
-            time_horizon = impact_data.data.get("time_horizon", "")
-            if time_horizon not in (
-                "short_term", "medium_term", "long_term"
-            ):
-                time_horizon = "medium_term"
-
-            impact_magnitude = impact_data.data.get("impact_magnitude", "")
-            if impact_magnitude not in ("high", "medium", "low"):
-                impact_magnitude = "medium"
-
-            market_context = {
-                "market_impact": impact_data.data.get(
-                    "market_impact", ""
-                ),
-                "sector_impact": impact_data.data.get(
-                    "sector_impact", ""
-                ),
-                "stock_impact": impact_data.data.get(
-                    "stock_impact", ""
-                ),
-                "time_horizon": time_horizon,
-                "impact_magnitude": impact_magnitude,
-            }
-
-        # --- Report Writer ---
-        report_data = agent_responses.get("report_writer")
-        analysis_report = ""
-        if report_data:
-            raw_report = report_data.data.get("analysis_report", "")
-
-            # LLMs sometimes return analysis_report as a structured JSON
-            # object instead of a markdown string — convert to markdown.
-            if isinstance(raw_report, dict) and raw_report:
-                analysis_report = self._dict_to_markdown(raw_report)
-                logger.info(
-                    "Converted dict analysis_report to markdown (%d chars)",
-                    len(analysis_report),
-                )
-            else:
-                analysis_report = raw_report or ""
-
-            # Fallback: if JSON parsing lost the report content,
-            # use the raw LLM output which is likely raw markdown
-            if not analysis_report:
-                raw = report_data.data.get("_raw_content", "")
-                if raw and len(raw) >= 50:
-                    # Try to extract from raw: it may be JSON the extractor
-                    # couldn't handle (e.g., literal newlines in strings)
-                    # or direct markdown output
-                    if raw.lstrip().startswith("{"):
-                        # Attempt repair: replace literal newlines inside
-                        # JSON strings with \n
-                        try:
-                            repaired = re.sub(
-                                r'(?<=: ")(.*?)(?=")',
-                                lambda m: m.group(0).replace("\n", "\\n"),
-                                raw,
-                                flags=re.DOTALL,
-                            )
-                            parsed = json.loads(repaired)
-                            analysis_report = parsed.get(
-                                "analysis_report", ""
-                            ) or ""
-                            if analysis_report:
-                                logger.info(
-                                    "Recovered analysis_report via JSON "
-                                    "repair (%d chars)",
-                                    len(analysis_report),
-                                )
-                        except Exception:
-                            pass
-
-                    # If still empty but raw looks like markdown, use directly
-                    if not analysis_report and "##" in raw:
-                        # Extract markdown starting from first ## header
-                        md_start = raw.find("##")
-                        analysis_report = raw[md_start:].strip()
-                        logger.info(
-                            "Using raw markdown as analysis_report "
-                            "(%d chars, fallback)",
-                            len(analysis_report),
-                        )
-
-            # Validate minimum quality
-            if analysis_report and "##" not in analysis_report:
-                logger.warning(
-                    "analysis_report missing section headers, "
-                    "report length=%d chars",
-                    len(analysis_report),
-                )
-            if len(analysis_report) < 30:
-                if analysis_report:
-                    logger.warning(
-                        "analysis_report too short (%d chars), clearing",
-                        len(analysis_report),
-                    )
-                analysis_report = ""
-
         return MultiAgentResult(
             decision="keep",
             entities=entities,
@@ -1072,23 +852,11 @@ class MultiAgentFilterService:
             event_tags=event_tags,
             investment_summary=investment_summary,
             detailed_summary=detailed_summary,
-            analysis_report=analysis_report,
-            market_context=market_context,
+            analysis_report="",
         )
 
     @staticmethod
     def _empty_result(error_reason: str = "") -> MultiAgentResult:
-        """Return a safe empty result when analysis cannot proceed.
-
-        The decision defaults to "keep" (fail-open) to avoid dropping
-        articles that may have investment value.
-
-        Args:
-            error_reason: Reason for the empty result (for logging).
-
-        Returns:
-            MultiAgentResult with empty/default values.
-        """
         if error_reason:
             logger.warning(
                 "Returning empty MultiAgentResult: %s", error_reason
@@ -1102,7 +870,6 @@ class MultiAgentFilterService:
             investment_summary="",
             detailed_summary="",
             analysis_report="",
-            market_context=None,
             cache_stats={
                 "total_tokens": 0,
                 "cached_tokens": 0,
@@ -1110,60 +877,6 @@ class MultiAgentFilterService:
                 "error": error_reason,
             },
         )
-
-    @staticmethod
-    def _dict_to_markdown(d: Dict[str, Any], level: int = 2) -> str:
-        """Convert a nested dict to markdown sections.
-
-        Handles the case where the LLM returns ``analysis_report`` as a
-        structured JSON object instead of a markdown string.
-
-        Args:
-            d: Dict with section headers as keys.
-            level: Heading level (default 2 = ``##``).
-
-        Returns:
-            Markdown-formatted string.
-        """
-        parts: List[str] = []
-        prefix = "#" * level
-
-        for key, value in d.items():
-            if isinstance(value, str):
-                parts.append(f"{prefix} {key}\n{value}")
-            elif isinstance(value, dict):
-                # Sub-sections: render as bullet points
-                lines = [f"{prefix} {key}"]
-                for sub_key, sub_val in value.items():
-                    if isinstance(sub_val, (list, tuple)):
-                        lines.append(f"- **{sub_key}**：")
-                        for item in sub_val:
-                            if isinstance(item, dict):
-                                # e.g. {"股票代码": "AAPL", "公司名称": "Apple"}
-                                flat = "、".join(
-                                    f"{k}: {v}" for k, v in item.items()
-                                )
-                                lines.append(f"  - {flat}")
-                            else:
-                                lines.append(f"  - {item}")
-                    else:
-                        lines.append(f"- **{sub_key}**：{sub_val}")
-                parts.append("\n".join(lines))
-            elif isinstance(value, (list, tuple)):
-                lines = [f"{prefix} {key}"]
-                for item in value:
-                    if isinstance(item, dict):
-                        flat = "、".join(
-                            f"{k}: {v}" for k, v in item.items()
-                        )
-                        lines.append(f"- {flat}")
-                    else:
-                        lines.append(f"- {item}")
-                parts.append("\n".join(lines))
-            else:
-                parts.append(f"{prefix} {key}\n{value}")
-
-        return "\n\n".join(parts)
 
 
 # ---------------------------------------------------------------------------
