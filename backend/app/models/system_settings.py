@@ -505,6 +505,26 @@ class SystemSettings(Base):
         comment="L3轻量处理Agent模型名称",
     )
 
+    # === Prediction Configuration ===
+    prediction_provider_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("llm_providers.id", ondelete="SET NULL"),
+        nullable=True,
+        comment="ML预测使用的LLM Provider（RD-Agent因子发现）",
+    )
+    prediction_model: Mapped[Optional[str]] = mapped_column(
+        String(100),
+        nullable=True,
+        comment="ML预测使用的LLM模型名称",
+    )
+    prediction_enabled: Mapped[bool] = mapped_column(
+        Boolean,
+        nullable=False,
+        default=False,
+        server_default="false",
+        comment="是否启用ML预测功能",
+    )
+
     # === Audit Fields ===
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
@@ -541,6 +561,7 @@ class SystemSettings(Base):
     news_impact_provider = relationship("LlmProvider", foreign_keys=[news_impact_provider_id])
     news_report_provider = relationship("LlmProvider", foreign_keys=[news_report_provider_id])
     news_lightweight_provider = relationship("LlmProvider", foreign_keys=[news_lightweight_provider_id])
+    prediction_provider = relationship("LlmProvider", foreign_keys=[prediction_provider_id])
 
     def __repr__(self) -> str:
         return f"<SystemSettings(id={self.id}, updated_at={self.updated_at})>"

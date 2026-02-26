@@ -33,6 +33,7 @@ _SINGLETON_RESETS = [
     ("app.services.data_service_client", "reset_data_service_client"),
     ("app.services.qlib_client", "reset_qlib_client"),
     ("app.services.ai_gateway_client", "reset_ai_gateway_client"),
+    ("app.services.prediction_client", "reset_prediction_client"),
 ]
 
 

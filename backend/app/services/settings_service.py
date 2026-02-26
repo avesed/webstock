@@ -42,6 +42,8 @@ PURPOSE_MAP: Dict[str, tuple[str, str]] = {
     "news_lightweight": ("news_lightweight_provider_id", "news_lightweight_model"),
     # Discussion group
     "discussion": ("discussion_provider_id", "discussion_model"),
+    # ML Prediction
+    "prediction": ("prediction_provider_id", "prediction_model"),
 }
 
 # ---------------------------------------------------------------------------

@@ -1,6 +1,6 @@
 
 # =============================================================================
-# WebStock Docker Compose - 7 Services: PostgreSQL + Redis + RSSHub + Data Service + App + Qlib + Playwright
+# WebStock Docker Compose - 8 Services: PostgreSQL + Redis + RSSHub + Data Service + AI Gateway + App + Data Processor + Playwright
 # =============================================================================
 
 services:
@@ -174,7 +174,7 @@ services:
       - TAVILY_API_KEY=${TAVILY_API_KEY:-}
       - POLYGON_API_KEY=${POLYGON_API_KEY:-}
       - PLAYWRIGHT_SERVICE_URL=${PLAYWRIGHT_SERVICE_URL:-http://playwright-service:8002}
-      - QLIB_SERVICE_URL=http://qlib-service:8001
+      - QLIB_SERVICE_URL=http://data-processor:8005
       - LOG_LEVEL=${DATA_SERVICE_LOG_LEVEL:-info}
     volumes:
       - data_service_data:/app/data
@@ -252,7 +252,7 @@ services:
       - REDIS_URL=redis://redis:6379/0
       - CELERY_BROKER_URL=redis://redis:6379/1
       - CELERY_RESULT_BACKEND=redis://redis:6379/2
-      - QLIB_SERVICE_URL=http://qlib-service:8001
+      - QLIB_SERVICE_URL=http://data-processor:8005
       - JWT_SECRET_KEY=${JWT_SECRET_KEY:-change-me-in-production}
       - JWT_SECRET_KEY_PREVIOUS=${JWT_SECRET_KEY_PREVIOUS:-}
       - DEBUG=${DEBUG:-false}
@@ -311,32 +311,41 @@ services:
         max-file: "5"
 
   # ===========================================================================
-  # Qlib Service (quantitative analysis)
+  # Data Processor (quantitative analysis + ML prediction + RD-Agent)
+  # Replaces qlib-service with additional prediction capabilities
   # ===========================================================================
-  qlib-service:
+  data-processor:
     build:
-      context: ./qlib-service
+      context: ./data-processor
       dockerfile: Dockerfile
-    container_name: webstock-qlib
+    container_name: webstock-data-processor
     depends_on:
       redis:
         condition: service_healthy
+      postgres:
+        condition: service_healthy
       data-service:
+        condition: service_healthy
+      ai-gateway:
         condition: service_healthy
     volumes:
       - qlib_data:/app/data/qlib
+      - prediction_data:/app/data/predictions
     networks:
       - webstock-network
     environment:
       - QLIB_DATA_DIR=/app/data/qlib
+      - PREDICTION_DATA_DIR=/app/data/predictions
       - REDIS_URL=redis://redis:6379/3
       - DEFAULT_MARKET=us
       - LOG_LEVEL=info
       - DATA_SERVICE_URL=http://data-service:8003
       - WEBSTOCK_BACKEND_URL=http://app:80
       - INTERNAL_API_TOKEN=${INTERNAL_API_TOKEN:-}
+      - AI_GATEWAY_URL=http://ai-gateway:8004
+      - DATABASE_URL=postgresql://webstock:${POSTGRES_PASSWORD:-webstock}@postgres:5432/webstock
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://127.0.0.1:8001/health"]
+      test: ["CMD", "curl", "-f", "http://127.0.0.1:8005/health"]
       interval: 30s
       timeout: 10s
       retries: 3
@@ -416,4 +425,6 @@ volumes:
   data_service_data:
     driver: local
   qlib_data:
+    driver: local
+  prediction_data:
     driver: local

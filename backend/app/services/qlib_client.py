@@ -70,11 +70,14 @@ class QlibClient:
             start_ts = _time.monotonic()
             logger.info("qlib-service %s %s", method.upper(), path)
 
-            # Forward request ID to downstream service for distributed tracing
+            # Forward request ID + internal auth token to downstream service
             extra_headers: Dict[str, str] = {}
             rid = get_request_id()
             if rid:
                 extra_headers["X-Request-ID"] = rid
+            token = settings.INTERNAL_API_TOKEN
+            if token:
+                extra_headers["X-Internal-Token"] = token
 
             resp = await self._client.request(
                 method, path, json=json, params=params, timeout=timeout,

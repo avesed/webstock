@@ -118,6 +118,9 @@ def _register_all_skills(registry: SkillRegistry) -> None:
     from app.skills.qlib.get_backtest_skill import QlibGetBacktestSkill
     from app.skills.qlib.portfolio_skill import PortfolioOptimizationSkill
 
+    # Prediction (ML model)
+    from app.skills.prediction_skill import StockPredictionSkill
+
     # Discussion (agent-as-skill)
     from app.skills.discussion_skills import (
         AskFundamentalExpertSkill,
@@ -162,6 +165,8 @@ def _register_all_skills(registry: SkillRegistry) -> None:
         QlibBacktestSkill,
         QlibGetBacktestSkill,
         PortfolioOptimizationSkill,
+        # Prediction (ML model)
+        StockPredictionSkill,
         # Discussion (agent-as-skill + moderator dispatch)
         AskFundamentalExpertSkill,
         AskTechnicalExpertSkill,

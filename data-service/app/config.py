@@ -39,7 +39,7 @@ class Settings(BaseSettings):
     PLAYWRIGHT_SERVICE_URL: str = "http://playwright-service:8002"
 
     # Qlib service URL (for triggering data sync after collection)
-    QLIB_SERVICE_URL: str = "http://qlib-service:8001"
+    QLIB_SERVICE_URL: str = "http://data-processor:8005"
 
     # Server
     HOST: str = "0.0.0.0"

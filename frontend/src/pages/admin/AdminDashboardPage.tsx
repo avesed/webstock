@@ -1,8 +1,8 @@
 import { useTranslation } from 'react-i18next'
-import { Users, Settings, Activity, Filter, GitBranch, Rss, DollarSign, Database } from 'lucide-react'
+import { Users, Settings, Activity, Filter, GitBranch, Rss, DollarSign, Database, TrendingUp } from 'lucide-react'
 
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
-import { UserManagement, SystemSettings, SystemMonitor, FilterStats, PipelineTrace, RssFeeds, CostTracking, KnowledgeBase } from '@/components/admin'
+import { UserManagement, SystemSettings, SystemMonitor, FilterStats, PipelineTrace, RssFeeds, CostTracking, KnowledgeBase, Predictions } from '@/components/admin'
 
 export default function AdminDashboardPage() {
   const { t } = useTranslation('admin')
@@ -49,6 +49,10 @@ export default function AdminDashboardPage() {
               <Database className="h-4 w-4" />
               {t('tabs.knowledge')}
             </TabsTrigger>
+            <TabsTrigger value="predictions" className="flex items-center gap-2">
+              <TrendingUp className="h-4 w-4" />
+              {t('tabs.predictions')}
+            </TabsTrigger>
           </TabsList>
         </div>
 
@@ -82,6 +86,10 @@ export default function AdminDashboardPage() {
 
         <TabsContent value="knowledge" className="flex-1 overflow-y-auto mt-4 pr-2">
           <KnowledgeBase />
+        </TabsContent>
+
+        <TabsContent value="predictions" className="flex-1 overflow-y-auto mt-4 pr-2">
+          <Predictions />
         </TabsContent>
       </Tabs>
     </div>

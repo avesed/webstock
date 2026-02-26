@@ -665,6 +665,14 @@ export interface SystemConfig {
   modelAssignments?: ModelAssignmentsConfig
   phase2?: Phase2Config
   discussion?: DiscussionConfig
+  prediction?: PredictionConfig
+}
+
+// Prediction configuration
+export interface PredictionConfig {
+  enabled: boolean
+  providerId: string | null
+  model: string
 }
 
 // Discussion group configuration

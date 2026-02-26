@@ -25,6 +25,13 @@ from app.models.qlib_backtest import QlibBacktest, BacktestStatus
 from app.models.rss_feed import RssFeed, FeedCategory
 from app.models.llm_cost import ModelPricing, LlmUsageRecord
 from app.models.stock_daily_bar import StockDailyBar
+from app.models.prediction import (
+    PredictionUniverse,
+    PredictionModel,
+    StockPrediction,
+    StockFundamental,
+    DiscoveredFactor,
+)
 
 __all__ = [
     "User",
@@ -64,4 +71,9 @@ __all__ = [
     "ModelPricing",
     "LlmUsageRecord",
     "StockDailyBar",
+    "PredictionUniverse",
+    "PredictionModel",
+    "StockPrediction",
+    "StockFundamental",
+    "DiscoveredFactor",
 ]

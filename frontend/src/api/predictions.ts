@@ -1,0 +1,282 @@
+import apiClient from './client'
+
+// ── Types ──────────────────────────────────────
+
+export interface PredictionResult {
+  symbol: string
+  predictedScore: number
+  percentileRank: number
+  predictedDirection: 'up' | 'down' | 'sideways'
+  predictionDate?: string
+  actualReturn?: number | null
+}
+
+export interface PredictionModel {
+  id: string
+  market: string
+  modelDate: string
+  featureCount: number
+  symbolCount: number
+  ic: number | null
+  icir: number | null
+  ndcg: number | null
+  createdAt: string
+}
+
+export interface PredictionTask {
+  taskId: string
+  status: 'pending' | 'training' | 'predicting' | 'completed' | 'failed'
+  progress: number | null
+  message: string | null
+}
+
+export interface RDAgentStatus {
+  market: string
+  status: 'idle' | 'starting' | 'running' | 'completed' | 'failed' | 'stopped'
+  currentRound: number
+  maxRounds: number
+  discoveredCount: number
+  startedAt: string | null
+  completedAt: string | null
+  error: string | null
+}
+
+export interface DiscoveredFactor {
+  id: string
+  name: string
+  expression: string
+  description: string | null
+  market: string
+  ic: number | null
+  icir: number | null
+  discoveryRound: number | null
+  isActive: boolean
+  createdAt: string
+}
+
+export interface PredictionUniverse {
+  id: string
+  name: string
+  market: string
+  universeType: 'index' | 'custom'
+  indexCode: string | null
+  symbols: string[] | null
+  isDefault: boolean
+  isActive: boolean
+}
+
+export interface PredictionAccuracy {
+  days: number
+  market: string
+  totalPredictions: number
+  correctDirection: number
+  accuracy: number
+  avgIc: number | null
+  avgIcir: number | null
+}
+
+export interface PredictionStatusItem {
+  models: PredictionModel[]
+  latestPredictions: PredictionResult[]
+  error?: string
+}
+
+// ── snake_case → camelCase transforms ─────────
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function toCamelPrediction(p: Record<string, any>): PredictionResult {
+  const predictionDate = (p.prediction_date ?? p.predictionDate) as string | undefined
+  const actualReturn = (p.actual_return ?? p.actualReturn) as number | null | undefined
+  const result: PredictionResult = {
+    symbol: p.symbol as string,
+    predictedScore: (p.predicted_score ?? p.predictedScore) as number,
+    percentileRank: (p.percentile_rank ?? p.percentileRank) as number,
+    predictedDirection: (p.predicted_direction ?? p.predictedDirection) as PredictionResult['predictedDirection'],
+  }
+  if (predictionDate !== undefined) result.predictionDate = predictionDate
+  if (actualReturn !== undefined) result.actualReturn = actualReturn
+  return result
+}
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function toCamelModel(m: Record<string, any>): PredictionModel {
+  return {
+    id: String(m.id),
+    market: m.market as string,
+    modelDate: (m.model_date ?? m.modelDate) as string,
+    featureCount: (m.feature_count ?? m.featureCount) as number,
+    symbolCount: (m.symbol_count ?? m.symbolCount) as number,
+    ic: (m.ic ?? null) as number | null,
+    icir: (m.icir ?? null) as number | null,
+    ndcg: (m.ndcg ?? null) as number | null,
+    createdAt: (m.created_at ?? m.createdAt) as string,
+  }
+}
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function toCamelTask(t: Record<string, any>): PredictionTask {
+  return {
+    taskId: (t.task_id ?? t.taskId) as string,
+    status: t.status as PredictionTask['status'],
+    progress: (t.progress ?? null) as number | null,
+    message: (t.message ?? null) as string | null,
+  }
+}
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function toCamelRDAgent(s: Record<string, any>): RDAgentStatus {
+  return {
+    market: s.market as string,
+    status: s.status as RDAgentStatus['status'],
+    currentRound: (s.current_round ?? s.currentRound ?? 0) as number,
+    maxRounds: (s.max_rounds ?? s.maxRounds ?? 0) as number,
+    discoveredCount: (s.discovered_count ?? s.discoveredCount ?? 0) as number,
+    startedAt: (s.started_at ?? s.startedAt ?? null) as string | null,
+    completedAt: (s.completed_at ?? s.completedAt ?? null) as string | null,
+    error: (s.error ?? null) as string | null,
+  }
+}
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function toCamelFactor(f: Record<string, any>): DiscoveredFactor {
+  return {
+    id: String(f.id),
+    name: f.name as string,
+    expression: f.expression as string,
+    description: (f.description ?? null) as string | null,
+    market: f.market as string,
+    ic: (f.ic ?? null) as number | null,
+    icir: (f.icir ?? null) as number | null,
+    discoveryRound: (f.discovery_round ?? f.discoveryRound ?? null) as number | null,
+    isActive: (f.is_active ?? f.isActive) as boolean,
+    createdAt: (f.created_at ?? f.createdAt) as string,
+  }
+}
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function toCamelAccuracy(a: Record<string, any>): PredictionAccuracy {
+  return {
+    days: (a.days) as number,
+    market: (a.market) as string,
+    totalPredictions: (a.total_predictions ?? a.totalPredictions) as number,
+    correctDirection: (a.correct_direction ?? a.correctDirection) as number,
+    accuracy: (a.accuracy) as number,
+    avgIc: (a.avg_ic ?? a.avgIc ?? null) as number | null,
+    avgIcir: (a.avg_icir ?? a.avgIcir ?? null) as number | null,
+  }
+}
+
+// ── API functions ──────────────────────────────
+
+export const predictionsApi = {
+  // Status — backend returns { status: string, markets: Record<string, ...> }
+  getStatus: () =>
+    apiClient.get<{ status: string; markets: Record<string, unknown> }>('/admin/predictions/status')
+      .then(r => {
+        const markets = r.data.markets
+        const result: Record<string, PredictionStatusItem> = {}
+        for (const [key, value] of Object.entries(markets)) {
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          const v = value as Record<string, any>
+          if (v.error) {
+            result[key] = { models: [], latestPredictions: [], error: v.error as string }
+          } else {
+            result[key] = {
+              models: Array.isArray(v.models) ? (v.models as Record<string, unknown>[]).map(toCamelModel) : [],
+              latestPredictions: Array.isArray(v.latestPredictions)
+                ? (v.latestPredictions as Record<string, unknown>[]).map(toCamelPrediction)
+                : Array.isArray(v.latest_predictions)
+                  ? (v.latest_predictions as Record<string, unknown>[]).map(toCamelPrediction)
+                  : [],
+            }
+          }
+        }
+        return result
+      }),
+
+  // Predictions
+  triggerPrediction: (market: string, forceRetrain = false, forwardDays = 5) =>
+    apiClient.post<Record<string, unknown>>(`/admin/predictions/${market}/trigger`, {
+      force_retrain: forceRetrain,
+      forward_days: forwardDays,
+    }).then(r => toCamelTask(r.data)),
+
+  getLatestPredictions: (market: string, topN = 50) =>
+    apiClient.get<Record<string, unknown>[]>(`/admin/predictions/${market}/latest`, {
+      params: { top_n: topN },
+    }).then(r => r.data.map(toCamelPrediction)),
+
+  getTaskStatus: (taskId: string) =>
+    apiClient.get<Record<string, unknown>>(`/admin/predictions/tasks/${taskId}`)
+      .then(r => toCamelTask(r.data)),
+
+  getModels: (market?: string) =>
+    apiClient.get<Record<string, unknown>[]>('/admin/predictions/models', {
+      params: market ? { market } : {},
+    }).then(r => r.data.map(toCamelModel)),
+
+  getAccuracy: (market: string, days = 30) =>
+    apiClient.get<Record<string, unknown>>(`/admin/predictions/${market}/accuracy`, {
+      params: { days },
+    }).then(r => toCamelAccuracy(r.data)),
+
+  // RD-Agent
+  startRDAgent: (market: string, maxRounds = 30, universeId?: string) =>
+    apiClient.post<Record<string, unknown>>(`/admin/predictions/rdagent/${market}/start`, {
+      max_rounds: maxRounds,
+      universe_id: universeId,
+    }).then(r => r.data),
+
+  getRDAgentStatus: (market: string) =>
+    apiClient.get<Record<string, unknown>>(`/admin/predictions/rdagent/${market}/status`)
+      .then(r => toCamelRDAgent(r.data)),
+
+  stopRDAgent: (market: string) =>
+    apiClient.post<{ message: string }>(`/admin/predictions/rdagent/${market}/stop`).then(r => r.data),
+
+  // Factors — backend returns { count: N, factors: [...] }
+  getFactors: (market?: string) =>
+    apiClient.get<{ count: number; factors: Record<string, unknown>[] }>('/admin/predictions/factors', {
+      params: market ? { market } : {},
+    }).then(r => r.data.factors.map(toCamelFactor)),
+
+  toggleFactor: (factorId: string, isActive: boolean) =>
+    apiClient.put<Record<string, unknown>>(`/admin/predictions/factors/${factorId}`, {
+      is_active: isActive,
+    }).then(r => r.data),
+
+  // Universes — backend returns { universes: [...] } with camelCase keys
+  getUniverses: () =>
+    apiClient.get<{ universes: PredictionUniverse[] }>('/admin/predictions/universes')
+      .then(r => r.data.universes),
+
+  createUniverse: (data: Partial<PredictionUniverse>) =>
+    apiClient.post<PredictionUniverse>('/admin/predictions/universes', {
+      name: data.name,
+      market: data.market,
+      universe_type: data.universeType,
+      index_code: data.indexCode,
+      symbols: data.symbols,
+      is_default: data.isDefault,
+    }).then(r => r.data),
+
+  updateUniverse: (id: string, data: Partial<PredictionUniverse>) =>
+    apiClient.put<PredictionUniverse>(`/admin/predictions/universes/${id}`, {
+      name: data.name,
+      market: data.market,
+      universe_type: data.universeType,
+      index_code: data.indexCode,
+      symbols: data.symbols,
+      is_default: data.isDefault,
+      is_active: data.isActive,
+    }).then(r => r.data),
+
+  deleteUniverse: (id: string) =>
+    apiClient.delete<{ message: string }>(`/admin/predictions/universes/${id}`).then(r => r.data),
+
+  // Fundamentals
+  getFundamentalsStatus: () =>
+    apiClient.get<{ lastUpdated: string | null; totalSymbols: number }>(
+      '/admin/predictions/fundamentals/status'
+    ).then(r => r.data),
+}
