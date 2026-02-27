@@ -447,14 +447,20 @@ def _build_fundamental_data_prompt(
 ### 盈利能力
 - 每股收益 (TTM): {_format_price(financials.get('eps'))}
 - 利润率: {_format_percent(financials.get('profit_margin'))}
+- 毛利率: {_format_percent(financials.get('gross_margin'))}
+- 营业利润率: {_format_percent(financials.get('operating_margin'))}
 - 净资产收益率 (ROE): {_format_percent(financials.get('roe'))}
+- 总资产收益率 (ROA): {_format_percent(financials.get('roa'))}
 
 ### 成长性
 - 营收: {_format_number(financials.get('revenue'))}
+- 营收增长率: {_format_percent(financials.get('revenue_growth'))}
+- 每股收益增长率: {_format_percent(financials.get('eps_growth'))}
 - 股息收益率: {_format_percent(financials.get('dividend_yield'))}
 
 ### 资产负债
 - 负债权益比: {_format_ratio(financials.get('debt_to_equity'))}
+- 流动比率: {_format_ratio(financials.get('current_ratio'))}
 """)
         else:
             sections.append(f"""## Financial Metrics
@@ -466,14 +472,20 @@ def _build_fundamental_data_prompt(
 ### Profitability
 - EPS (TTM): {_format_price(financials.get('eps'))}
 - Profit Margin: {_format_percent(financials.get('profit_margin'))}
+- Gross Margin: {_format_percent(financials.get('gross_margin'))}
+- Operating Margin: {_format_percent(financials.get('operating_margin'))}
 - ROE: {_format_percent(financials.get('roe'))}
+- ROA: {_format_percent(financials.get('roa'))}
 
 ### Growth & Income
 - Revenue: {_format_number(financials.get('revenue'))}
+- Revenue Growth: {_format_percent(financials.get('revenue_growth'))}
+- EPS Growth: {_format_percent(financials.get('eps_growth'))}
 - Dividend Yield: {_format_percent(financials.get('dividend_yield'))}
 
 ### Balance Sheet
 - Debt to Equity: {_format_ratio(financials.get('debt_to_equity'))}
+- Current Ratio: {_format_ratio(financials.get('current_ratio'))}
 """)
 
     # Company info section

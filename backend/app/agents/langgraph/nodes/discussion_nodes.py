@@ -126,11 +126,38 @@ def _build_shared_data_summary(
 
         elif skill_name == "get_stock_financials" and isinstance(data, dict):
             metrics = data
-            lines.append(f"[Financials] PE: {metrics.get('pe_ratio', 'N/A')}, "
-                         f"PB: {metrics.get('price_to_book', 'N/A')}, "
-                         f"ROE: {metrics.get('roe', 'N/A')}, "
-                         f"D/E: {metrics.get('debt_to_equity', 'N/A')}, "
-                         f"Margin: {metrics.get('profit_margin', 'N/A')}")
+
+            def _fmt_pct(v: Any) -> str:
+                """Format ratio as percentage string (0.25 → '25.0%')."""
+                if v is None:
+                    return "N/A"
+                try:
+                    return f"{float(v) * 100:.1f}%"
+                except (ValueError, TypeError):
+                    return "N/A"
+
+            # Fixed items (always shown)
+            parts = [
+                f"PE: {metrics.get('pe_ratio', 'N/A')}",
+                f"PB: {metrics.get('price_to_book', 'N/A')}",
+            ]
+            # Conditional items (only shown when available)
+            _cond = [
+                ("ROE", metrics.get("roe"), True),
+                ("ROA", metrics.get("roa"), True),
+                ("Profit Margin", metrics.get("profit_margin"), True),
+                ("Gross Margin", metrics.get("gross_margin"), True),
+                ("Op Margin", metrics.get("operating_margin"), True),
+                ("Rev Growth", metrics.get("revenue_growth"), True),
+                ("EPS Growth", metrics.get("eps_growth"), True),
+                ("D/E", metrics.get("debt_to_equity"), False),
+                ("Current Ratio", metrics.get("current_ratio"), False),
+            ]
+            for label, val, is_pct in _cond:
+                if val is not None:
+                    parts.append(f"{label}: {_fmt_pct(val) if is_pct else val}")
+
+            lines.append(f"[Financials] {', '.join(parts)}")
 
         elif skill_name == "get_stock_history" and isinstance(data, dict):
             bars = data.get("bars", [])

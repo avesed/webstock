@@ -70,6 +70,10 @@ _MIN_TRAIN_DATES = 60
 # Minimum number of symbols per date for valid ranking labels
 _MIN_SYMBOLS_PER_DATE = 10
 
+# Percentile rank thresholds for directional classification
+DIRECTION_UP_THRESHOLD = 0.70
+DIRECTION_DOWN_THRESHOLD = 0.30
+
 # LightGBM default hyperparameters (lambdarank objective)
 _DEFAULT_LGB_PARAMS: dict[str, Any] = {
     "objective": "lambdarank",
@@ -1062,11 +1066,37 @@ class PredictionService:
             model.best_iteration if model.best_iteration >= 0 else _DEFAULT_NUM_BOOST_ROUND,
         )
 
+        # Extract feature importance (gain-based, non-essential metadata)
+        feature_importance: dict[str, float] = {}
+        try:
+            importance_values = model.feature_importance(importance_type='gain')
+            if len(importance_values) != len(feature_cols):
+                logger.warning(
+                    "Feature importance length mismatch: got %d, expected %d",
+                    len(importance_values), len(feature_cols),
+                )
+            feature_importance = dict(
+                sorted(
+                    zip(feature_cols, (float(v) for v in importance_values)),
+                    key=lambda x: x[1],
+                    reverse=True,
+                )
+            )
+            logger.info(
+                "Top 5 features by gain: %s",
+                list(feature_importance.items())[:5],
+            )
+        except Exception as e:
+            logger.warning("Failed to extract feature importance: %s", e)
+
         # Save model to disk
         task.message = "Saving model"
         task.progress = 60.0
 
-        model_path = self._save_model(model, market, model_date, feature_cols)
+        model_path = self._save_model(
+            model, market, model_date, feature_cols,
+            feature_importance=feature_importance,
+        )
         logger.info("Model saved to %s", model_path)
 
         # Record in DB
@@ -1097,6 +1127,7 @@ class PredictionService:
             icir=icir,
             ndcg=best_ndcg,
             model_path=model_path,
+            feature_importance=feature_importance,
         )
 
         task.progress = 70.0
@@ -1173,11 +1204,12 @@ class PredictionService:
         market: str,
         model_date: date,
         feature_cols: list[str],
+        feature_importance: dict[str, float] | None = None,
     ) -> str:
         """Save model + feature metadata to disk.
 
         Directory: {PREDICTION_DATA_DIR}/{market}/{YYYYMMDD}/
-        Files: model.pkl, features.json
+        Files: model.pkl, features.json (with optional feature_importance)
 
         Returns:
             Absolute path to model.pkl.
@@ -1191,11 +1223,16 @@ class PredictionService:
         joblib.dump(model, model_path)
 
         # Save feature list alongside model for reproducibility
+        features_meta: dict[str, Any] = {
+            "features": feature_cols,
+            "count": len(feature_cols),
+        }
+        if feature_importance is not None:
+            features_meta["feature_importance"] = feature_importance
+
         features_path = str(model_dir / "features.json")
         with open(features_path, "w") as f:
-            json.dump(
-                {"features": feature_cols, "count": len(feature_cols)}, f
-            )
+            json.dump(features_meta, f, default=_numpy_default)
 
         return model_path
 
@@ -1215,6 +1252,7 @@ class PredictionService:
         icir: float,
         ndcg: Optional[float],
         model_path: str,
+        feature_importance: dict[str, float] | None = None,
     ) -> Any:
         """Write model metadata to prediction_models table. Returns model id."""
         from app.core.settings_cache import settings_cache
@@ -1223,14 +1261,17 @@ class PredictionService:
         if not pool:
             raise RuntimeError("DB pool not available for model recording")
 
-        metadata_json = json.dumps(
-            {
-                "lgb_params": _DEFAULT_LGB_PARAMS,
-                "num_boost_round": _DEFAULT_NUM_BOOST_ROUND,
-                "early_stopping": _DEFAULT_EARLY_STOPPING,
-            },
-            default=_numpy_default,
-        )
+        metadata: dict[str, Any] = {
+            "lgb_params": _DEFAULT_LGB_PARAMS,
+            "num_boost_round": _DEFAULT_NUM_BOOST_ROUND,
+            "early_stopping": _DEFAULT_EARLY_STOPPING,
+        }
+        # Include top 30 features by importance (avoid bloating JSONB)
+        if feature_importance:
+            top_items = list(feature_importance.items())[:30]
+            metadata["feature_importance_top30"] = dict(top_items)
+
+        metadata_json = json.dumps(metadata, default=_numpy_default)
 
         try:
             async with pool.acquire(timeout=10) as conn:
@@ -1368,9 +1409,9 @@ class PredictionService:
         # Determine direction thresholds
         directions = []
         for rank_val in ranks:
-            if rank_val >= 0.70:
+            if rank_val >= DIRECTION_UP_THRESHOLD:
                 directions.append("up")
-            elif rank_val <= 0.30:
+            elif rank_val <= DIRECTION_DOWN_THRESHOLD:
                 directions.append("down")
             else:
                 directions.append("sideways")

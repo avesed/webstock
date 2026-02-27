@@ -709,7 +709,14 @@ class AKShareProvider(DataProvider):
     async def get_financials(
         self, symbol: str, market: str
     ) -> Optional[Dict[str, Any]]:
-        """Get financial data for A-shares."""
+        """Get financial data for A-shares via quarterly report indicators.
+
+        Uses stock_financial_analysis_indicator() which provides profitability,
+        growth, and balance sheet ratios from the latest quarterly report.
+        Estimation/valuation fields (pe, eps, etc.) are not available from
+        this API — those are typically served from the DB-first path
+        (data-processor collection via Xueqiu).
+        """
         if market not in (SH, SZ):
             return None
 
@@ -717,9 +724,12 @@ class AKShareProvider(DataProvider):
             import akshare as ak
 
             code = normalize_symbol(symbol, market)
+            start_year = str(datetime.now().year - 1)
 
             def fetch():
-                df = ak.stock_a_indicator_lg(symbol=code)
+                df = ak.stock_financial_analysis_indicator(
+                    symbol=code, start_year=start_year,
+                )
                 if df is None or df.empty:
                     return None
                 return df.iloc[-1].to_dict()
@@ -728,52 +738,54 @@ class AKShareProvider(DataProvider):
             if not data:
                 return None
 
+            def _pct(key: str) -> Optional[float]:
+                """Extract percentage field and convert to ratio."""
+                v = data.get(key)
+                if v is None or (isinstance(v, float) and pd.isna(v)):
+                    return None
+                try:
+                    return float(v) / 100.0
+                except (ValueError, TypeError):
+                    return None
+
+            def _raw(key: str) -> Optional[float]:
+                """Extract non-percentage field as-is."""
+                v = data.get(key)
+                if v is None or (isinstance(v, float) and pd.isna(v)):
+                    return None
+                try:
+                    return float(v)
+                except (ValueError, TypeError):
+                    return None
+
+            # Compute gross_margin from cost ratio (销售毛利率 often NaN).
+            # Uses _raw() intentionally: gross_margin = 1 - cost_ratio/100,
+            # not a simple pct→ratio conversion.
+            gross_margin = None
+            cost_ratio = _raw("主营业务成本率(%)")
+            if cost_ratio is not None:
+                gross_margin = 1.0 - cost_ratio / 100.0
+
             return {
                 "symbol": symbol,
-                "pe_ratio": (
-                    float(data.get("pe", 0)) if data.get("pe") else None
-                ),
+                "pe_ratio": None,
                 "forward_pe": None,
-                "eps": (
-                    float(data.get("eps", 0)) if data.get("eps") else None
-                ),
-                "dividend_yield": (
-                    float(data.get("dv_ratio", 0))
-                    if data.get("dv_ratio")
-                    else None
-                ),
+                "eps": None,
+                "dividend_yield": None,
                 "dividend_rate": None,
-                "book_value": (
-                    float(data.get("bps", 0)) if data.get("bps") else None
-                ),
-                "price_to_book": (
-                    float(data.get("pb", 0)) if data.get("pb") else None
-                ),
-                "revenue": (
-                    float(data.get("total_revenue", 0))
-                    if data.get("total_revenue")
-                    else None
-                ),
-                "revenue_growth": None,
-                "net_income": (
-                    float(data.get("net_profit", 0))
-                    if data.get("net_profit")
-                    else None
-                ),
-                "profit_margin": None,
-                "gross_margin": (
-                    float(data.get("gross_profit_margin", 0))
-                    if data.get("gross_profit_margin")
-                    else None
-                ),
-                "operating_margin": None,
-                "roe": (
-                    float(data.get("roe", 0)) if data.get("roe") else None
-                ),
-                "roa": None,
+                "book_value": None,
+                "price_to_book": None,
+                "revenue": None,
+                "revenue_growth": _pct("主营业务收入增长率(%)"),
+                "net_income": None,
+                "profit_margin": _pct("销售净利率(%)"),
+                "gross_margin": gross_margin,
+                "operating_margin": _pct("营业利润率(%)"),
+                "roe": _pct("净资产收益率(%)"),
+                "roa": _pct("总资产利润率(%)"),
                 "debt_to_equity": None,
-                "current_ratio": None,
-                "eps_growth": None,
+                "current_ratio": _raw("流动比率"),
+                "eps_growth": _pct("净利润增长率(%)"),
                 "payout_ratio": None,
                 "market": market,
                 "source": "akshare",

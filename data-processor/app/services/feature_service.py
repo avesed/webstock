@@ -2,7 +2,7 @@
 
 Merges three feature sources into a single DataFrame:
 1. Alpha158 (65 OHLCV-based features from Qlib D.features())
-2. Fundamental data (~15 financial metrics, forward-filled)
+2. Fundamental data (~19 financial metrics, forward-filled)
 3. News sentiment (~11 rolling aggregates)
 
 The merged matrix is rank-transformed (cross-sectional percentile)
@@ -31,11 +31,13 @@ logger = logging.getLogger(__name__)
 # 65 Alpha158 OHLCV-based features (from factor_service.py)
 ALPHA158_FEATURES: list[str] = list(FEATURE_NAMES)
 
-# ~13 fundamental financial metrics
+# ~19 fundamental financial metrics (matches _SELECT_SQL in fundamental_service.py)
 FUNDAMENTAL_FEATURES: list[str] = [
     "pe_ratio", "pb_ratio", "ps_ratio", "roe", "roa",
     "profit_margin", "gross_margin", "revenue_growth_yoy", "eps",
     "debt_to_equity", "current_ratio", "dividend_yield", "market_cap",
+    "forward_pe", "dividend_rate", "book_value",
+    "operating_margin", "payout_ratio", "eps_growth",
 ]
 
 # ~9 sentiment rolling features

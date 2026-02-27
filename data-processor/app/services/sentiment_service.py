@@ -9,6 +9,7 @@ Results cached in Redis for 24 hours.
 
 import hashlib
 import logging
+from datetime import date
 from typing import Optional
 
 import msgpack
@@ -159,9 +160,20 @@ class SentimentService:
             return pd.DataFrame()
 
         try:
+            start = date.fromisoformat(start_date)
+            end = date.fromisoformat(end_date)
+        except ValueError as e:
+            logger.error(
+                "Invalid date format for sentiment query: "
+                "start_date=%r, end_date=%r: %s",
+                start_date, end_date, e,
+            )
+            return pd.DataFrame()
+
+        try:
             async with pool.acquire(timeout=10) as conn:
                 rows = await conn.fetch(
-                    _RAW_AGGREGATE_SQL, symbols, start_date, end_date
+                    _RAW_AGGREGATE_SQL, symbols, start, end
                 )
         except Exception as e:
             logger.error("Failed to query news sentiment aggregates: %s", e)

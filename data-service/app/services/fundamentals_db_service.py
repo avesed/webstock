@@ -35,6 +35,7 @@ _QUERY_SQL = """
            operating_margin, payout_ratio, eps_growth
     FROM stock_fundamentals
     WHERE symbol = $1
+      AND record_type = 'daily_snapshot'
     ORDER BY date DESC
     LIMIT 1
 """
