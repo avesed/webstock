@@ -22,7 +22,7 @@ import logging
 import time
 from typing import Any, Dict, List, Optional, Set, Tuple
 
-from app.core.executor import run_in_executor
+from app.core.executor import run_in_profile_executor as run_in_executor
 
 logger = logging.getLogger(__name__)
 

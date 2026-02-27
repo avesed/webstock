@@ -724,15 +724,16 @@ class PredictionService:
         """Resolve the prediction universe for a market.
 
         Priority:
-        1. settings_cache universes (DB-configured)
-        2. BackendDataClient.get_symbols() (fallback)
+        1. Universe with explicit symbols (custom type or pre-populated)
+        2. Index-type universe → resolve via data-service constituent API
+        3. BackendDataClient.get_symbols() full-market fallback (last resort)
         """
         from app.core.settings_cache import settings_cache
 
         universes = await settings_cache.get_universes(market=market)
 
-        # Try default universe first, then any universe for this market
         for universe in universes:
+            # Priority 1: explicit symbols
             if universe.symbols and len(universe.symbols) > 0:
                 logger.info(
                     "Using universe '%s' (%s): %d symbols",
@@ -742,15 +743,42 @@ class PredictionService:
                 )
                 return universe.symbols
 
-        # Fallback to BackendDataClient
-        logger.info(
-            "No configured universe for market=%s, falling back to BackendDataClient",
+            # Priority 2: index-type → resolve constituents via data-service
+            if universe.universe_type == "index" and universe.index_code:
+                logger.info(
+                    "Resolving index constituents for '%s' (index_code=%s, market=%s)",
+                    universe.name, universe.index_code, market,
+                )
+                try:
+                    symbols = await asyncio.to_thread(
+                        self._get_index_constituents, universe.index_code, market,
+                    )
+                    if symbols:
+                        logger.info(
+                            "Resolved %d symbols from index %s for market=%s",
+                            len(symbols), universe.index_code, market,
+                        )
+                        return symbols
+                    logger.warning(
+                        "Index resolution returned empty for %s, trying next universe",
+                        universe.index_code,
+                    )
+                except Exception as e:
+                    logger.warning(
+                        "Index constituent resolution failed for %s: %s",
+                        universe.index_code, e,
+                    )
+
+        # Priority 3: full-market fallback (may be very large!)
+        logger.warning(
+            "No configured universe or index resolution for market=%s, "
+            "falling back to full market symbol list",
             market,
         )
 
         try:
-            client = await asyncio.to_thread(self._get_backend_symbols, market)
-            return client
+            symbols = await asyncio.to_thread(self._get_backend_symbols, market)
+            return symbols
         except Exception as e:
             logger.error(
                 "BackendDataClient symbol fetch failed for market=%s: %s",
@@ -766,6 +794,14 @@ class PredictionService:
 
         client = get_backend_client()
         return client.get_symbols(market)
+
+    @staticmethod
+    def _get_index_constituents(index_code: str, market: str) -> list[str]:
+        """Synchronous index constituent fetch (for asyncio.to_thread)."""
+        from app.services.backend_client import get_backend_client
+
+        client = get_backend_client()
+        return client.get_index_constituents(index_code, market)
 
     # ------------------------------------------------------------------
     # Step 2: Check existing model

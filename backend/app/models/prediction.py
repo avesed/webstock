@@ -348,9 +348,9 @@ class StockFundamental(Base):
     )
 
     record_type: Mapped[str] = mapped_column(
-        String(10),
+        String(20),
         nullable=False,
-        comment="quarterly, ttm, annual",
+        comment="quarterly, ttm, annual, daily_snapshot",
     )
 
     pe_ratio: Mapped[Optional[Decimal]] = mapped_column(
@@ -411,6 +411,30 @@ class StockFundamental(Base):
 
     market_cap: Mapped[Optional[Decimal]] = mapped_column(
         Numeric(20, 2), nullable=True
+    )
+
+    forward_pe: Mapped[Optional[Decimal]] = mapped_column(
+        Numeric(12, 4), nullable=True
+    )
+
+    dividend_rate: Mapped[Optional[Decimal]] = mapped_column(
+        Numeric(12, 4), nullable=True
+    )
+
+    book_value: Mapped[Optional[Decimal]] = mapped_column(
+        Numeric(12, 4), nullable=True
+    )
+
+    operating_margin: Mapped[Optional[Decimal]] = mapped_column(
+        Numeric(8, 4), nullable=True
+    )
+
+    payout_ratio: Mapped[Optional[Decimal]] = mapped_column(
+        Numeric(8, 4), nullable=True
+    )
+
+    eps_growth: Mapped[Optional[Decimal]] = mapped_column(
+        Numeric(8, 4), nullable=True
     )
 
     data_source: Mapped[Optional[str]] = mapped_column(

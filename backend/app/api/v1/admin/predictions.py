@@ -649,3 +649,33 @@ async def get_fundamentals_status(
             status_code=e.status_code or 502,
             detail=_sanitize_service_error(e),
         )
+
+
+# ---------------------------------------------------------------------------
+# POST /predictions/fundamentals/{market}/collect — manual fundamental trigger
+# ---------------------------------------------------------------------------
+
+
+@router.post(
+    "/predictions/fundamentals/{market}/collect",
+    summary="Trigger fundamental data collection",
+    description="Manually trigger fundamental data collection for a market via data-processor.",
+)
+async def collect_fundamentals(
+    market: str,
+    current_user: User = Depends(require_admin),
+) -> Dict[str, Any]:
+    market = _validate_market(market)
+    client = await get_prediction_client()
+    try:
+        resp = await client.collect_fundamentals(market)
+        logger.info(
+            "Admin %s triggered fundamental collection for market=%s",
+            current_user.email, market,
+        )
+        return resp
+    except PredictionServiceError as e:
+        raise HTTPException(
+            status_code=e.status_code or 502,
+            detail=_sanitize_service_error(e),
+        )

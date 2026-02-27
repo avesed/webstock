@@ -60,3 +60,13 @@ class BatchProfileRequest(BaseModel):
 
     market: Literal["cn", "us", "hk"]
     symbols: list[str] = Field(..., max_length=50)
+
+
+class IndexConstituentsResult(BaseModel):
+    """Index constituent symbols response."""
+
+    symbols: list[str]
+    count: int
+    index_code: str
+    market: str
+    source: Optional[str] = None

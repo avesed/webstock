@@ -133,12 +133,12 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
                 logger.error("Scheduled prediction failed for %s: %s", market, e, exc_info=True)
 
         async def _guarded_fundamentals(market: str) -> None:
-            """Only run fundamental collection if prediction is enabled."""
+            """Run fundamental collection (independent of prediction_enabled).
+
+            Fundamental data is used by multiple consumers (financials API,
+            analysis agents, chat skills) so it always runs on schedule.
+            """
             try:
-                config = await _sc.get_config()
-                if not config.llm.enabled:
-                    logger.debug("Prediction disabled, skipping fundamentals %s", market)
-                    return
                 from app.services.fundamental_service import fundamental_service
                 await fundamental_service.collect_market(market)
             except Exception as e:

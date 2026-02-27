@@ -19,7 +19,7 @@ import time
 from typing import Any, Dict, List, Tuple
 
 from app.config import get_settings
-from app.core.executor import run_in_executor
+from app.core.executor import run_in_background_executor as run_in_executor
 from app.providers.constants import PRECIOUS_METALS
 
 logger = logging.getLogger(__name__)

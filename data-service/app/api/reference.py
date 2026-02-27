@@ -33,6 +33,7 @@ from app.models.base import ApiResponse
 from app.models.reference import (
     BatchProfileRequest,
     ConceptMappingResult,
+    IndexConstituentsResult,
     StockListResult,
     StockProfileResult,
 )
@@ -282,3 +283,57 @@ async def stock_profiles_batch_endpoint(body: BatchProfileRequest):
         )
 
 
+# ---------------------------------------------------------------------------
+# Index constituent resolution
+# ---------------------------------------------------------------------------
+
+
+@router.get(
+    "/index-constituents/{index_code}",
+    response_model=ApiResponse[IndexConstituentsResult],
+)
+async def get_index_constituents_endpoint(
+    index_code: str,
+    market: str = "us",
+):
+    """Get constituent symbols for a market index.
+
+    Supported indices:
+    - ``000300`` (CSI300, market=cn): ~300 A-share stocks via akshare
+    - ``SPX`` (S&P500, market=us): ~500 US stocks via Finnhub
+    - ``HSI`` (Hang Seng, market=hk): ~80 HK stocks via akshare
+
+    Uses 3-layer fallback: Redis cache (24h) → external API → static fallback.
+    Timeout hint: 30s.
+    """
+    from app.services.index_constituents_service import get_index_constituents
+
+    t0 = time.monotonic()
+    try:
+        result = await get_index_constituents(index_code, market)
+        elapsed_ms = int((time.monotonic() - t0) * 1000)
+
+        return ApiResponse(
+            success=True,
+            data=IndexConstituentsResult(
+                symbols=result["symbols"],
+                count=result["count"],
+                index_code=result.get("index_code", index_code),
+                market=result.get("market", market),
+                source=result.get("source"),
+            ),
+            source=result.get("source"),
+            elapsed_ms=elapsed_ms,
+            cached=result.get("cached", False),
+        )
+    except Exception as e:
+        elapsed_ms = int((time.monotonic() - t0) * 1000)
+        logger.exception(
+            "Index constituents fetch failed for %s (%s): %s",
+            index_code, market, e,
+        )
+        return ApiResponse(
+            success=False,
+            error=str(e),
+            elapsed_ms=elapsed_ms,
+        )

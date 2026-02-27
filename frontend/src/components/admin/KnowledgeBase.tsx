@@ -1,7 +1,7 @@
 import { useCallback, useRef, useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useTranslation } from 'react-i18next'
-import { Database, Newspaper, FileText, BookOpen, BarChart3, Loader2, RefreshCw, AlertCircle, AlertTriangle, Unlock, List } from 'lucide-react'
+import { Database, Newspaper, FileText, BookOpen, BarChart3, Loader2, RefreshCw, AlertCircle, AlertTriangle, Unlock, List, TrendingUp } from 'lucide-react'
 
 import { adminApi, type KnowledgeBaseStatsResponse, type QlibSyncProgress } from '@/api/admin'
 import { getErrorMessage } from '@/api/client'
@@ -643,6 +643,118 @@ function DailyBarsCard({
   )
 }
 
+function FundamentalsCard({
+  fundamentals,
+  progress,
+  actionLoading,
+  onAction,
+}: {
+  fundamentals: KnowledgeBaseStatsResponse['fundamentals'] | undefined
+  progress: KnowledgeBaseStatsResponse['fundamentalProgress'] | undefined
+  actionLoading: string | null
+  onAction: (key: string, action: () => Promise<unknown>) => void
+}) {
+  const { t } = useTranslation('admin')
+  const fundMarkets = ['cn', 'us', 'hk'] as const
+
+  return (
+    <Card>
+      <CardHeader className="pb-2">
+        <div className="flex items-center justify-between">
+          <div>
+            <CardTitle className="flex items-center gap-2 text-base">
+              <TrendingUp className="h-4 w-4" />
+              {t('knowledge.fundamentals')}
+            </CardTitle>
+            <CardDescription className="text-xs mt-1">
+              {t('knowledge.fundamentalsDesc')}
+            </CardDescription>
+          </div>
+          <Button
+            size="sm"
+            variant="outline"
+            disabled={actionLoading !== null}
+            onClick={() =>
+              onAction('collect-all-fundamentals', () => adminApi.collectAllFundamentals())
+            }
+          >
+            {actionLoading === 'collect-all-fundamentals' ? (
+              <Loader2 className="h-3 w-3 animate-spin mr-1" />
+            ) : (
+              <RefreshCw className="h-3 w-3 mr-1" />
+            )}
+            {t('knowledge.collectAll')}
+          </Button>
+        </div>
+      </CardHeader>
+      <CardContent>
+        <div className="grid gap-4 sm:grid-cols-3">
+          {fundMarkets.map((market) => {
+            const stats = fundamentals?.[market]
+            const prog = progress?.[market]
+            return (
+              <div key={market} className="space-y-2 rounded-md border p-3">
+                <div className="flex items-center justify-between">
+                  <span className="font-medium text-sm">
+                    {td(t, `knowledge.market_${market}`)}
+                  </span>
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    className="h-7 px-2 text-xs"
+                    disabled={actionLoading !== null}
+                    onClick={() =>
+                      onAction(`collect-fund-${market}`, () => adminApi.collectFundamentals(market))
+                    }
+                  >
+                    {actionLoading === `collect-fund-${market}` ? (
+                      <Loader2 className="h-3 w-3 animate-spin" />
+                    ) : (
+                      t('knowledge.collect')
+                    )}
+                  </Button>
+                </div>
+
+                {stats && stats.symbolCount > 0 ? (
+                  <div className="space-y-1 text-xs text-muted-foreground">
+                    <div>
+                      <span className="font-medium text-foreground">
+                        {stats.symbolCount.toLocaleString()}
+                      </span>{' '}
+                      {t('knowledge.symbols')}
+                      {' / '}
+                      <span className="font-medium text-foreground">
+                        {stats.recordCount.toLocaleString()}
+                      </span>{' '}
+                      {t('knowledge.totalRecords')}
+                    </div>
+                    {stats.lastDate && (
+                      <div>
+                        {t('knowledge.lastCollected')}: {stats.lastDate}
+                      </div>
+                    )}
+                  </div>
+                ) : (
+                  <div className="text-xs text-muted-foreground italic">
+                    {t('knowledge.noData')}
+                  </div>
+                )}
+
+                {prog && (
+                  <ProgressBar
+                    percent={prog.percent}
+                    label={`${td(t, `knowledge.progress.${prog.phase}`)} ${prog.current}/${prog.total}`}
+                  />
+                )}
+              </div>
+            )
+          })}
+        </div>
+      </CardContent>
+    </Card>
+  )
+}
+
 function LoadingSkeleton() {
   return (
     <div className="space-y-6">
@@ -733,7 +845,8 @@ export default function KnowledgeBase() {
       const hasActive =
         progress?.stockProfile != null ||
         Object.values(progress?.stockProfiles ?? {}).some((v) => v != null) ||
-        Object.values(progress?.dailyBars ?? {}).some((v) => v != null)
+        Object.values(progress?.dailyBars ?? {}).some((v) => v != null) ||
+        Object.values(query.state.data?.fundamentalProgress ?? {}).some((v) => v != null)
       return hasActive ? 3000 : 30000
     },
   })
@@ -945,6 +1058,14 @@ export default function KnowledgeBase() {
         stockProfile={stats?.embeddings?.stock_profile}
         progress={stats?.progress?.stockProfiles}
         locks={stats?.stockProfileLocks}
+        actionLoading={actionLoading}
+        onAction={handleAction}
+      />
+
+      {/* Fundamentals: full-width card with per-market breakdown */}
+      <FundamentalsCard
+        fundamentals={stats?.fundamentals}
+        progress={stats?.fundamentalProgress}
         actionLoading={actionLoading}
         onAction={handleAction}
       />

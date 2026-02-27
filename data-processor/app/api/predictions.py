@@ -3,6 +3,7 @@
 Supports ML prediction workflows: trigger training/inference,
 retrieve results, query models, and backfill actual returns.
 """
+import asyncio
 import logging
 from typing import Optional
 
@@ -123,3 +124,34 @@ async def get_fundamentals_status():
         "last_updated": row["last_updated"].isoformat() if row["last_updated"] else None,
         "total_symbols": row["total_symbols"] or 0,
     }
+
+
+# In-memory set tracking running fundamental collections
+_running_fundamental_collections: set[str] = set()
+
+
+@router.post("/fundamentals/{market}/collect")
+async def collect_fundamentals(market: str):
+    """Trigger fundamental data collection for a market.
+
+    Non-blocking: starts collection in background and returns immediately.
+    """
+    market = market.lower()
+    if market not in ("cn", "us", "hk"):
+        raise HTTPException(status_code=400, detail=f"Invalid market: {market}")
+
+    if market in _running_fundamental_collections:
+        raise HTTPException(status_code=409, detail=f"Fundamental collection already running for {market}")
+
+    async def _run():
+        _running_fundamental_collections.add(market)
+        try:
+            from app.services.fundamental_service import fundamental_service
+            await fundamental_service.collect_market(market)
+        except Exception as e:
+            logger.error("Background fundamental collection failed for %s: %s", market, e, exc_info=True)
+        finally:
+            _running_fundamental_collections.discard(market)
+
+    asyncio.create_task(_run())
+    return {"status": "started", "market": market}

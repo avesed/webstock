@@ -258,8 +258,57 @@ async def get_financials(
     symbol: str,
     market: str = Query("us"),
 ):
-    """Get key financial metrics and ratios."""
+    """Get key financial metrics and ratios.
+
+    DB-first strategy: queries stock_fundamentals table for fresh data
+    (<48h). Falls back to live provider API on cache miss.
+    """
+    from app.services.fundamentals_db_service import get_financials_from_db
+
     t0 = time.monotonic()
+
+    # --- DB-first path ---
+    try:
+        db_data = await get_financials_from_db(symbol)
+    except Exception:
+        logger.warning("Unexpected error in DB financials for %s, falling back", symbol, exc_info=True)
+        db_data = None
+
+    if db_data is not None:
+        elapsed = int((time.monotonic() - t0) * 1000)
+        logger.debug("Financials for %s served from DB in %dms", symbol, elapsed)
+        financials = FinancialsData(
+            symbol=db_data.get("symbol", symbol),
+            pe_ratio=db_data.get("pe_ratio"),
+            forward_pe=db_data.get("forward_pe"),
+            eps=db_data.get("eps"),
+            dividend_yield=db_data.get("dividend_yield"),
+            dividend_rate=db_data.get("dividend_rate"),
+            book_value=db_data.get("book_value"),
+            price_to_book=db_data.get("price_to_book"),
+            revenue=db_data.get("revenue"),
+            revenue_growth=db_data.get("revenue_growth"),
+            net_income=db_data.get("net_income"),
+            profit_margin=db_data.get("profit_margin"),
+            gross_margin=db_data.get("gross_margin"),
+            operating_margin=db_data.get("operating_margin"),
+            roe=db_data.get("roe"),
+            roa=db_data.get("roa"),
+            debt_to_equity=db_data.get("debt_to_equity"),
+            current_ratio=db_data.get("current_ratio"),
+            eps_growth=db_data.get("eps_growth"),
+            payout_ratio=db_data.get("payout_ratio"),
+            market=db_data.get("market", market),
+            source="db",
+        )
+        return ApiResponse(
+            data=financials,
+            source="db",
+            elapsed_ms=elapsed,
+        )
+
+    # --- Fallback: live provider API ---
+    logger.debug("Financials for %s: DB miss, falling back to live API", symbol)
     sr = await get_stock_router()
     data = await sr.get_financials(symbol, market=market)
     elapsed = int((time.monotonic() - t0) * 1000)

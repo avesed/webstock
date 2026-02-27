@@ -16,7 +16,7 @@ from collections import defaultdict
 from datetime import date
 from typing import Any, Optional
 
-from app.core.executor import run_in_executor
+from app.core.executor import run_in_background_executor as run_in_executor
 from app.providers.constants import detect_market, normalize_symbol
 
 logger = logging.getLogger(__name__)

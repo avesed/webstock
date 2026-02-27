@@ -47,7 +47,9 @@ class Settings(BaseSettings):
     LOG_LEVEL: str = "info"
 
     # Executor
-    EXECUTOR_MAX_WORKERS: int = 10
+    EXECUTOR_MAX_WORKERS: int = 20  # Frontend requests
+    EXECUTOR_BACKGROUND_WORKERS: int = 10  # Daily bar + stock list collection
+    EXECUTOR_PROFILE_WORKERS: int = 5  # Stock profile collection
 
 
 @lru_cache()

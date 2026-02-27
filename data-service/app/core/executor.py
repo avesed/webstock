@@ -3,7 +3,13 @@
 Many data provider libraries (yfinance, akshare, tushare, finnhub) are synchronous.
 This executor runs them in a thread pool so they don't block the FastAPI event loop.
 
-Self-healing: A background watchdog periodically probes the executor and recycles
+Three isolated pools prevent background collection tasks from starving frontend
+requests:
+  - FRONTEND: User-facing API calls (stock quotes, search, history)
+  - BACKGROUND: Daily bar collection + stock list updates
+  - PROFILE: Stock profile collection (knowledge base)
+
+Self-healing: A background watchdog periodically probes each pool and recycles
 it when threads are stuck. This prevents gradual thread-pool exhaustion caused by
 zombie threads (blocking calls that outlive their asyncio timeout).
 """
@@ -14,6 +20,7 @@ import logging
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
+from enum import Enum
 from functools import partial
 from typing import Any, Callable, Optional, TypeVar
 
@@ -23,9 +30,31 @@ logger = logging.getLogger(__name__)
 
 T = TypeVar("T")
 
-_executor: Optional[ThreadPoolExecutor] = None
+
+class ExecutorPool(Enum):
+    FRONTEND = "frontend"
+    BACKGROUND = "background"
+    PROFILE = "profile"
+
+
+_executors: dict[ExecutorPool, Optional[ThreadPoolExecutor]] = {
+    ExecutorPool.FRONTEND: None,
+    ExecutorPool.BACKGROUND: None,
+    ExecutorPool.PROFILE: None,
+}
 _executor_lock = threading.Lock()
-_executor_created_at: float = 0.0
+_executor_created_at: dict[ExecutorPool, float] = {
+    ExecutorPool.FRONTEND: 0.0,
+    ExecutorPool.BACKGROUND: 0.0,
+    ExecutorPool.PROFILE: 0.0,
+}
+
+# Pool configuration: (settings attribute, thread name prefix)
+_POOL_CONFIG: dict[ExecutorPool, tuple[str, str]] = {
+    ExecutorPool.FRONTEND: ("EXECUTOR_MAX_WORKERS", "data-provider"),
+    ExecutorPool.BACKGROUND: ("EXECUTOR_BACKGROUND_WORKERS", "bg-collect"),
+    ExecutorPool.PROFILE: ("EXECUTOR_PROFILE_WORKERS", "bg-profile"),
+}
 
 # How often to recycle the executor (seconds). Zombie threads from timed-out
 # calls accumulate over time; recycling keeps the pool fresh.
@@ -40,61 +69,69 @@ WATCHDOG_INTERVAL = 120  # 2 minutes
 _watchdog_task: Optional[asyncio.Task] = None
 
 
-def get_executor() -> ThreadPoolExecutor:
-    """Get or create the shared ThreadPoolExecutor."""
-    global _executor, _executor_created_at
+def get_executor(pool: ExecutorPool = ExecutorPool.FRONTEND) -> ThreadPoolExecutor:
+    """Get or create the shared ThreadPoolExecutor for the given pool."""
+    global _executors, _executor_created_at
     with _executor_lock:
-        if _executor is None:
+        if _executors[pool] is None:
             settings = get_settings()
-            _executor = ThreadPoolExecutor(
-                max_workers=settings.EXECUTOR_MAX_WORKERS,
-                thread_name_prefix="data-provider",
+            attr_name, prefix = _POOL_CONFIG[pool]
+            max_workers = getattr(settings, attr_name)
+            _executors[pool] = ThreadPoolExecutor(
+                max_workers=max_workers,
+                thread_name_prefix=prefix,
             )
-            _executor_created_at = time.monotonic()
+            _executor_created_at[pool] = time.monotonic()
             logger.info(
-                "ThreadPoolExecutor initialized: max_workers=%d",
-                settings.EXECUTOR_MAX_WORKERS,
+                "ThreadPoolExecutor[%s] initialized: max_workers=%d",
+                pool.value,
+                max_workers,
             )
-    return _executor
+    return _executors[pool]  # type: ignore[return-value]
 
 
-def _recycle_executor(reason: str) -> ThreadPoolExecutor:
+def _recycle_executor(pool: ExecutorPool, reason: str) -> ThreadPoolExecutor:
     """Shut down the old executor and create a fresh one.
 
     The old executor is told to shut down with cancel_futures=True, but
     zombie threads may linger (Python limitation). The important thing is
     that new tasks go to a healthy pool.
     """
-    global _executor, _executor_created_at
+    global _executors, _executor_created_at
     with _executor_lock:
-        old = _executor
+        old = _executors[pool]
         settings = get_settings()
-        _executor = ThreadPoolExecutor(
-            max_workers=settings.EXECUTOR_MAX_WORKERS,
-            thread_name_prefix="data-provider",
+        attr_name, prefix = _POOL_CONFIG[pool]
+        max_workers = getattr(settings, attr_name)
+        _executors[pool] = ThreadPoolExecutor(
+            max_workers=max_workers,
+            thread_name_prefix=prefix,
         )
-        _executor_created_at = time.monotonic()
+        _executor_created_at[pool] = time.monotonic()
         logger.warning(
-            "Executor recycled (%s): new pool max_workers=%d",
+            "Executor[%s] recycled (%s): new pool max_workers=%d",
+            pool.value,
             reason,
-            settings.EXECUTOR_MAX_WORKERS,
+            max_workers,
         )
-    # Shut down old pool in background — stuck threads won't block us
+    # Shut down old pool in background -- stuck threads won't block us
     if old is not None:
         try:
             old.shutdown(wait=False, cancel_futures=True)
-        except Exception:
-            pass
-    return _executor
+        except Exception as e:
+            logger.debug("Old executor[%s] shutdown error (non-fatal): %s", pool.value, e)
+    return _executors[pool]  # type: ignore[return-value]
 
 
-async def check_executor_health() -> bool:
+async def check_executor_health(
+    pool: ExecutorPool = ExecutorPool.FRONTEND,
+) -> bool:
     """Submit a trivial task to the executor and check it completes.
 
     Returns True if the executor is responsive, False if stuck.
     """
     loop = asyncio.get_running_loop()
-    executor = get_executor()
+    executor = get_executor(pool)
 
     def _probe() -> bool:
         return True
@@ -114,6 +151,7 @@ async def _watchdog_loop() -> None:
 
     - Recycles on schedule (RECYCLE_INTERVAL) to prevent gradual degradation.
     - Recycles immediately if health probe fails (all threads stuck).
+    - Iterates over all pool types each cycle.
     """
     logger.info(
         "Executor watchdog started: probe every %ds, recycle every %ds",
@@ -124,24 +162,32 @@ async def _watchdog_loop() -> None:
         try:
             await asyncio.sleep(WATCHDOG_INTERVAL)
 
-            # Check age-based recycling
-            age = time.monotonic() - _executor_created_at
-            if age >= RECYCLE_INTERVAL:
-                _recycle_executor(f"age={int(age)}s >= {RECYCLE_INTERVAL}s")
-                continue
+            for pool in ExecutorPool:
+                # Only check pools that have been created
+                if _executors[pool] is None:
+                    continue
 
-            # Health probe
-            healthy = await check_executor_health()
-            if not healthy:
-                logger.error(
-                    "Executor health probe FAILED — all threads may be stuck"
-                )
-                _recycle_executor("health probe failed")
+                # Check age-based recycling
+                age = time.monotonic() - _executor_created_at[pool]
+                if age >= RECYCLE_INTERVAL:
+                    _recycle_executor(
+                        pool, f"age={int(age)}s >= {RECYCLE_INTERVAL}s"
+                    )
+                    continue
+
+                # Health probe
+                healthy = await check_executor_health(pool)
+                if not healthy:
+                    logger.error(
+                        "Executor[%s] health probe FAILED — all threads may be stuck",
+                        pool.value,
+                    )
+                    _recycle_executor(pool, "health probe failed")
         except asyncio.CancelledError:
             logger.info("Executor watchdog cancelled")
             return
         except Exception as e:
-            logger.error("Executor watchdog error: %s", e)
+            logger.error("Executor watchdog error: %s", e, exc_info=True)
             await asyncio.sleep(10)
 
 
@@ -165,19 +211,22 @@ async def stop_watchdog() -> None:
 
 
 def shutdown_executor() -> None:
-    """Gracefully shut down the executor. Call on application shutdown."""
-    global _executor
+    """Gracefully shut down all executor pools. Call on application shutdown."""
+    global _executors
     with _executor_lock:
-        if _executor is not None:
-            _executor.shutdown(wait=False, cancel_futures=True)
-            _executor = None
-            logger.info("ThreadPoolExecutor shut down")
+        for pool in ExecutorPool:
+            executor = _executors[pool]
+            if executor is not None:
+                executor.shutdown(wait=False, cancel_futures=True)
+                _executors[pool] = None
+                logger.info("ThreadPoolExecutor[%s] shut down", pool.value)
 
 
 async def run_in_executor(
     func: Callable[..., T],
     *args: Any,
     timeout: float = 30.0,
+    pool: ExecutorPool = ExecutorPool.FRONTEND,
     **kwargs: Any,
 ) -> T:
     """Run a synchronous function in the thread pool with timeout.
@@ -186,6 +235,7 @@ async def run_in_executor(
         func: The synchronous function to execute.
         *args: Positional arguments for func.
         timeout: Maximum seconds to wait (default 30).
+        pool: Which executor pool to use (default FRONTEND).
         **kwargs: Keyword arguments for func.
 
     Returns:
@@ -198,7 +248,7 @@ async def run_in_executor(
     start = time.monotonic()
 
     loop = asyncio.get_running_loop()
-    executor = get_executor()
+    executor = get_executor(pool)
 
     if kwargs:
         call = partial(func, *args, **kwargs)
@@ -211,12 +261,13 @@ async def run_in_executor(
             timeout=timeout,
         )
         elapsed = time.monotonic() - start
-        logger.debug("Executor: %s completed in %.2fs", func_name, elapsed)
+        logger.debug("Executor[%s]: %s completed in %.2fs", pool.value, func_name, elapsed)
         return result
     except asyncio.TimeoutError:
         elapsed = time.monotonic() - start
         logger.warning(
-            "Executor: %s timed out after %.2fs (limit: %.1fs)",
+            "Executor[%s]: %s timed out after %.2fs (limit: %.1fs)",
+            pool.value,
             func_name,
             elapsed,
             timeout,
@@ -225,9 +276,30 @@ async def run_in_executor(
     except Exception:
         elapsed = time.monotonic() - start
         logger.error(
-            "Executor: %s failed after %.2fs",
+            "Executor[%s]: %s failed after %.2fs",
+            pool.value,
             func_name,
             elapsed,
             exc_info=True,
         )
         raise
+
+
+async def run_in_background_executor(
+    func: Callable[..., T],
+    *args: Any,
+    timeout: float = 60.0,
+    **kwargs: Any,
+) -> T:
+    """Convenience wrapper for background collection tasks (daily bars, stock lists)."""
+    return await run_in_executor(func, *args, timeout=timeout, pool=ExecutorPool.BACKGROUND, **kwargs)
+
+
+async def run_in_profile_executor(
+    func: Callable[..., T],
+    *args: Any,
+    timeout: float = 60.0,
+    **kwargs: Any,
+) -> T:
+    """Convenience wrapper for stock profile collection tasks."""
+    return await run_in_executor(func, *args, timeout=timeout, pool=ExecutorPool.PROFILE, **kwargs)

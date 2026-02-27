@@ -9,6 +9,7 @@ the main backend (``WEBSTOCK_BACKEND_URL``) for backward compatibility.
 Internal endpoints consumed:
     GET  /api/v1/internal/symbols/{market}
     POST /api/v1/internal/history/batch
+    GET  /v1/reference/index-constituents/{index_code}
 """
 
 import logging
@@ -131,6 +132,39 @@ class BackendDataClient:
                 f"Failed to fetch history batch for {len(symbols)} symbols "
                 f"(market={market}): [{type(e).__name__}] {e}"
             ) from e
+
+    def get_index_constituents(self, index_code: str, market: str) -> list[str]:
+        """Fetch constituent symbols for a market index from data-service.
+
+        Uses the ``/v1/reference/index-constituents/{index_code}`` endpoint.
+        Returns an empty list on failure (never raises).
+        """
+        try:
+            resp = self._client.get(
+                f"/v1/reference/index-constituents/{index_code}",
+                params={"market": market},
+                timeout=httpx.Timeout(30.0, connect=10.0),
+            )
+            resp.raise_for_status()
+            body = resp.json()
+            if body.get("success") and body.get("data"):
+                symbols = body["data"].get("symbols", [])
+                logger.info(
+                    "Fetched %d constituents for index=%s market=%s",
+                    len(symbols), index_code, market,
+                )
+                return symbols
+            logger.warning(
+                "Index constituents response unsuccessful: index=%s market=%s error=%s",
+                index_code, market, body.get("error"),
+            )
+            return []
+        except Exception as e:
+            logger.warning(
+                "Failed to fetch index constituents for %s (%s): %s",
+                index_code, market, e,
+            )
+            return []
 
     def is_available(self) -> bool:
         """Check if the backend internal API is reachable.

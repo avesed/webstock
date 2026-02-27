@@ -516,6 +516,20 @@ export const adminApi = {
     const response = await apiClient.post<{ message: string; taskId: string }>('/admin/knowledge-base/stock-list/update')
     return response.data
   },
+
+  collectFundamentals: async (market: string): Promise<{ status: string; market: string }> => {
+    const response = await apiClient.post<{ status: string; market: string }>(
+      `/admin/knowledge-base/fundamentals/${market}/collect`
+    )
+    return response.data
+  },
+
+  collectAllFundamentals: async (): Promise<{ status: string; results: unknown[] }> => {
+    const response = await apiClient.post<{ status: string; results: unknown[] }>(
+      '/admin/knowledge-base/fundamentals/collect-all'
+    )
+    return response.data
+  },
 }
 
 // Filter stats types
@@ -834,6 +848,20 @@ export interface QlibSyncProgress {
   started_at: string
 }
 
+interface KBFundamentalMarketStats {
+  symbolCount: number
+  lastDate: string | null
+  recordCount: number
+}
+
+interface KBFundamentalProgress {
+  phase: string
+  current: number
+  total: number
+  percent: number
+  updatedAt: string
+}
+
 export interface KnowledgeBaseStatsResponse {
   embeddings: {
     stock_profile: {
@@ -883,5 +911,15 @@ export interface KnowledgeBaseStatsResponse {
     cn: KBMarketLock | null
     us: KBMarketLock | null
     hk: KBMarketLock | null
+  }
+  fundamentals?: {
+    cn: KBFundamentalMarketStats
+    us: KBFundamentalMarketStats
+    hk: KBFundamentalMarketStats
+  }
+  fundamentalProgress?: {
+    cn: KBFundamentalProgress | null
+    us: KBFundamentalProgress | null
+    hk: KBFundamentalProgress | null
   }
 }

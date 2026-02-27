@@ -201,6 +201,13 @@ class PredictionClient:
             timeout=httpx.Timeout(30.0, connect=10.0),
         )
 
+    async def collect_fundamentals(self, market: str) -> Dict[str, Any]:
+        """Trigger fundamental data collection for a market."""
+        return await self._request(
+            "POST", f"/predictions/fundamentals/{market}/collect",
+            timeout=httpx.Timeout(30.0, connect=10.0),
+        )
+
 
 async def get_prediction_client() -> "PredictionClient":
     """Get the singleton PredictionClient instance (async-safe)."""

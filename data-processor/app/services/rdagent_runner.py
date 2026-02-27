@@ -45,6 +45,13 @@ _SIGTERM_WAIT_SECONDS = 30
 # Maximum log lines retained in memory per task
 _MAX_LOG_LINES = 100
 
+
+def _get_index_constituents_sync(index_code: str, market: str) -> list[str]:
+    """Synchronous index constituent fetch (for asyncio.to_thread)."""
+    from app.services.backend_client import get_backend_client
+
+    return get_backend_client().get_index_constituents(index_code, market)
+
 # Stdout parsing patterns
 _RE_ROUND = re.compile(r"Round\s+(\d+)[/\s](\d+)", re.IGNORECASE)
 _RE_FACTOR_DISCOVERED = re.compile(
@@ -433,8 +440,11 @@ class RDAgentRunner:
     ) -> list[str]:
         """Resolve the symbol list for an RD-Agent run.
 
-        First tries the specified universe_id, then falls back to the
-        default universe for the market from SettingsCache.
+        Priority per universe:
+        1. Explicit symbols array
+        2. Index-type → resolve via data-service constituent API
+
+        Tries specified universe_id first, then default universe.
 
         Args:
             market: Market code.
@@ -445,33 +455,48 @@ class RDAgentRunner:
         """
         universes = await settings_cache.get_universes(market=market)
 
+        async def _try_resolve(u) -> list[str] | None:
+            if u.symbols:
+                return list(u.symbols)
+            if u.universe_type == "index" and u.index_code:
+                try:
+                    symbols = await asyncio.to_thread(
+                        _get_index_constituents_sync, u.index_code, market,
+                    )
+                    if symbols:
+                        return symbols
+                except Exception as e:
+                    logger.warning(
+                        "Index resolution failed for %s: %s", u.index_code, e,
+                    )
+            return None
+
         if universe_id:
             for u in universes:
-                if str(u.id) == universe_id and u.symbols:
-                    logger.info(
-                        "Resolved %d symbols from universe %s (%s)",
-                        len(u.symbols), u.name, universe_id,
-                    )
-                    return u.symbols
+                if str(u.id) == universe_id:
+                    result = await _try_resolve(u)
+                    if result:
+                        logger.info(
+                            "Resolved %d symbols from universe %s (%s)",
+                            len(result), u.name, universe_id,
+                        )
+                        return result
 
         # Fall back to default universe
         for u in universes:
-            if u.is_default and u.symbols:
-                logger.info(
-                    "Resolved %d symbols from default universe %s",
-                    len(u.symbols), u.name,
-                )
-                return u.symbols
+            if u.is_default:
+                result = await _try_resolve(u)
+                if result:
+                    logger.info(
+                        "Resolved %d symbols from default universe %s",
+                        len(result), u.name,
+                    )
+                    return result
 
-        # If universes exist but have no explicit symbols (index-type),
-        # return empty and let the caller handle it
-        if universes:
-            logger.warning(
-                "Universe(s) found for %s but none have explicit symbols. "
-                "Index-type universes require symbol resolution first.",
-                market,
-            )
-
+        logger.warning(
+            "No symbols resolved for market=%s (universe_id=%s)",
+            market, universe_id,
+        )
         return []
 
     async def stop(self, market: str) -> dict:

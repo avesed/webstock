@@ -42,6 +42,10 @@ _SP_PROGRESS_KEY_TEMPLATE = "kb:stock_profile:{market}:progress"
 _SP_QUEUED_KEY_TEMPLATE = "kb:stock_profile:{market}:queued"
 _SP_QUEUED_TTL = 14400
 
+# Fundamental collection progress keys (written by data-processor to Redis DB 0)
+_FUND_MARKETS = ("cn", "us", "hk")
+_FUND_PROGRESS_KEY_TEMPLATE = "kb:fundamentals:{market}:progress"
+
 CLEARABLE_SOURCE_TYPES = {"news", "analysis", "report"}
 REBUILDABLE_SOURCE_TYPES = {
     "stock_profile", "stock_profile_sync", "news", "analysis", "report",
@@ -507,6 +511,38 @@ async def get_knowledge_base_stats(
     except Exception as e:
         logger.warning("Failed to get stock list stats: %s", e)
 
+    # ── 10. Fundamental stats per market ──
+    fundamental_stats: Dict[str, Any] = {}
+    try:
+        fund_result = await db.execute(text(
+            "SELECT market, COUNT(DISTINCT symbol) AS symbol_count, "
+            "MAX(date) AS last_date, COUNT(*) AS record_count "
+            "FROM stock_fundamentals GROUP BY market"
+        ))
+        for row in fund_result:
+            fundamental_stats[row.market] = {
+                "symbolCount": row.symbol_count,
+                "lastDate": str(row.last_date) if row.last_date else None,
+                "recordCount": row.record_count,
+            }
+    except Exception as e:
+        logger.warning("Failed to query fundamental stats: %s", e)
+
+    # ── 11. Fundamental collection progress from Redis ──
+    fundamental_progress: Dict[str, Any] = {}
+    try:
+        from app.db.redis import get_redis
+        redis = await get_redis()
+        for market in _FUND_MARKETS:
+            raw = await redis.get(_FUND_PROGRESS_KEY_TEMPLATE.format(market=market))
+            if raw:
+                fundamental_progress[market] = json.loads(raw)
+            else:
+                fundamental_progress[market] = None
+    except Exception as e:
+        logger.warning("Failed to read fundamental progress: %s", e)
+        fundamental_progress = {m: None for m in _FUND_MARKETS}
+
     return {
         "embeddings": embeddings,
         "dailyBars": daily_bars,
@@ -514,6 +550,11 @@ async def get_knowledge_base_stats(
         "progress": progress,
         "locks": locks,
         "stockProfileLocks": sp_locks,
+        "fundamentals": {
+            m: fundamental_stats.get(m, {"symbolCount": 0, "lastDate": None, "recordCount": 0})
+            for m in _FUND_MARKETS
+        },
+        "fundamentalProgress": fundamental_progress,
     }
 
 
@@ -1139,6 +1180,86 @@ async def unlock_stock_profiles(
         )
         return {"message": f"Lock released and task terminated for market={market}"}
     return {"message": f"No lock held for market={market}"}
+
+
+# ---------------------------------------------------------------------------
+# POST /knowledge-base/fundamentals/{market}/collect
+# ---------------------------------------------------------------------------
+
+
+@router.post(
+    "/knowledge-base/fundamentals/{market}/collect",
+    summary="Collect fundamental data for a single market",
+)
+async def collect_fundamentals(
+    market: str,
+    current_user: User = Depends(require_admin),
+) -> Dict[str, Any]:
+    """Trigger fundamental data collection for a specific market."""
+
+    market = market.lower()
+    if market not in _FUND_MARKETS:
+        raise HTTPException(
+            400,
+            f"Invalid market: {market}. Must be one of: {', '.join(_FUND_MARKETS)}",
+        )
+
+    from app.services.prediction_client import (
+        PredictionServiceError,
+        get_prediction_client,
+    )
+
+    client = await get_prediction_client()
+    try:
+        resp = await client.collect_fundamentals(market)
+        logger.info(
+            "Admin %s triggered fundamental collection for %s",
+            current_user.email, market,
+        )
+        return {"message": f"Fundamental collection started for {market}", **resp}
+    except PredictionServiceError as e:
+        raise HTTPException(status_code=e.status_code or 502, detail=str(e))
+
+
+# ---------------------------------------------------------------------------
+# POST /knowledge-base/fundamentals/collect-all
+# ---------------------------------------------------------------------------
+
+
+@router.post(
+    "/knowledge-base/fundamentals/collect-all",
+    summary="Collect fundamental data for all markets",
+)
+async def collect_all_fundamentals(
+    current_user: User = Depends(require_admin),
+) -> Dict[str, Any]:
+    """Trigger fundamental data collection for all markets sequentially."""
+
+    from app.services.prediction_client import (
+        PredictionServiceError,
+        get_prediction_client,
+    )
+
+    client = await get_prediction_client()
+
+    results: Dict[str, Any] = {}
+    errors: list[str] = []
+    for market in _FUND_MARKETS:
+        try:
+            resp = await client.collect_fundamentals(market)
+            results[market] = resp
+        except PredictionServiceError as e:
+            errors.append(f"{market}: {e}")
+
+    logger.info(
+        "Admin %s triggered fundamental collection for all markets",
+        current_user.email,
+    )
+    return {
+        "message": f"Fundamental collection triggered for {len(results)} markets",
+        "results": results,
+        "errors": errors,
+    }
 
 
 # ---------------------------------------------------------------------------
