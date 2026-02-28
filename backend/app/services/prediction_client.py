@@ -141,6 +141,21 @@ class PredictionClient:
             params["market"] = market
         return await self._request("GET", "/predictions/models", params=params)
 
+    async def get_feature_importance(self, model_id: str) -> Dict[str, Any]:
+        """Get feature importance for a specific model."""
+        return await self._request(
+            "GET", f"/predictions/models/{model_id}/feature-importance"
+        )
+
+    async def update_model_quality(
+        self, model_id: str, quality_passed: bool
+    ) -> Dict[str, Any]:
+        """Admin override: update model quality_passed flag."""
+        return await self._request(
+            "PUT", f"/predictions/models/{model_id}/quality",
+            json={"quality_passed": quality_passed},
+        )
+
     async def get_prediction_history(
         self,
         market: str,
@@ -149,6 +164,15 @@ class PredictionClient:
         """Get prediction accuracy history for a market."""
         return await self._request(
             "GET", f"/predictions/{market}/history",
+            params={"days": str(days)},
+        )
+
+    async def get_performance_metrics(
+        self, market: str, days: int = 90
+    ) -> Dict[str, Any]:
+        """Get model performance metrics over time."""
+        return await self._request(
+            "GET", f"/predictions/{market}/performance",
             params={"days": str(days)},
         )
 

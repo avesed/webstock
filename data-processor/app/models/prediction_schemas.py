@@ -36,8 +36,8 @@ class PredictionResult(BaseModel):
     )
     percentile_rank: float = Field(
         ge=0.0,
-        le=100.0,
-        description="Percentile rank within the universe (0-100)",
+        le=1.0,
+        description="Percentile rank within the universe (0.0-1.0, where 1.0 is the highest)",
     )
     predicted_direction: str = Field(
         description="Predicted direction: up, down, or sideways",
@@ -102,6 +102,12 @@ class UniverseRequest(BaseModel):
         None,
         description="Explicit symbol list for 'custom' type",
     )
+
+
+class ModelQualityUpdateRequest(BaseModel):
+    """Request to update model quality status."""
+
+    quality_passed: bool = Field(description="Whether the model passed quality gate")
 
 
 class RDAgentStartRequest(BaseModel):

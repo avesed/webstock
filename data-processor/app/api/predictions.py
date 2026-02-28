@@ -15,6 +15,7 @@ from app.models.prediction_schemas import (
     PredictionResult,
     PredictionTaskStatus,
     ModelInfo,
+    ModelQualityUpdateRequest,
 )
 from app.services.prediction_service import prediction_service
 
@@ -88,6 +89,43 @@ async def get_prediction_history(
     market = market.lower()
     history = await prediction_service.get_prediction_history(market=market, days=days)
     return {"market": market, "days": days, "count": len(history), "predictions": history}
+
+
+@router.get("/models/{model_id}/feature-importance")
+async def get_feature_importance(model_id: str):
+    """Get feature importance for a specific model."""
+    result = await prediction_service.get_feature_importance(model_id)
+    if result is None:
+        raise HTTPException(404, f"Model not found: {model_id}")
+    return result
+
+
+@router.put("/models/{model_id}/quality")
+async def update_model_quality(model_id: str, request: ModelQualityUpdateRequest):
+    """Admin override: mark model as approved/rejected."""
+    try:
+        success = await prediction_service.update_model_quality(
+            model_id, request.quality_passed
+        )
+    except Exception as e:
+        logger.error("Failed to update model quality for %s: %s", model_id, e, exc_info=True)
+        raise HTTPException(500, "Failed to update model quality")
+    if not success:
+        raise HTTPException(404, f"Model not found: {model_id}")
+    return {"model_id": model_id, "quality_passed": request.quality_passed}
+
+
+@router.get("/{market}/performance")
+async def get_performance_metrics(
+    market: str,
+    days: int = Query(90, ge=7, le=365),
+):
+    """Get model performance metrics over time (IC trend, hit rate, spread)."""
+    market = market.lower()
+    if market not in ("us", "hk", "cn"):
+        raise HTTPException(400, f"Unsupported market: {market}")
+    result = await prediction_service.get_performance_metrics(market=market, days=days)
+    return result
 
 
 @router.post("/backfill-returns")

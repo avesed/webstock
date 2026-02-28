@@ -20,6 +20,8 @@ export interface PredictionModel {
   ic: number | null
   icir: number | null
   ndcg: number | null
+  qualityPassed: boolean
+  featureImportanceTop30: Record<string, number> | null
   createdAt: string
 }
 
@@ -75,6 +77,39 @@ export interface PredictionAccuracy {
   avgIcir: number | null
 }
 
+export interface FeatureImportance {
+  modelId: string
+  market: string
+  modelDate: string | null
+  featureCount: number
+  top30: Record<string, number>
+  full: Record<string, number> | null
+}
+
+export interface ModelPerformanceMetric {
+  date: string
+  ic: number | null
+  hitRate: number | null
+  top10Return: number
+  bottom10Return: number
+  spread: number
+  symbolCount: number
+}
+
+export interface PerformanceResponse {
+  market: string
+  days: number
+  dataPoints: number
+  metrics: ModelPerformanceMetric[]
+  summary: {
+    avgIc: number | null
+    avgHitRate: number | null
+    avgSpread: number | null
+    totalDates: number
+    totalPredictions: number
+  }
+}
+
 export interface PredictionStatusItem {
   models: PredictionModel[]
   latestPredictions: PredictionResult[]
@@ -100,6 +135,15 @@ function toCamelPrediction(p: Record<string, any>): PredictionResult {
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 function toCamelModel(m: Record<string, any>): PredictionModel {
+  // Extract feature_importance_top30 from metadata if present
+  const metadata = m.metadata as Record<string, any> | undefined
+  const featureImportanceTop30 = (
+    metadata?.feature_importance_top30 ??
+    m.feature_importance_top30 ??
+    m.featureImportanceTop30 ??
+    null
+  ) as Record<string, number> | null
+
   return {
     id: String(m.id),
     market: m.market as string,
@@ -109,6 +153,8 @@ function toCamelModel(m: Record<string, any>): PredictionModel {
     ic: (m.ic ?? null) as number | null,
     icir: (m.icir ?? null) as number | null,
     ndcg: (m.ndcg ?? null) as number | null,
+    qualityPassed: (m.quality_passed ?? m.qualityPassed ?? true) as boolean,
+    featureImportanceTop30,
     createdAt: (m.created_at ?? m.createdAt) as string,
   }
 }
@@ -163,6 +209,32 @@ function toCamelAccuracy(a: Record<string, any>): PredictionAccuracy {
     accuracy: (a.accuracy) as number,
     avgIc: (a.avg_ic ?? a.avgIc ?? null) as number | null,
     avgIcir: (a.avg_icir ?? a.avgIcir ?? null) as number | null,
+  }
+}
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function toCamelPerformance(raw: Record<string, any>): PerformanceResponse {
+  const summary = raw.summary as Record<string, any> | undefined
+  return {
+    market: raw.market as string,
+    days: raw.days as number,
+    dataPoints: (raw.data_points ?? raw.dataPoints ?? 0) as number,
+    metrics: Array.isArray(raw.metrics) ? (raw.metrics as Record<string, any>[]).map(m => ({
+      date: m.date as string,
+      ic: (m.ic ?? null) as number | null,
+      hitRate: (m.hit_rate ?? m.hitRate ?? null) as number | null,
+      top10Return: (m.top10_return ?? m.top10Return ?? 0) as number,
+      bottom10Return: (m.bottom10_return ?? m.bottom10Return ?? 0) as number,
+      spread: (m.spread ?? 0) as number,
+      symbolCount: (m.symbol_count ?? m.symbolCount ?? 0) as number,
+    })) : [],
+    summary: {
+      avgIc: (summary?.avg_ic ?? summary?.avgIc ?? null) as number | null,
+      avgHitRate: (summary?.avg_hit_rate ?? summary?.avgHitRate ?? null) as number | null,
+      avgSpread: (summary?.avg_spread ?? summary?.avgSpread ?? null) as number | null,
+      totalDates: (summary?.total_dates ?? summary?.totalDates ?? 0) as number,
+      totalPredictions: (summary?.total_predictions ?? summary?.totalPredictions ?? 0) as number,
+    },
   }
 }
 
@@ -273,6 +345,35 @@ export const predictionsApi = {
 
   deleteUniverse: (id: string) =>
     apiClient.delete<{ message: string }>(`/admin/predictions/universes/${id}`).then(r => r.data),
+
+  // Feature Importance
+  getFeatureImportance: (modelId: string) =>
+    apiClient.get<Record<string, unknown>>(`/admin/predictions/models/${modelId}/feature-importance`)
+      .then(r => {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const d = r.data as Record<string, any>
+        return {
+          modelId: (d.model_id ?? d.modelId) as string,
+          market: d.market as string,
+          modelDate: (d.model_date ?? d.modelDate ?? null) as string | null,
+          featureCount: (d.feature_count ?? d.featureCount ?? 0) as number,
+          top30: (d.top30 ?? {}) as Record<string, number>,
+          full: (d.full ?? null) as Record<string, number> | null,
+        } satisfies FeatureImportance
+      }),
+
+  // Model Quality
+  updateModelQuality: (modelId: string, qualityPassed: boolean) =>
+    apiClient.put<Record<string, unknown>>(`/admin/predictions/models/${modelId}/quality`, {
+      quality_passed: qualityPassed,
+    }).then(r => r.data),
+
+  // Performance Metrics
+  getPerformanceMetrics: (market: string, days = 90) =>
+    apiClient.get<Record<string, unknown>>(`/admin/predictions/${market}/performance`, {
+      params: { days },
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    }).then(r => toCamelPerformance(r.data as Record<string, any>)),
 
   // Fundamentals
   getFundamentalsStatus: () =>

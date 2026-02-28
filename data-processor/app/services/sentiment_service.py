@@ -14,7 +14,7 @@ from typing import Optional
 
 import msgpack
 import pandas as pd
-import redis
+import redis.asyncio as aioredis
 
 from app.config import get_settings
 
@@ -67,15 +67,15 @@ def _build_cache_key(symbols: list[str], start_date: str, end_date: str) -> str:
     return f"pred:sentiment:{digest}"
 
 
-_redis_client: Optional[redis.Redis] = None
+_redis_client: Optional[aioredis.Redis] = None
 
 
-def _get_redis_client() -> redis.Redis:
-    """Return a module-level shared Redis client (lazy singleton)."""
+def _get_redis_client() -> aioredis.Redis:
+    """Return a module-level shared async Redis client (lazy singleton)."""
     global _redis_client
     if _redis_client is None:
         settings = get_settings()
-        _redis_client = redis.from_url(settings.REDIS_URL, decode_responses=False)
+        _redis_client = aioredis.from_url(settings.REDIS_URL, decode_responses=False)
     return _redis_client
 
 
@@ -118,7 +118,7 @@ class SentimentService:
             return pd.DataFrame()
 
         # 1. 检查 Redis 缓存
-        cached = self._read_cache(symbols, start_date, end_date)
+        cached = await self._read_cache(symbols, start_date, end_date)
         if cached is not None:
             logger.debug(
                 "Sentiment cache hit: %d symbols, %s~%s",
@@ -133,7 +133,7 @@ class SentimentService:
         result = self._compute_rolling_features(raw_df, symbols, start_date, end_date)
 
         # 4. 写入缓存
-        self._write_cache(result, symbols, start_date, end_date)
+        await self._write_cache(result, symbols, start_date, end_date)
 
         logger.info(
             "Sentiment features computed: %d symbols, %d rows, %s~%s",
@@ -280,10 +280,11 @@ class SentimentService:
         return pd.DataFrame(rows) if rows else pd.DataFrame()
 
     # ------------------------------------------------------------------
-    # Redis cache (sync client, matching qlib-service pattern)
+    # ------------------------------------------------------------------
+    # Redis cache (async client)
     # ------------------------------------------------------------------
 
-    def _read_cache(
+    async def _read_cache(
         self,
         symbols: list[str],
         start_date: str,
@@ -293,7 +294,7 @@ class SentimentService:
         key = _build_cache_key(symbols, start_date, end_date)
         try:
             r = _get_redis_client()
-            data = r.get(key)
+            data = await r.get(key)
             if data is None:
                 return None
             unpacked = msgpack.unpackb(data, raw=False)
@@ -302,10 +303,10 @@ class SentimentService:
                 df["date"] = pd.to_datetime(df["date"])
             return df
         except Exception as e:
-            logger.debug("Redis cache read failed (non-fatal): %s", e)
+            logger.warning("Redis cache read failed (non-fatal): %s", e)
             return None
 
-    def _write_cache(
+    async def _write_cache(
         self,
         df: pd.DataFrame,
         symbols: list[str],
@@ -324,10 +325,10 @@ class SentimentService:
             packed = msgpack.packb(cache_df.to_dict(orient="list"), use_bin_type=True)
 
             r = _get_redis_client()
-            r.setex(key, _CACHE_TTL, packed)
+            await r.setex(key, _CACHE_TTL, packed)
             logger.debug("Cached sentiment features: key=%s, rows=%d", key, len(df))
         except Exception as e:
-            logger.debug("Redis cache write failed (non-fatal): %s", e)
+            logger.warning("Redis cache write failed (non-fatal): %s", e)
 
 
 # Module singleton

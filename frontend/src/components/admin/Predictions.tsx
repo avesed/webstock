@@ -1,9 +1,9 @@
-import { useState, useCallback, useEffect, useRef } from 'react'
+import { Fragment, useState, useCallback, useEffect, useRef } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { useTranslation } from 'react-i18next'
 import {
   TrendingUp, Play, RefreshCw, Loader2, ChevronDown, ChevronRight,
-  BarChart3, Target, Brain, AlertCircle,
+  BarChart3, Target, Brain, AlertCircle, CheckCircle2, XCircle, Activity,
 } from 'lucide-react'
 
 import { predictionsApi } from '@/api/predictions'
@@ -192,13 +192,39 @@ function PredictionResultsSection() {
 
 function ModelHistorySection() {
   const { t } = useTranslation('admin')
+  const { toast } = useToast()
+  const queryClient = useQueryClient()
   const [expanded, setExpanded] = useState(false)
+  const [expandedModelId, setExpandedModelId] = useState<string | null>(null)
 
   const { data: models, isLoading } = useQuery({
     queryKey: ['admin', 'predictions', 'models'],
     queryFn: () => predictionsApi.getModels(),
     staleTime: 5 * 60_000,
   })
+
+  const { data: featureImportance, isFetching: fiLoading } = useQuery({
+    queryKey: ['admin', 'predictions', 'feature-importance', expandedModelId],
+    queryFn: () => predictionsApi.getFeatureImportance(expandedModelId!),
+    enabled: !!expandedModelId,
+    staleTime: 10 * 60_000,
+  })
+
+  const qualityMutation = useMutation({
+    mutationFn: ({ modelId, passed }: { modelId: string; passed: boolean }) =>
+      predictionsApi.updateModelQuality(modelId, passed),
+    onSuccess: () => {
+      toast({ title: td(t, 'predictions.qualityUpdated') })
+      void queryClient.invalidateQueries({ queryKey: ['admin', 'predictions', 'models'] })
+    },
+    onError: (err) => {
+      toast({ title: td(t, 'predictions.qualityUpdateError'), description: getErrorMessage(err), variant: 'destructive' })
+    },
+  })
+
+  const toggleModelExpand = (modelId: string) => {
+    setExpandedModelId(prev => prev === modelId ? null : modelId)
+  }
 
   return (
     <Card>
@@ -233,27 +259,130 @@ function ModelHistorySection() {
                     <th className="text-right py-2 font-medium">IC</th>
                     <th className="text-right py-2 font-medium">ICIR</th>
                     <th className="text-right py-2 font-medium">NDCG</th>
+                    <th className="text-center py-2 font-medium">{td(t, 'predictions.quality')}</th>
                     <th className="text-right py-2 font-medium">{td(t, 'predictions.features')}</th>
                     <th className="text-right py-2 font-medium">{td(t, 'predictions.symbols')}</th>
+                    <th className="py-2"></th>
                   </tr>
                 </thead>
                 <tbody>
                   {models.map((m: PredictionModel) => (
-                    <tr key={m.id} className="border-b last:border-0 hover:bg-muted/50">
-                      <td className="py-2 text-xs">{m.modelDate}</td>
-                      <td className="py-2">{m.market.toUpperCase()}</td>
-                      <td className={cn(
-                        'py-2 text-right',
-                        m.ic != null && m.ic > 0.03 && 'text-green-600 dark:text-green-400',
-                        m.ic != null && m.ic < 0.01 && 'text-red-600 dark:text-red-400',
-                      )}>
-                        {formatIc(m.ic)}
-                      </td>
-                      <td className="py-2 text-right">{formatIc(m.icir)}</td>
-                      <td className="py-2 text-right">{formatIc(m.ndcg)}</td>
-                      <td className="py-2 text-right">{m.featureCount}</td>
-                      <td className="py-2 text-right">{m.symbolCount}</td>
-                    </tr>
+                    <Fragment key={m.id}>
+                      <tr
+                        className="border-b last:border-0 hover:bg-muted/50 cursor-pointer"
+                        tabIndex={0}
+                        role="button"
+                        aria-expanded={expandedModelId === m.id}
+                        onClick={() => toggleModelExpand(m.id)}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter' || e.key === ' ') {
+                            e.preventDefault()
+                            toggleModelExpand(m.id)
+                          }
+                        }}
+                      >
+                        <td className="py-2 text-xs">{m.modelDate}</td>
+                        <td className="py-2">{m.market.toUpperCase()}</td>
+                        <td className={cn(
+                          'py-2 text-right',
+                          m.ic != null && m.ic > 0.03 && 'text-green-600 dark:text-green-400',
+                          m.ic != null && m.ic < 0.01 && 'text-red-600 dark:text-red-400',
+                        )}>
+                          {formatIc(m.ic)}
+                        </td>
+                        <td className="py-2 text-right">{formatIc(m.icir)}</td>
+                        <td className="py-2 text-right">{formatIc(m.ndcg)}</td>
+                        <td className="py-2 text-center">
+                          {m.qualityPassed ? (
+                            <CheckCircle2 className="h-4 w-4 text-green-600 dark:text-green-400 inline" />
+                          ) : (
+                            <XCircle className="h-4 w-4 text-red-600 dark:text-red-400 inline" />
+                          )}
+                        </td>
+                        <td className="py-2 text-right">{m.featureCount}</td>
+                        <td className="py-2 text-right">{m.symbolCount}</td>
+                        <td className="py-2 text-right">
+                          {expandedModelId === m.id ? (
+                            <ChevronDown className="h-3 w-3 inline text-muted-foreground" />
+                          ) : (
+                            <ChevronRight className="h-3 w-3 inline text-muted-foreground" />
+                          )}
+                        </td>
+                      </tr>
+                      {expandedModelId === m.id && (
+                        <tr>
+                          <td colSpan={9} className="py-3 px-4 bg-muted/30">
+                            <div className="space-y-3">
+                              {/* Quality override buttons */}
+                              <div className="flex items-center gap-2">
+                                <span className="text-xs text-muted-foreground">{td(t, 'predictions.qualityOverride')}:</span>
+                                <Button
+                                  size="sm"
+                                  variant={m.qualityPassed ? 'default' : 'outline'}
+                                  className="h-6 text-xs"
+                                  disabled={qualityMutation.isPending}
+                                  onClick={(e) => {
+                                    e.stopPropagation()
+                                    qualityMutation.mutate({ modelId: m.id, passed: true })
+                                  }}
+                                >
+                                  <CheckCircle2 className="h-3 w-3 mr-1" />
+                                  {td(t, 'predictions.approve')}
+                                </Button>
+                                <Button
+                                  size="sm"
+                                  variant={!m.qualityPassed ? 'destructive' : 'outline'}
+                                  className="h-6 text-xs"
+                                  disabled={qualityMutation.isPending}
+                                  onClick={(e) => {
+                                    e.stopPropagation()
+                                    qualityMutation.mutate({ modelId: m.id, passed: false })
+                                  }}
+                                >
+                                  <XCircle className="h-3 w-3 mr-1" />
+                                  {td(t, 'predictions.reject')}
+                                </Button>
+                              </div>
+                              {/* Feature Importance */}
+                              <div>
+                                <p className="text-xs font-medium mb-2">{td(t, 'predictions.featureImportance')}</p>
+                                {fiLoading ? (
+                                  <Skeleton className="h-24 w-full" />
+                                ) : featureImportance?.top30 && Object.keys(featureImportance.top30).length > 0 ? (
+                                  <div className="space-y-1">
+                                    {Object.entries(featureImportance.top30)
+                                      .sort(([, a], [, b]) => b - a)
+                                      .slice(0, 15)
+                                      .map(([name, value]) => {
+                                        const maxVal = Math.max(...Object.values(featureImportance.top30))
+                                        const pct = maxVal > 0 ? (value / maxVal) * 100 : 0
+                                        return (
+                                          <div key={name} className="flex items-center gap-2 text-xs">
+                                            <span className="w-36 truncate text-muted-foreground font-mono" title={name}>
+                                              {name}
+                                            </span>
+                                            <div className="flex-1 h-3 bg-muted rounded-full overflow-hidden">
+                                              <div
+                                                className="h-full bg-primary/60 rounded-full"
+                                                style={{ width: `${pct}%` }}
+                                              />
+                                            </div>
+                                            <span className="w-16 text-right text-muted-foreground">
+                                              {value.toFixed(1)}
+                                            </span>
+                                          </div>
+                                        )
+                                      })}
+                                  </div>
+                                ) : (
+                                  <p className="text-xs text-muted-foreground">{td(t, 'predictions.noFeatureData')}</p>
+                                )}
+                              </div>
+                            </div>
+                          </td>
+                        </tr>
+                      )}
+                    </Fragment>
                   ))}
                 </tbody>
               </table>
@@ -468,6 +597,170 @@ function TriggerSection() {
   )
 }
 
+// ── Performance Tracking ──────────────────────
+
+function PerformanceSection() {
+  const { t } = useTranslation('admin')
+  const [selectedMarket, setSelectedMarket] = useState<MarketKey>('cn')
+  const [days, setDays] = useState(90)
+
+  const { data: performance, isLoading } = useQuery({
+    queryKey: ['admin', 'predictions', 'performance', selectedMarket, days],
+    queryFn: () => predictionsApi.getPerformanceMetrics(selectedMarket, days),
+    staleTime: 10 * 60_000,
+  })
+
+  return (
+    <Card>
+      <CardHeader className="pb-2">
+        <div className="flex items-center justify-between">
+          <div>
+            <CardTitle className="flex items-center gap-2 text-base">
+              <Activity className="h-4 w-4" />
+              {td(t, 'predictions.performance')}
+            </CardTitle>
+            <CardDescription className="text-xs">{td(t, 'predictions.performanceDesc')}</CardDescription>
+          </div>
+          <div className="flex gap-1">
+            {[30, 90, 180].map(d => (
+              <Button
+                key={d}
+                variant={days === d ? 'default' : 'outline'}
+                size="sm"
+                onClick={() => setDays(d)}
+              >
+                {d}d
+              </Button>
+            ))}
+          </div>
+        </div>
+      </CardHeader>
+      <CardContent>
+        <div className="flex gap-1 mb-4">
+          {MARKETS.map(mkt => (
+            <Button
+              key={mkt}
+              variant={selectedMarket === mkt ? 'default' : 'outline'}
+              size="sm"
+              onClick={() => setSelectedMarket(mkt)}
+            >
+              {mkt.toUpperCase()}
+            </Button>
+          ))}
+        </div>
+
+        {isLoading ? (
+          <Skeleton className="h-40 w-full" />
+        ) : performance && performance.dataPoints > 0 ? (
+          <div className="space-y-4">
+            {/* Summary cards */}
+            <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
+              <div>
+                <p className="text-xs text-muted-foreground">{td(t, 'predictions.avgIc')}</p>
+                <p className={cn(
+                  'text-lg font-semibold',
+                  performance.summary.avgIc != null && performance.summary.avgIc > 0.03 && 'text-green-600 dark:text-green-400',
+                  performance.summary.avgIc != null && performance.summary.avgIc < 0.01 && 'text-red-600 dark:text-red-400',
+                )}>
+                  {performance.summary.avgIc != null ? performance.summary.avgIc.toFixed(4) : '-'}
+                </p>
+              </div>
+              <div>
+                <p className="text-xs text-muted-foreground">{td(t, 'predictions.avgHitRate')}</p>
+                <p className={cn(
+                  'text-lg font-semibold',
+                  performance.summary.avgHitRate != null && performance.summary.avgHitRate > 0.55 && 'text-green-600 dark:text-green-400',
+                )}>
+                  {performance.summary.avgHitRate != null ? `${(performance.summary.avgHitRate * 100).toFixed(1)}%` : '-'}
+                </p>
+              </div>
+              <div>
+                <p className="text-xs text-muted-foreground">{td(t, 'predictions.avgSpread')}</p>
+                <p className={cn(
+                  'text-lg font-semibold',
+                  performance.summary.avgSpread != null && performance.summary.avgSpread > 0 && 'text-green-600 dark:text-green-400',
+                )}>
+                  {performance.summary.avgSpread != null ? `${(performance.summary.avgSpread * 100).toFixed(2)}%` : '-'}
+                </p>
+              </div>
+              <div>
+                <p className="text-xs text-muted-foreground">{td(t, 'predictions.totalDates')}</p>
+                <p className="text-lg font-semibold">{performance.summary.totalDates}</p>
+              </div>
+              <div>
+                <p className="text-xs text-muted-foreground">{td(t, 'predictions.totalPredictions')}</p>
+                <p className="text-lg font-semibold">{performance.summary.totalPredictions}</p>
+              </div>
+            </div>
+
+            {/* Simple IC trend table */}
+            <div className="overflow-x-auto max-h-64 overflow-y-auto">
+              <table className="w-full text-xs">
+                <thead className="sticky top-0 bg-background">
+                  <tr className="border-b text-muted-foreground">
+                    <th className="text-left py-1.5 font-medium">{td(t, 'predictions.date')}</th>
+                    <th className="text-right py-1.5 font-medium">IC</th>
+                    <th className="text-right py-1.5 font-medium">{td(t, 'predictions.hitRate')}</th>
+                    <th className="text-right py-1.5 font-medium">Top10</th>
+                    <th className="text-right py-1.5 font-medium">Bot10</th>
+                    <th className="text-right py-1.5 font-medium">{td(t, 'predictions.spread')}</th>
+                    <th className="text-right py-1.5 font-medium">{td(t, 'predictions.symbols')}</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {performance.metrics.map(m => (
+                    <tr key={m.date} className="border-b last:border-0 hover:bg-muted/50">
+                      <td className="py-1.5">{m.date}</td>
+                      <td className={cn(
+                        'py-1.5 text-right',
+                        m.ic != null && m.ic > 0.03 && 'text-green-600 dark:text-green-400',
+                        m.ic != null && m.ic < 0 && 'text-red-600 dark:text-red-400',
+                      )}>
+                        {m.ic != null ? m.ic.toFixed(4) : '-'}
+                      </td>
+                      <td className={cn(
+                        'py-1.5 text-right',
+                        m.hitRate != null && m.hitRate > 0.55 && 'text-green-600 dark:text-green-400',
+                        m.hitRate != null && m.hitRate < 0.45 && 'text-red-600 dark:text-red-400',
+                      )}>
+                        {m.hitRate != null ? `${(m.hitRate * 100).toFixed(1)}%` : '-'}
+                      </td>
+                      <td className={cn(
+                        'py-1.5 text-right',
+                        m.top10Return > 0 && 'text-green-600 dark:text-green-400',
+                        m.top10Return < 0 && 'text-red-600 dark:text-red-400',
+                      )}>
+                        {(m.top10Return * 100).toFixed(2)}%
+                      </td>
+                      <td className={cn(
+                        'py-1.5 text-right',
+                        m.bottom10Return > 0 && 'text-green-600 dark:text-green-400',
+                        m.bottom10Return < 0 && 'text-red-600 dark:text-red-400',
+                      )}>
+                        {(m.bottom10Return * 100).toFixed(2)}%
+                      </td>
+                      <td className={cn(
+                        'py-1.5 text-right',
+                        m.spread > 0 && 'text-green-600 dark:text-green-400',
+                        m.spread < 0 && 'text-red-600 dark:text-red-400',
+                      )}>
+                        {(m.spread * 100).toFixed(2)}%
+                      </td>
+                      <td className="py-1.5 text-right">{m.symbolCount}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        ) : (
+          <p className="text-sm text-muted-foreground text-center py-4">{td(t, 'predictions.noPerformanceData')}</p>
+        )}
+      </CardContent>
+    </Card>
+  )
+}
+
 // ── Main Component ─────────────────────────────
 
 export default function Predictions() {
@@ -512,6 +805,9 @@ export default function Predictions() {
 
       {/* Accuracy */}
       <AccuracySection />
+
+      {/* Performance Tracking */}
+      <PerformanceSection />
 
       {/* Model History (collapsible) */}
       <ModelHistorySection />

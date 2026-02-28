@@ -94,7 +94,7 @@ async def get_data_status():
 
 
 @router.post("/sync/{market}/trigger")
-async def trigger_sync(market: str, req: SyncRequest):
+async def trigger_sync(market: str, req: SyncRequest = None):
     """Non-blocking sync trigger. Returns immediately, sync runs in background."""
     valid_markets = {"us", "hk", "cn", "sh", "sz", "metal"}
     if market not in valid_markets:
@@ -102,6 +102,10 @@ async def trigger_sync(market: str, req: SyncRequest):
             status_code=400,
             detail=f"Invalid market: {market}. Valid: {sorted(valid_markets)}",
         )
+
+    # Default request when called without body (e.g. from data-service trigger)
+    if req is None:
+        req = SyncRequest(market=market, update_only=True)
 
     # Check if already running via progress file
     settings = get_settings()

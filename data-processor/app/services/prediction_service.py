@@ -39,7 +39,7 @@ import lightgbm as lgb
 import msgpack
 import numpy as np
 import pandas as pd
-import redis
+import redis.asyncio as aioredis
 
 from app.config import get_settings
 from app.services.feature_service import (
@@ -111,15 +111,22 @@ def _numpy_default(obj: Any) -> Any:
     raise TypeError(f"Object of type {type(obj)} is not JSON serializable")
 
 
-_redis_client: Optional[redis.Redis] = None
+def _safe_round(val: float, decimals: int) -> float | None:
+    """Round a float, returning None if NaN or Inf (prevents invalid JSON)."""
+    if math.isnan(val) or math.isinf(val):
+        return None
+    return round(val, decimals)
 
 
-def _get_redis_client() -> redis.Redis:
-    """Return a module-level shared Redis client (lazy singleton)."""
+_redis_client: Optional[aioredis.Redis] = None
+
+
+def _get_redis_client() -> aioredis.Redis:
+    """Return a module-level shared async Redis client (lazy singleton)."""
     global _redis_client
     if _redis_client is None:
         settings = get_settings()
-        _redis_client = redis.from_url(settings.REDIS_URL, decode_responses=False)
+        _redis_client = aioredis.from_url(settings.REDIS_URL, decode_responses=False)
     return _redis_client
 
 
@@ -186,8 +193,8 @@ _SQL_INSERT_MODEL = """
 INSERT INTO prediction_models (
     market, model_date, train_start, train_end, val_start, val_end,
     forward_days, feature_count, symbol_count, feature_sources,
-    ic, icir, ndcg, model_path, metadata
-) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
+    ic, icir, ndcg, model_path, metadata, quality_passed
+) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
 ON CONFLICT (market, model_date, forward_days) DO UPDATE SET
     ic = EXCLUDED.ic,
     icir = EXCLUDED.icir,
@@ -195,7 +202,8 @@ ON CONFLICT (market, model_date, forward_days) DO UPDATE SET
     model_path = EXCLUDED.model_path,
     feature_count = EXCLUDED.feature_count,
     symbol_count = EXCLUDED.symbol_count,
-    metadata = EXCLUDED.metadata
+    metadata = EXCLUDED.metadata,
+    quality_passed = EXCLUDED.quality_passed
 RETURNING id
 """
 
@@ -236,7 +244,7 @@ WHERE market = $1 AND symbol = $2
 _SQL_GET_MODELS = """
 SELECT id, market, model_date, train_start, train_end, val_start, val_end,
        forward_days, feature_count, symbol_count, feature_sources,
-       ic, icir, ndcg, model_path, created_at
+       ic, icir, ndcg, model_path, metadata, quality_passed, created_at
 FROM prediction_models
 WHERE ($1::text IS NULL OR market = $1)
 ORDER BY model_date DESC, created_at DESC
@@ -268,9 +276,44 @@ WHERE id = $2
 
 _SQL_GET_LATEST_MODEL_PATH = """
 SELECT id, model_path FROM prediction_models
+WHERE market = $1 AND forward_days = $2 AND quality_passed = TRUE
+ORDER BY model_date DESC, created_at DESC
+LIMIT 1
+"""
+
+_SQL_GET_LATEST_MODEL_PATH_ANY = """
+SELECT id, model_path FROM prediction_models
 WHERE market = $1 AND forward_days = $2
 ORDER BY model_date DESC, created_at DESC
 LIMIT 1
+"""
+
+# _SQL_GET_LATEST_QUALITY_MODEL removed — identical to _SQL_GET_LATEST_MODEL_PATH
+
+_SQL_UPDATE_MODEL_QUALITY = """
+UPDATE prediction_models SET quality_passed = $1 WHERE id = $2
+RETURNING id
+"""
+
+_SQL_GET_MODEL_DETAIL = """
+SELECT id, market, model_date, forward_days, feature_count, symbol_count,
+       ic, icir, ndcg, model_path, metadata, quality_passed, created_at
+FROM prediction_models WHERE id = $1
+"""
+
+_SQL_PERFORMANCE_METRICS = """
+SELECT
+    prediction_date,
+    symbol,
+    predicted_score,
+    percentile_rank,
+    predicted_direction,
+    actual_return
+FROM stock_predictions
+WHERE market = $1
+  AND actual_return IS NOT NULL
+  AND prediction_date >= CURRENT_DATE - $2 * INTERVAL '1 day'
+ORDER BY prediction_date, predicted_score DESC
 """
 
 
@@ -439,7 +482,7 @@ class PredictionService:
         """
         # 1. Try Redis cache (only for full-market queries without symbol filter)
         if symbol is None:
-            cached = self._read_prediction_cache(market)
+            cached = await self._read_prediction_cache(market)
             if cached is not None:
                 logger.debug("Prediction cache hit: market=%s", market)
                 return cached[:top_n]
@@ -659,11 +702,37 @@ class PredictionService:
                     task.progress = 70.0
 
             # Step 3: Train if needed
+            quality_passed = True
+            fallback: Optional[dict] = None
             if model_id is None:
-                model_id, model_path = await self._train_model(
+                model_id, model_path, quality_passed = await self._train_model(
                     task, market, symbols, forward_days, today
                 )
                 trained_this_run = True
+
+                if not quality_passed:
+                    # Fall back to latest model that passed quality gate
+                    fallback = await self._find_latest_quality_model(
+                        market, forward_days
+                    )
+                    if fallback and os.path.exists(fallback["model_path"]):
+                        logger.warning(
+                            "Quality gate failed — falling back to previous model: id=%s",
+                            fallback["id"],
+                        )
+                        model_id = fallback["id"]
+                        model_path = fallback["model_path"]
+                    elif fallback:
+                        logger.error(
+                            "Quality gate failed, fallback model file missing: %s",
+                            fallback["model_path"],
+                        )
+                        # Fall through — use current model despite low quality
+                    else:
+                        logger.error(
+                            "Quality gate failed and no previous quality model available. "
+                            "Using current model despite low quality."
+                        )
 
             # Step 4: Inference
             task.status = "predicting"
@@ -691,6 +760,10 @@ class PredictionService:
                 "forward_days": forward_days,
                 "symbol_count": len(symbols),
                 "retrained": trained_this_run,
+                "quality_passed": quality_passed if trained_this_run else True,
+                "used_fallback_model": (
+                    not quality_passed and trained_this_run and fallback is not None
+                ),
             }
 
             logger.info(
@@ -817,9 +890,9 @@ class PredictionService:
         model_date: date,
         forward_days: int,
     ) -> Optional[dict]:
-        """Check if a model already exists for today.
+        """Check if a quality-passed model already exists for today.
 
-        Returns dict with 'id' and 'model_path' if found, else None.
+        Returns dict with 'id' and 'model_path' from the SAME row, else None.
         """
         from app.core.settings_cache import settings_cache
 
@@ -829,20 +902,18 @@ class PredictionService:
 
         try:
             async with pool.acquire(timeout=10) as conn:
+                # Single query: today's model that also passed quality gate
                 row = await conn.fetchrow(
-                    _SQL_GET_LATEST_MODEL_PATH, market, forward_days
+                    """SELECT id, model_path FROM prediction_models
+                    WHERE market = $1 AND model_date = $2 AND forward_days = $3
+                      AND quality_passed = TRUE
+                    LIMIT 1""",
+                    market, model_date, forward_days,
                 )
                 if row is None:
                     return None
 
-                # Also check if there is a model specifically for today
-                today_row = await conn.fetchrow(
-                    _SQL_CHECK_MODEL, market, model_date, forward_days
-                )
-                if today_row is None:
-                    return None
-
-                return {"id": today_row["id"], "model_path": row["model_path"]}
+                return {"id": row["id"], "model_path": row["model_path"]}
         except Exception as e:
             logger.warning("Failed to check existing model: %s", e)
             return None
@@ -858,11 +929,11 @@ class PredictionService:
         symbols: list[str],
         forward_days: int,
         model_date: date,
-    ) -> tuple[Any, str]:
+    ) -> tuple[Any, str, bool]:
         """Train a LightGBM ranking model.
 
         Returns:
-            Tuple of (model_id from DB, model_path on disk).
+            Tuple of (model_id from DB, model_path on disk, quality_passed).
 
         Raises:
             RuntimeError on training failures.
@@ -1066,6 +1137,23 @@ class PredictionService:
             model.best_iteration if model.best_iteration >= 0 else _DEFAULT_NUM_BOOST_ROUND,
         )
 
+        # Quality gate check
+        settings = get_settings()
+        quality_passed = (
+            ic_mean > settings.PREDICTION_MIN_IC
+            and icir > settings.PREDICTION_MIN_ICIR
+        )
+
+        if not quality_passed:
+            logger.warning(
+                "Model quality gate FAILED: IC=%.4f (min=%.4f), ICIR=%.4f (min=%.4f). "
+                "Model will be saved but marked as failed.",
+                ic_mean, settings.PREDICTION_MIN_IC,
+                icir, settings.PREDICTION_MIN_ICIR,
+            )
+        else:
+            logger.info("Model quality gate passed: IC=%.4f, ICIR=%.4f", ic_mean, icir)
+
         # Extract feature importance (gain-based, non-essential metadata)
         feature_importance: dict[str, float] = {}
         try:
@@ -1128,14 +1216,16 @@ class PredictionService:
             ndcg=best_ndcg,
             model_path=model_path,
             feature_importance=feature_importance,
+            quality_passed=quality_passed,
         )
 
         task.progress = 70.0
         logger.info(
-            "Model recorded: model_id=%s, market=%s", model_id, market
+            "Model recorded: model_id=%s, market=%s, quality_passed=%s",
+            model_id, market, quality_passed,
         )
 
-        return model_id, model_path
+        return model_id, model_path, quality_passed
 
     @staticmethod
     def _train_lgb_sync(
@@ -1253,6 +1343,7 @@ class PredictionService:
         ndcg: Optional[float],
         model_path: str,
         feature_importance: dict[str, float] | None = None,
+        quality_passed: bool = True,
     ) -> Any:
         """Write model metadata to prediction_models table. Returns model id."""
         from app.core.settings_cache import settings_cache
@@ -1292,6 +1383,7 @@ class PredictionService:
                     float(ndcg) if ndcg is not None else None,  # $13
                     model_path,         # $14
                     metadata_json,      # $15 JSONB
+                    quality_passed,     # $16
                 )
             return model_id
         except Exception as e:
@@ -1442,14 +1534,18 @@ class PredictionService:
         # Cache in Redis
         task.message = "Caching predictions"
         task.progress = 96.0
-        self._write_prediction_cache(market, results_df, prediction_date)
+        await self._write_prediction_cache(market, results_df, prediction_date)
 
         return len(results_df)
 
     async def _find_latest_model_path(
         self, market: str, forward_days: int
     ) -> Optional[str]:
-        """Find the latest model path from DB."""
+        """Find the latest model path from DB.
+
+        Prefers models that passed quality gate, falls back to any model
+        if no quality-passed model exists.
+        """
         from app.core.settings_cache import settings_cache
 
         pool = settings_cache.pool
@@ -1458,15 +1554,217 @@ class PredictionService:
 
         try:
             async with pool.acquire(timeout=10) as conn:
+                # Prefer quality-passed model
                 row = await conn.fetchrow(
                     _SQL_GET_LATEST_MODEL_PATH, market, forward_days
                 )
                 if row and row["model_path"]:
                     return row["model_path"]
+                # Fallback: any model if no quality model exists
+                row = await conn.fetchrow(
+                    _SQL_GET_LATEST_MODEL_PATH_ANY, market, forward_days
+                )
+                if row and row["model_path"]:
+                    logger.warning(
+                        "No quality-passed model found, using latest available model"
+                    )
+                    return row["model_path"]
         except Exception as e:
             logger.warning("Failed to query latest model path: %s", e)
 
         return None
+
+    async def _find_latest_quality_model(
+        self, market: str, forward_days: int
+    ) -> Optional[dict]:
+        """Find the latest model that passed quality gate."""
+        from app.core.settings_cache import settings_cache
+
+        pool = settings_cache.pool
+        if not pool:
+            return None
+        try:
+            async with pool.acquire(timeout=10) as conn:
+                row = await conn.fetchrow(
+                    _SQL_GET_LATEST_MODEL_PATH, market, forward_days
+                )
+                if row:
+                    return {"id": row["id"], "model_path": row["model_path"]}
+        except Exception as e:
+            logger.warning("Failed to find quality model: %s", e)
+        return None
+
+    async def update_model_quality(
+        self, model_id: str, quality_passed: bool
+    ) -> bool:
+        """Admin override: update quality_passed flag for a model."""
+        from app.core.settings_cache import settings_cache
+
+        try:
+            model_uuid = uuid.UUID(model_id)
+        except ValueError:
+            logger.warning("Invalid model_id format: %s", model_id)
+            return False
+
+        pool = settings_cache.pool
+        if not pool:
+            raise RuntimeError("DB pool not available")
+        try:
+            async with pool.acquire(timeout=10) as conn:
+                result = await conn.fetchval(
+                    _SQL_UPDATE_MODEL_QUALITY,
+                    quality_passed,
+                    model_uuid,
+                )
+                if result is None:
+                    return False
+                logger.info(
+                    "Model quality updated: id=%s, quality_passed=%s",
+                    model_id, quality_passed,
+                )
+                return True
+        except Exception as e:
+            logger.error("Failed to update model quality: %s", e)
+            raise
+
+    async def get_feature_importance(self, model_id: str) -> Optional[dict]:
+        """Get feature importance for a specific model.
+
+        Returns top-30 from DB metadata, plus full importance from disk if available.
+        """
+        from app.core.settings_cache import settings_cache
+
+        pool = settings_cache.pool
+        if not pool:
+            return None
+
+        try:
+            model_uuid = uuid.UUID(model_id)
+        except ValueError:
+            return None
+
+        try:
+            async with pool.acquire(timeout=10) as conn:
+                row = await conn.fetchrow(_SQL_GET_MODEL_DETAIL, model_uuid)
+
+            if row is None:
+                return None
+
+            # Extract top-30 from metadata JSONB
+            metadata = row["metadata"]
+            top30 = {}
+            if metadata:
+                if isinstance(metadata, str):
+                    metadata = json.loads(metadata)
+                top30 = metadata.get("feature_importance_top30", {})
+
+            # Try to load full importance from disk (blocking I/O → offload)
+            full_importance = None
+            model_path = row["model_path"]
+            if model_path:
+                features_path = os.path.join(os.path.dirname(model_path), "features.json")
+
+                def _read_features():
+                    if not os.path.exists(features_path):
+                        return None
+                    with open(features_path) as f:
+                        return json.load(f).get("feature_importance")
+
+                try:
+                    full_importance = await asyncio.to_thread(_read_features)
+                except Exception as e:
+                    logger.warning("Failed to read features.json: %s", e)
+
+            return {
+                "model_id": str(row["id"]),
+                "market": row["market"],
+                "model_date": row["model_date"].isoformat() if row["model_date"] else None,
+                "feature_count": row["feature_count"],
+                "top30": top30,
+                "full": full_importance,
+            }
+        except Exception as e:
+            logger.error("Failed to get feature importance for model %s: %s", model_id, e)
+            return None
+
+    async def get_performance_metrics(self, market: str, days: int = 90) -> dict:
+        """Compute model performance metrics over time.
+
+        Returns daily IC, hit rate, top/bottom-10 returns, and spread.
+        """
+        from app.core.settings_cache import settings_cache
+
+        pool = settings_cache.pool
+        if not pool:
+            return {"market": market, "days": days, "data_points": 0, "metrics": [], "summary": {}}
+
+        try:
+            async with pool.acquire(timeout=30) as conn:
+                rows = await conn.fetch(_SQL_PERFORMANCE_METRICS, market, days)
+        except Exception as e:
+            logger.error("Failed to fetch performance data: %s", e)
+            return {"market": market, "days": days, "data_points": 0, "metrics": [], "summary": {}}
+
+        if not rows:
+            return {"market": market, "days": days, "data_points": 0, "metrics": [], "summary": {}}
+
+        # Convert to DataFrame for efficient computation
+        df = pd.DataFrame([dict(r) for r in rows])
+        df["actual_return"] = df["actual_return"].astype(float)
+        df["predicted_score"] = df["predicted_score"].astype(float)
+
+        metrics_by_date = []
+        for dt, group in df.groupby("prediction_date"):
+            entry = {"date": dt.isoformat() if hasattr(dt, "isoformat") else str(dt)}
+
+            # Daily IC: Spearman correlation
+            if len(group) >= 5:
+                ic_val = group["predicted_score"].corr(group["actual_return"], method="spearman")
+                entry["ic"] = round(float(ic_val), 6) if pd.notna(ic_val) else None
+            else:
+                entry["ic"] = None
+
+            # Hit Rate: % of "up" predictions with positive actual_return
+            up_preds = group[group["predicted_direction"] == "up"]
+            if len(up_preds) > 0:
+                entry["hit_rate"] = round(float((up_preds["actual_return"] > 0).mean()), 4)
+            else:
+                entry["hit_rate"] = None
+
+            # Top-10 and Bottom-10 average returns
+            n_top = min(10, len(group))
+            top_n = group.nlargest(n_top, "predicted_score")
+            bottom_n = group.nsmallest(n_top, "predicted_score")
+
+            entry["top10_return"] = _safe_round(float(top_n["actual_return"].mean()), 6)
+            entry["bottom10_return"] = _safe_round(float(bottom_n["actual_return"].mean()), 6)
+            entry["spread"] = _safe_round(
+                (entry["top10_return"] or 0) - (entry["bottom10_return"] or 0), 6
+            )
+            entry["symbol_count"] = len(group)
+
+            metrics_by_date.append(entry)
+
+        # Summary statistics
+        ic_values = [m["ic"] for m in metrics_by_date if m["ic"] is not None]
+        hit_values = [m["hit_rate"] for m in metrics_by_date if m["hit_rate"] is not None]
+        spread_values = [m["spread"] for m in metrics_by_date if m["spread"] is not None]
+
+        summary = {
+            "avg_ic": _safe_round(float(np.mean(ic_values)), 6) if ic_values else None,
+            "avg_hit_rate": _safe_round(float(np.mean(hit_values)), 4) if hit_values else None,
+            "avg_spread": _safe_round(float(np.mean(spread_values)), 6) if spread_values else None,
+            "total_dates": len(metrics_by_date),
+            "total_predictions": len(df),
+        }
+
+        return {
+            "market": market,
+            "days": days,
+            "data_points": len(metrics_by_date),
+            "metrics": metrics_by_date,
+            "summary": summary,
+        }
 
     async def _write_predictions(
         self,
@@ -1616,7 +1914,9 @@ class PredictionService:
         max_forward = max(p["forward_days"] for p in predictions)
 
         start_str = min_date.isoformat()
-        end_str = (max_date + timedelta(days=max_forward + 10)).isoformat()
+        # Convert trading days to calendar days with margin for weekends/holidays
+        calendar_buffer = int(max_forward * 7 / 5) + 15
+        end_str = (max_date + timedelta(days=calendar_buffer)).isoformat()
 
         # Fetch price data
         data = await asyncio.to_thread(
@@ -1636,33 +1936,37 @@ class PredictionService:
         if not dates or not closes:
             return {}
 
-        # Build date -> close mapping
+        # Build date -> close mapping and a sorted list of trading dates
         price_map: dict[date, float] = {}
         for d_str, c in zip(dates, closes):
             if c is not None:
                 d = pd.Timestamp(d_str).date()
                 price_map[d] = float(c)
+        trading_dates = sorted(price_map.keys())
 
-        # Compute actual returns
+        # Build index for O(1) lookup: trading_date -> position in trading_dates
+        date_to_idx: dict[date, int] = {d: i for i, d in enumerate(trading_dates)}
+
+        # Compute actual returns using trading-day indexing
+        # This matches training which uses shift(-forward_days) on trading-day rows
         results: dict = {}
         for pred in predictions:
             pred_date = pred["prediction_date"]
             fwd = pred["forward_days"]
 
-            # Find actual future date (approximate: calendar days as proxy for trading days)
-            # In practice, we look for the closest available price
             base_price = price_map.get(pred_date)
             if base_price is None:
                 continue
 
-            # Search for future price within a window
-            target_date = pred_date + timedelta(days=fwd)
-            future_price = None
-            for offset in range(0, 5):  # Allow up to 5 calendar days slack
-                candidate = target_date + timedelta(days=offset)
-                if candidate in price_map:
-                    future_price = price_map[candidate]
-                    break
+            # Find the Nth trading day after pred_date
+            base_idx = date_to_idx.get(pred_date)
+            if base_idx is None:
+                continue
+            target_idx = base_idx + fwd
+            if target_idx >= len(trading_dates):
+                continue  # Not enough future data yet
+
+            future_price = price_map[trading_dates[target_idx]]
 
             if future_price is not None and base_price > 0:
                 actual_return = (future_price / base_price) - 1.0
@@ -1674,20 +1978,20 @@ class PredictionService:
     # Redis prediction cache
     # ------------------------------------------------------------------
 
-    def _read_prediction_cache(self, market: str) -> Optional[list[dict]]:
+    async def _read_prediction_cache(self, market: str) -> Optional[list[dict]]:
         """Read cached predictions from Redis."""
         key = _prediction_cache_key(market)
         try:
             r = _get_redis_client()
-            data = r.get(key)
+            data = await r.get(key)
             if data is None:
                 return None
             return msgpack.unpackb(data, raw=False)
         except Exception as e:
-            logger.debug("Prediction cache read failed (non-fatal): %s", e)
+            logger.warning("Prediction cache read failed (non-fatal): %s", e)
             return None
 
-    def _write_prediction_cache(
+    async def _write_prediction_cache(
         self,
         market: str,
         results_df: pd.DataFrame,
@@ -1713,7 +2017,7 @@ class PredictionService:
 
             packed = msgpack.packb(records, use_bin_type=True)
             r = _get_redis_client()
-            r.setex(key, _PREDICTION_CACHE_TTL, packed)
+            await r.setex(key, _PREDICTION_CACHE_TTL, packed)
 
             logger.info(
                 "Cached %d predictions: key=%s, TTL=%ds",
@@ -1722,7 +2026,7 @@ class PredictionService:
                 _PREDICTION_CACHE_TTL,
             )
         except Exception as e:
-            logger.debug("Prediction cache write failed (non-fatal): %s", e)
+            logger.warning("Prediction cache write failed (non-fatal): %s", e)
 
     # ------------------------------------------------------------------
     # Row conversion helpers
@@ -1760,6 +2064,21 @@ class PredictionService:
         for key in ("ic", "icir", "ndcg"):
             if key in d and d[key] is not None:
                 d[key] = float(d[key])
+        # Quality gate flag
+        if "quality_passed" in d:
+            d["quality_passed"] = (
+                bool(d["quality_passed"]) if d["quality_passed"] is not None else True
+            )
+        # Extract feature importance from metadata if present
+        if "metadata" in d and d["metadata"]:
+            meta = d["metadata"]
+            if isinstance(meta, str):
+                meta = json.loads(meta)
+            d["feature_importance_top30"] = meta.get("feature_importance_top30")
+            del d["metadata"]  # Don't expose raw metadata blob
+        else:
+            d["feature_importance_top30"] = None
+            d.pop("metadata", None)
         return d
 
 

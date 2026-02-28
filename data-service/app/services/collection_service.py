@@ -621,7 +621,10 @@ async def _trigger_qlib_sync(market: str) -> None:
             headers = {}
             if settings.INTERNAL_API_TOKEN:
                 headers["X-Internal-Token"] = settings.INTERNAL_API_TOKEN
-            resp = await client.post(url, headers=headers)
+            resp = await client.post(
+                url, headers=headers,
+                json={"market": market, "update_only": True},
+            )
             if resp.status_code < 400:
                 logger.info("Triggered qlib sync for market=%s", market)
             else:

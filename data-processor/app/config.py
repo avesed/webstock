@@ -48,6 +48,10 @@ class Settings(BaseSettings):
     # Prediction data
     PREDICTION_DATA_DIR: str = "/app/data/predictions"
 
+    # Prediction quality gate thresholds (model must exceed BOTH to pass)
+    PREDICTION_MIN_IC: float = 0.0
+    PREDICTION_MIN_ICIR: float = 0.0
+
     # Settings cache TTL
     SETTINGS_CACHE_TTL: int = 60  # seconds
 

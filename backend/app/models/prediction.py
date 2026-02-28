@@ -213,6 +213,13 @@ class PredictionModel(Base):
         comment="Additional training metadata",
     )
 
+    quality_passed: Mapped[Optional[bool]] = mapped_column(
+        Boolean,
+        default=True,
+        server_default=sa.text("true"),
+        comment="Whether model passed quality gate (IC/ICIR thresholds)",
+    )
+
     created_at: Mapped[Optional[datetime]] = mapped_column(
         DateTime(timezone=True),
         default=lambda: datetime.now(timezone.utc),

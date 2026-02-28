@@ -641,6 +641,22 @@
     "task_training": "训练中",
     "task_predicting": "预测中",
     "task_completed": "已完成",
-    "task_failed": "失败"
+    "task_failed": "失败",
+    "quality": "质量",
+    "qualityOverride": "质量覆盖",
+    "approve": "通过",
+    "reject": "拒绝",
+    "qualityUpdated": "模型质量状态已更新",
+    "qualityUpdateError": "更新模型质量状态失败",
+    "featureImportance": "特征重要性 (Top 15)",
+    "noFeatureData": "暂无特征重要性数据",
+    "performance": "模型性能追踪",
+    "performanceDesc": "追踪预测模型的IC趋势、命中率和多空收益差",
+    "noPerformanceData": "暂无性能追踪数据",
+    "avgHitRate": "平均命中率",
+    "avgSpread": "平均多空差",
+    "hitRate": "命中率",
+    "spread": "多空差",
+    "totalDates": "交易日数"
   }
 }

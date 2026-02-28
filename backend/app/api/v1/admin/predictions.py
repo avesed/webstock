@@ -81,6 +81,11 @@ class StartRdagentRequest(BaseModel):
     max_rounds: int = Field(default=30, ge=1, le=200)
 
 
+class ModelQualityUpdateBody(BaseModel):
+    model_config = ConfigDict(alias_generator=to_camel, populate_by_name=True)
+    quality_passed: bool
+
+
 class ToggleFactorRequest(BaseModel):
     model_config = ConfigDict(alias_generator=to_camel, populate_by_name=True)
     is_active: bool
@@ -230,6 +235,53 @@ async def get_prediction_models(
 
 
 # ---------------------------------------------------------------------------
+# GET /predictions/models/{model_id}/feature-importance
+# ---------------------------------------------------------------------------
+
+
+@router.get(
+    "/predictions/models/{model_id}/feature-importance",
+    summary="Get feature importance",
+    description="Returns feature importance scores for a specific trained model.",
+)
+async def get_feature_importance(
+    model_id: str,
+    _user: User = Depends(require_admin),
+) -> Dict[str, Any]:
+    """Get feature importance for a specific trained model."""
+    try:
+        client = await get_prediction_client()
+        return await client.get_feature_importance(model_id)
+    except PredictionServiceError as e:
+        status = e.status_code or 502
+        raise HTTPException(status_code=status, detail=_sanitize_service_error(e))
+
+
+# ---------------------------------------------------------------------------
+# PUT /predictions/models/{model_id}/quality — admin quality override
+# ---------------------------------------------------------------------------
+
+
+@router.put(
+    "/predictions/models/{model_id}/quality",
+    summary="Override model quality",
+    description="Admin override to approve or reject a trained model's quality flag.",
+)
+async def update_model_quality(
+    model_id: str,
+    request: ModelQualityUpdateBody,
+    _user: User = Depends(require_admin),
+) -> Dict[str, Any]:
+    """Admin override: approve or reject a model."""
+    try:
+        client = await get_prediction_client()
+        return await client.update_model_quality(model_id, request.quality_passed)
+    except PredictionServiceError as e:
+        status = e.status_code or 502
+        raise HTTPException(status_code=status, detail=_sanitize_service_error(e))
+
+
+# ---------------------------------------------------------------------------
 # GET /predictions/{market}/accuracy — prediction accuracy
 # ---------------------------------------------------------------------------
 
@@ -253,6 +305,31 @@ async def get_prediction_accuracy(
             status_code=e.status_code or 502,
             detail=_sanitize_service_error(e),
         )
+
+
+# ---------------------------------------------------------------------------
+# GET /predictions/{market}/performance — model performance metrics
+# ---------------------------------------------------------------------------
+
+
+@router.get(
+    "/predictions/{market}/performance",
+    summary="Get performance metrics",
+    description="Returns model performance metrics (IC, ICIR, NDCG trends) over time for a market.",
+)
+async def get_performance_metrics(
+    market: str,
+    days: int = Query(90, ge=7, le=365),
+    _user: User = Depends(require_admin),
+) -> Dict[str, Any]:
+    """Get model performance metrics over time for a market."""
+    market = _validate_market(market)
+    try:
+        client = await get_prediction_client()
+        return await client.get_performance_metrics(market, days)
+    except PredictionServiceError as e:
+        status = e.status_code or 502
+        raise HTTPException(status_code=status, detail=_sanitize_service_error(e))
 
 
 # ---------------------------------------------------------------------------

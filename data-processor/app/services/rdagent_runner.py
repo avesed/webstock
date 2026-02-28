@@ -21,7 +21,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Optional
 
-import redis
+import redis.asyncio as aioredis
 
 from app.config import get_settings
 from app.core.settings_cache import settings_cache
@@ -101,31 +101,31 @@ class RDAgentTask:
 # ---------------------------------------------------------------------------
 
 
-_redis_client: Optional[redis.Redis] = None
+_redis_client: Optional[aioredis.Redis] = None
 
 
-def _get_redis_client() -> redis.Redis:
-    """Return a module-level shared Redis client (lazy singleton)."""
+def _get_redis_client() -> aioredis.Redis:
+    """Return a module-level shared async Redis client (lazy singleton)."""
     global _redis_client
     if _redis_client is None:
         settings = get_settings()
-        _redis_client = redis.from_url(settings.REDIS_URL, decode_responses=True)
+        _redis_client = aioredis.from_url(settings.REDIS_URL, decode_responses=True)
     return _redis_client
 
 
-def _acquire_lock(market: str) -> bool:
+async def _acquire_lock(market: str) -> bool:
     """Try to acquire the distributed lock for a market. Returns True on success."""
     r = _get_redis_client()
     key = _LOCK_KEY_PATTERN.format(market=market)
-    acquired = r.set(key, "1", nx=True, ex=_LOCK_TTL)
+    acquired = await r.set(key, "1", nx=True, ex=_LOCK_TTL)
     return bool(acquired)
 
 
-def _release_lock(market: str) -> None:
+async def _release_lock(market: str) -> None:
     """Release the distributed lock for a market."""
     r = _get_redis_client()
     key = _LOCK_KEY_PATTERN.format(market=market)
-    r.delete(key)
+    await r.delete(key)
 
 
 # ---------------------------------------------------------------------------
@@ -169,13 +169,13 @@ class RDAgentRunner:
                 return {"error": f"RD-Agent already running for market {market}"}
 
             # Try distributed lock
-            if not _acquire_lock(market):
+            if not await _acquire_lock(market):
                 return {"error": f"RD-Agent locked by another instance for market {market}"}
 
             # Resolve universe symbols
             symbols = await self._resolve_symbols(market, universe_id)
             if not symbols:
-                _release_lock(market)
+                await _release_lock(market)
                 return {"error": f"No symbols found for market {market}"}
 
             # Create task
@@ -201,7 +201,7 @@ class RDAgentRunner:
             except Exception as e:
                 task.status = "failed"
                 task.error = str(e)
-                _release_lock(market)
+                await _release_lock(market)
                 logger.error("Failed to launch RD-Agent for %s: %s", market, e)
                 return {"error": f"Launch failed: {e}"}
 
@@ -266,7 +266,7 @@ class RDAgentRunner:
         task = self._tasks.get(market)
         process = self._processes.get(market)
         if not task or not process:
-            _release_lock(market)
+            await _release_lock(market)
             return
 
         discovered_factors: list[dict] = []
@@ -357,7 +357,7 @@ class RDAgentRunner:
             task.error = str(e)
         finally:
             task.completed_at = datetime.now()
-            _release_lock(market)
+            await _release_lock(market)
             # Clean up process reference
             self._processes.pop(market, None)
             self._monitors.pop(market, None)
@@ -545,7 +545,7 @@ class RDAgentRunner:
             monitor.cancel()
 
         # Ensure lock is released
-        _release_lock(market)
+        await _release_lock(market)
 
         if task:
             task.completed_at = datetime.now()

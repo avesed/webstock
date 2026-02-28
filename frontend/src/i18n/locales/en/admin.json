@@ -641,6 +641,22 @@
     "task_training": "Training",
     "task_predicting": "Predicting",
     "task_completed": "Completed",
-    "task_failed": "Failed"
+    "task_failed": "Failed",
+    "quality": "Quality",
+    "qualityOverride": "Quality Override",
+    "approve": "Approve",
+    "reject": "Reject",
+    "qualityUpdated": "Model quality status updated",
+    "qualityUpdateError": "Failed to update model quality",
+    "featureImportance": "Feature Importance (Top 15)",
+    "noFeatureData": "No feature importance data available",
+    "performance": "Model Performance Tracking",
+    "performanceDesc": "Track IC trend, hit rate, and long-short spread over time",
+    "noPerformanceData": "No performance data available",
+    "avgHitRate": "Avg Hit Rate",
+    "avgSpread": "Avg Spread",
+    "hitRate": "Hit Rate",
+    "spread": "Spread",
+    "totalDates": "Trading Days"
   }
 }
