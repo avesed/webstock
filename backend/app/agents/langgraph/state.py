@@ -217,6 +217,7 @@ class NewsProcessingState(TypedDict):
     industry_tags: Optional[List[str]]
     event_tags: Optional[List[str]]
     sentiment_tag: Optional[str]
+    sentiment_score: Optional[float]  # -1.0 to 1.0 numeric sentiment
     investment_summary: Optional[str]
     detailed_summary: Optional[str]   # Complete summary preserving all key details
     analysis_report: Optional[str]    # Markdown-formatted professional analysis report
@@ -239,7 +240,7 @@ class NewsProcessingState(TypedDict):
 def create_news_processing_state(
     news_id: str,
     url: str,
-    market: str = "US",
+    market: str = "us",
     symbol: str = "",
     title: str = "",
     summary: str = "",
@@ -282,6 +283,7 @@ def create_news_processing_state(
         industry_tags=None,
         event_tags=None,
         sentiment_tag=None,
+        sentiment_score=None,
         investment_summary=None,
         detailed_summary=None,
         analysis_report=None,

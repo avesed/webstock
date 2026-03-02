@@ -121,7 +121,7 @@ def _dict_to_news_article(d: Dict[str, Any]):
         source=d.get("source", "unknown"),
         url=url,
         published_at=published_at,
-        market=d.get("market", "US"),
+        market=d.get("market", "us").lower(),
         sentiment_score=d.get("sentimentScore") or d.get("sentiment_score"),
     )
 
@@ -328,7 +328,7 @@ async def _monitor_news_async() -> Dict[str, Any]:
                                 "summary": a.summary or "",
                                 "source": a.source or "unknown",
                                 "symbol": a.symbol or "",
-                                "market": a.market or "US",
+                                "market": (a.market or "us").lower(),
                                 "published_at": a.published_at.isoformat() if a.published_at else None,
                             }
                             for a in new_articles if a.url in timed_out_url_set
@@ -605,7 +605,7 @@ async def _monitor_news_async() -> Dict[str, Any]:
                                     "summary": ad.get("summary") or "",
                                     "source": ad.get("source", "unknown"),
                                     "symbol": symbol,
-                                    "market": ad.get("market", "US"),
+                                    "market": ad.get("market", "us").lower(),
                                     "published_at": ad.get("publishedAt"),
                                 }
                                 for symbol, ad in new_watchlist if ad.get("url") in wl_timed_out_url_set
@@ -641,7 +641,7 @@ async def _monitor_news_async() -> Dict[str, Any]:
                             source=article_data.get("source", "unknown"),
                             url=url,
                             published_at=_parse_datetime(article_data.get("publishedAt")),
-                            market=article_data.get("market", "US"),
+                            market=article_data.get("market", "us").lower(),
                             related_entities=None,
                             has_stock_entities=False,
                             has_macro_entities=False,
@@ -700,7 +700,7 @@ async def _monitor_news_async() -> Dict[str, Any]:
                         source=article_data.get("source", "unknown"),
                         url=url,
                         published_at=_parse_datetime(article_data.get("publishedAt")),
-                        market=article_data.get("market", "US"),
+                        market=article_data.get("market", "us").lower(),
                         related_entities=None,
                         has_stock_entities=False,
                         has_macro_entities=False,
@@ -800,7 +800,7 @@ async def _monitor_news_async() -> Dict[str, Any]:
                             batch.append({
                                 "news_id": str(news_obj.id),
                                 "url": news_obj.url,
-                                "market": news_obj.market or "US",
+                                "market": (news_obj.market or "us").lower(),
                                 "symbol": news_obj.symbol or "",
                                 "title": news_obj.title or "",
                                 "summary": news_obj.summary or "",
@@ -1080,7 +1080,7 @@ async def _retry_score_async(articles_data: list, retry_num: int) -> Dict[str, A
                 source=article_data.get("source", "unknown"),
                 url=url,
                 published_at=_parse_datetime(article_data.get("published_at")),
-                market=article_data.get("market", "US"),
+                market=article_data.get("market", "us").lower(),
                 related_entities=None,
                 has_stock_entities=False,
                 has_macro_entities=False,
@@ -1123,7 +1123,7 @@ async def _retry_score_async(articles_data: list, retry_num: int) -> Dict[str, A
                         dispatch_batch.append({
                             "news_id": str(news_obj.id),
                             "url": news_obj.url,
-                            "market": news_obj.market or "US",
+                            "market": (news_obj.market or "us").lower(),
                             "symbol": news_obj.symbol or "",
                             "title": news_obj.title or "",
                             "summary": news_obj.summary or "",
@@ -1200,7 +1200,7 @@ async def _fail_open_store(articles_data: list) -> Dict[str, Any]:
                 source=article_data.get("source", "unknown"),
                 url=url,
                 published_at=_parse_datetime(article_data.get("published_at")),
-                market=article_data.get("market", "US"),
+                market=article_data.get("market", "us").lower(),
                 related_entities=None,
                 has_stock_entities=False,
                 has_macro_entities=False,
@@ -1242,7 +1242,7 @@ async def _fail_open_store(articles_data: list) -> Dict[str, Any]:
                     dispatch_batch.append({
                         "news_id": str(news_obj.id),
                         "url": news_obj.url,
-                        "market": news_obj.market or "US",
+                        "market": (news_obj.market or "us").lower(),
                         "symbol": news_obj.symbol or "",
                         "title": news_obj.title or "",
                         "summary": news_obj.summary or "",

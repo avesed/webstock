@@ -72,7 +72,7 @@ class RssFeed(Base):
     market: Mapped[str] = mapped_column(
         String(10),
         nullable=False,
-        default="US",
+        default="us",
         comment="市场: US, HK, SH, SZ, METAL",
     )
 

@@ -167,6 +167,9 @@ async def get_fundamentals_status():
 # In-memory set tracking running fundamental collections
 _running_fundamental_collections: set[str] = set()
 
+# In-memory set tracking running backfill operations
+_running_backfill_operations: set[str] = set()
+
 
 @router.post("/fundamentals/{market}/collect")
 async def collect_fundamentals(market: str):
@@ -190,6 +193,155 @@ async def collect_fundamentals(market: str):
             logger.error("Background fundamental collection failed for %s: %s", market, e, exc_info=True)
         finally:
             _running_fundamental_collections.discard(market)
+
+    asyncio.create_task(_run())
+    return {"status": "started", "market": market}
+
+
+# In-memory guards for new signal collection endpoints
+_running_signal_collections: set[str] = set()
+
+
+@router.post("/earnings/collect/{market}")
+async def collect_earnings(market: str):
+    """Trigger EPS surprise event collection for a market.
+
+    Fetches ticker.earnings_dates for all universe symbols and upserts
+    into stock_earnings_events.  Non-blocking: returns immediately.
+    """
+    market = market.lower()
+    if market not in ("us", "hk", "cn"):
+        raise HTTPException(status_code=400, detail=f"Invalid market: {market}")
+
+    guard_key = f"earnings:{market}"
+    if guard_key in _running_signal_collections:
+        raise HTTPException(status_code=409, detail=f"Earnings collection already running for {market}")
+
+    _running_signal_collections.add(guard_key)
+
+    async def _run():
+        try:
+            from app.services.fundamental_service import fundamental_service
+            from app.services.earnings_service import earnings_service
+            symbols = await fundamental_service._resolve_symbols(market)
+            if symbols:
+                await earnings_service.collect_earnings_events(market, symbols)
+        except Exception as e:
+            logger.error("Background earnings collection failed for %s: %s", market, e, exc_info=True)
+        finally:
+            _running_signal_collections.discard(guard_key)
+
+    asyncio.create_task(_run())
+    return {"status": "started", "market": market}
+
+
+@router.post("/analyst/collect/{market}")
+async def collect_analyst(market: str):
+    """Trigger analyst snapshot + insider activity collection for a market.
+
+    Fetches analyst_price_targets, recommendations_summary, eps_revisions,
+    growth_estimates, and insider_purchases for all universe symbols.
+    Non-blocking: returns immediately.
+    """
+    market = market.lower()
+    if market not in ("us", "hk", "cn"):
+        raise HTTPException(status_code=400, detail=f"Invalid market: {market}")
+
+    guard_key = f"analyst:{market}"
+    if guard_key in _running_signal_collections:
+        raise HTTPException(status_code=409, detail=f"Analyst collection already running for {market}")
+
+    _running_signal_collections.add(guard_key)
+
+    async def _run():
+        try:
+            from app.services.fundamental_service import fundamental_service
+            from app.services.analyst_service import analyst_service
+            symbols = await fundamental_service._resolve_symbols(market)
+            if symbols:
+                await analyst_service.collect_analyst_snapshots(market, symbols)
+        except Exception as e:
+            logger.error("Background analyst collection failed for %s: %s", market, e, exc_info=True)
+        finally:
+            _running_signal_collections.discard(guard_key)
+
+    asyncio.create_task(_run())
+    return {"status": "started", "market": market}
+
+
+@router.post("/options/collect/{market}")
+async def collect_options(market: str):
+    """Trigger options put/call ratio collection for a market.
+
+    US only.  Fetches option chains for the nearest ~30-day expiry per symbol
+    and upserts into stock_options_flow.  Non-blocking: returns immediately.
+    """
+    market = market.lower()
+    if market not in ("us", "hk", "cn"):
+        raise HTTPException(status_code=400, detail=f"Invalid market: {market}")
+
+    guard_key = f"options:{market}"
+    if guard_key in _running_signal_collections:
+        raise HTTPException(status_code=409, detail=f"Options collection already running for {market}")
+
+    _running_signal_collections.add(guard_key)
+
+    async def _run():
+        try:
+            from app.services.fundamental_service import fundamental_service
+            from app.services.options_service import options_service
+            symbols = await fundamental_service._resolve_symbols(market)
+            if symbols:
+                await options_service.collect_options_flow(market, symbols)
+        except Exception as e:
+            logger.error("Background options collection failed for %s: %s", market, e, exc_info=True)
+        finally:
+            _running_signal_collections.discard(guard_key)
+
+    asyncio.create_task(_run())
+    return {"status": "started", "market": market}
+
+
+@router.post("/fundamentals/backfill/{market}")
+async def backfill_fundamentals(market: str):
+    """Backfill historical quarterly fundamental data for US/HK markets.
+
+    Fetches quarterly income statements and balance sheets from yfinance,
+    computes derived metrics using daily close prices from stock_daily_bars,
+    and writes to stock_fundamentals table.
+
+    Non-blocking: starts backfill in background and returns immediately.
+    Long-running operation: progress reported via Redis key
+    ``fundamentals:backfill:{market}:progress``.
+    """
+    market = market.lower()
+    if market not in ("us", "hk"):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Quarterly backfill only supported for US/HK markets, got: {market}",
+        )
+
+    if market in _running_backfill_operations:
+        logger.warning("Backfill already running for %s, rejecting duplicate request", market)
+        raise HTTPException(
+            status_code=409,
+            detail=f"Fundamental backfill already running for {market}",
+        )
+
+    # Guard before create_task to prevent TOCTOU race
+    _running_backfill_operations.add(market)
+
+    async def _run():
+        try:
+            from app.services.fundamental_service import fundamental_service
+            await fundamental_service.backfill_us_hk_quarterly(market)
+        except Exception as e:
+            logger.error(
+                "Background fundamental backfill failed for %s: %s",
+                market, e, exc_info=True,
+            )
+        finally:
+            _running_backfill_operations.discard(market)
 
     asyncio.create_task(_run())
     return {"status": "started", "market": market}

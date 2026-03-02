@@ -32,6 +32,7 @@ LIGHTWEIGHT_PROMPT = """快速提取以下新闻信息，返回JSON格式：
     {{"entity": "600519.SS", "type": "stock", "company_name": "贵州茅台", "score": 0.6}}
   ],
   "sentiment": "bullish/bearish/neutral",
+  "sentiment_score": 0.5,
   "industry_tags": ["tech"],
   "event_tags": ["earnings"],
   "investment_summary": "1句话概况（≤50字）"
@@ -41,6 +42,7 @@ LIGHTWEIGHT_PROMPT = """快速提取以下新闻信息，返回JSON格式：
 - entities: 最多8个，含直接提及和同行业龙头。company_name必填（便于校验）
   - 代码格式：A股必须带后缀(600519.SS/000001.SZ，不可写600519/SH600519)，港股数字+.HK(0700.HK，不可写HK0700/BABA.HK)，贵金属GC=F/SI=F/PL=F/PA=F(不可写XAU/GOLD)
   - type: stock/index/macro。不确定代码时填company_name，系统自动校验
+- sentiment_score: -1.0到1.0之间的精确数值(-1.0=极度看空, 0=中性, 1.0=极度看好)
 - investment_summary: 精炼1句话
 - 不需要生成detailed_summary和analysis_report
 
@@ -60,6 +62,7 @@ class LightweightResult:
     investment_summary: str
     detailed_summary: str  # Always empty string
     analysis_report: str  # Always empty string
+    sentiment_score: float | None = None  # -1.0 to 1.0 numeric score
     raw_response: str = ""  # Raw LLM output for debugging (stored in pipeline_events)
 
 
@@ -203,6 +206,20 @@ class LightweightFilterService:
             if sentiment not in ("bullish", "bearish", "neutral"):
                 sentiment = "neutral"
 
+            # Extract numeric sentiment score
+            raw_score = result.get("sentiment_score")
+            if raw_score is not None:
+                try:
+                    score_val = float(raw_score)
+                    sentiment_score = max(-1.0, min(1.0, score_val))  # clamp to valid range
+                except (ValueError, TypeError):
+                    logger.debug(
+                        "Failed to parse sentiment_score %r as float", raw_score
+                    )
+                    sentiment_score = None
+            else:
+                sentiment_score = None
+
             # Entities: reuse shared validator, cap at 8 for lightweight
             entities = validate_entities(result.get("entities", []), max_entities=8)
 
@@ -222,6 +239,7 @@ class LightweightFilterService:
                 decision=decision,
                 entities=entities,
                 sentiment=sentiment,
+                sentiment_score=sentiment_score,
                 industry_tags=result.get("industry_tags", [])[:5],
                 event_tags=result.get("event_tags", [])[:5],
                 investment_summary=result.get("investment_summary", "")[:500],

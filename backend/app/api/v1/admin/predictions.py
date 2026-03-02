@@ -756,3 +756,111 @@ async def collect_fundamentals(
             status_code=e.status_code or 502,
             detail=_sanitize_service_error(e),
         )
+
+
+# ---------------------------------------------------------------------------
+# POST /predictions/fundamentals/backfill/{market} — historical backfill
+# ---------------------------------------------------------------------------
+
+
+@router.post(
+    "/predictions/fundamentals/backfill/{market}",
+    summary="Backfill historical quarterly fundamentals",
+    description=(
+        "Trigger historical quarterly fundamental backfill for US/HK markets. "
+        "Fetches yfinance quarterly financial statements and computes derived "
+        "metrics. Long-running background operation."
+    ),
+)
+async def backfill_fundamentals(
+    market: str,
+    current_user: User = Depends(require_admin),
+) -> Dict[str, Any]:
+    market = market.lower()
+    if market not in ("us", "hk"):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Quarterly backfill only supported for US/HK markets, got: {market}",
+        )
+    client = await get_prediction_client()
+    try:
+        resp = await client.backfill_fundamentals(market)
+        logger.info(
+            "Admin %s triggered fundamental backfill for market=%s",
+            current_user.email, market,
+        )
+        return resp
+    except PredictionServiceError as e:
+        raise HTTPException(
+            status_code=e.status_code or 502,
+            detail=_sanitize_service_error(e),
+        )
+
+
+@router.post("/predictions/earnings/collect/{market}", summary="Trigger EPS surprise event collection")
+async def trigger_earnings_collection(
+    market: str,
+    current_user: User = Depends(require_admin),
+) -> Dict[str, Any]:
+    """Trigger EPS surprise event collection for a market.
+
+    Fetches historical earnings dates and EPS actuals/estimates from yfinance
+    and upserts into stock_earnings_events.  Non-blocking.
+    """
+    m = _validate_market(market)
+    client = await get_prediction_client()
+    try:
+        resp = await client.collect_earnings(m)
+        logger.info(
+            "Admin %s triggered earnings collection for market=%s",
+            current_user.email, m,
+        )
+        return resp
+    except PredictionServiceError as e:
+        raise HTTPException(status_code=e.status_code or 502, detail=_sanitize_service_error(e))
+
+
+@router.post("/predictions/analyst/collect/{market}", summary="Trigger analyst snapshot collection")
+async def trigger_analyst_collection(
+    market: str,
+    current_user: User = Depends(require_admin),
+) -> Dict[str, Any]:
+    """Trigger analyst snapshot and insider activity collection for a market.
+
+    Fetches analyst price targets, recommendations, EPS revisions, growth estimates,
+    and insider transactions.  Non-blocking.
+    """
+    m = _validate_market(market)
+    client = await get_prediction_client()
+    try:
+        resp = await client.collect_analyst(m)
+        logger.info(
+            "Admin %s triggered analyst collection for market=%s",
+            current_user.email, m,
+        )
+        return resp
+    except PredictionServiceError as e:
+        raise HTTPException(status_code=e.status_code or 502, detail=_sanitize_service_error(e))
+
+
+@router.post("/predictions/options/collect/{market}", summary="Trigger options put/call ratio collection")
+async def trigger_options_collection(
+    market: str,
+    current_user: User = Depends(require_admin),
+) -> Dict[str, Any]:
+    """Trigger options put/call ratio collection for a market.
+
+    US only.  Fetches options chains for the nearest ~30-day expiry per symbol
+    and upserts into stock_options_flow.  Non-blocking.
+    """
+    m = _validate_market(market)
+    client = await get_prediction_client()
+    try:
+        resp = await client.collect_options(m)
+        logger.info(
+            "Admin %s triggered options collection for market=%s",
+            current_user.email, m,
+        )
+        return resp
+    except PredictionServiceError as e:
+        raise HTTPException(status_code=e.status_code or 502, detail=_sanitize_service_error(e))

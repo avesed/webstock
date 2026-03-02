@@ -253,13 +253,23 @@ export const predictionsApi = {
           if (v.error) {
             result[key] = { models: [], latestPredictions: [], error: v.error as string }
           } else {
+            // models may be { models: [...] } or [...]
+            const rawModels = v.models as Record<string, unknown> | Record<string, unknown>[]
+            const modelsList = Array.isArray(rawModels)
+              ? rawModels
+              : Array.isArray((rawModels as Record<string, unknown>)?.models)
+                ? (rawModels as Record<string, unknown>).models as Record<string, unknown>[]
+                : []
+            // latestPredictions may be { predictions: [...] } or [...]
+            const rawLP = (v.latestPredictions ?? v.latest_predictions) as Record<string, unknown> | Record<string, unknown>[]
+            const lpList = Array.isArray(rawLP)
+              ? rawLP
+              : Array.isArray((rawLP as Record<string, unknown>)?.predictions)
+                ? (rawLP as Record<string, unknown>).predictions as Record<string, unknown>[]
+                : []
             result[key] = {
-              models: Array.isArray(v.models) ? (v.models as Record<string, unknown>[]).map(toCamelModel) : [],
-              latestPredictions: Array.isArray(v.latestPredictions)
-                ? (v.latestPredictions as Record<string, unknown>[]).map(toCamelPrediction)
-                : Array.isArray(v.latest_predictions)
-                  ? (v.latest_predictions as Record<string, unknown>[]).map(toCamelPrediction)
-                  : [],
+              models: modelsList.map(toCamelModel),
+              latestPredictions: lpList.map(toCamelPrediction),
             }
           }
         }
@@ -274,18 +284,18 @@ export const predictionsApi = {
     }).then(r => toCamelTask(r.data)),
 
   getLatestPredictions: (market: string, topN = 50) =>
-    apiClient.get<Record<string, unknown>[]>(`/admin/predictions/${market}/latest`, {
+    apiClient.get<{ market: string; count: number; predictions: Record<string, unknown>[] }>(`/admin/predictions/${market}/latest`, {
       params: { top_n: topN },
-    }).then(r => r.data.map(toCamelPrediction)),
+    }).then(r => (r.data.predictions ?? []).map(toCamelPrediction)),
 
   getTaskStatus: (taskId: string) =>
     apiClient.get<Record<string, unknown>>(`/admin/predictions/tasks/${taskId}`)
       .then(r => toCamelTask(r.data)),
 
   getModels: (market?: string) =>
-    apiClient.get<Record<string, unknown>[]>('/admin/predictions/models', {
+    apiClient.get<{ models: Record<string, unknown>[] }>('/admin/predictions/models', {
       params: market ? { market } : {},
-    }).then(r => r.data.map(toCamelModel)),
+    }).then(r => (r.data.models ?? []).map(toCamelModel)),
 
   getAccuracy: (market: string, days = 30) =>
     apiClient.get<Record<string, unknown>>(`/admin/predictions/${market}/accuracy`, {

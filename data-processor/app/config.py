@@ -52,6 +52,13 @@ class Settings(BaseSettings):
     PREDICTION_MIN_IC: float = 0.0
     PREDICTION_MIN_ICIR: float = 0.0
 
+    # Model retention: keep models for N days, always keep M quality-passed per market
+    MODEL_RETENTION_DAYS: int = 30
+    MODEL_MIN_QUALITY_KEEP: int = 3
+
+    # Data freshness: skip training if Qlib data is older than N trading days
+    PREDICTION_MAX_STALE_DAYS: int = 5
+
     # Settings cache TTL
     SETTINGS_CACHE_TTL: int = 60  # seconds
 

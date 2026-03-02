@@ -168,6 +168,7 @@ async def multi_agent_analysis_node(state: NewsProcessingState) -> dict:
             "industry_tags": result.industry_tags,
             "event_tags": result.event_tags,
             "sentiment_tag": result.sentiment,
+            "sentiment_score": result.sentiment_score,
             "investment_summary": result.investment_summary,
             "detailed_summary": result.detailed_summary,
             "analysis_report": result.analysis_report,
@@ -246,6 +247,7 @@ async def lightweight_filter_node(state: NewsProcessingState) -> dict:
             "industry_tags": result.industry_tags,
             "event_tags": result.event_tags,
             "sentiment_tag": result.sentiment,
+            "sentiment_score": result.sentiment_score,
             "investment_summary": result.investment_summary,
             "detailed_summary": result.detailed_summary,
             "analysis_report": result.analysis_report,
@@ -527,6 +529,8 @@ async def update_db_node(state: NewsProcessingState) -> dict:
                     news.event_tags = state["event_tags"]
                 if state.get("sentiment_tag"):
                     news.sentiment_tag = state["sentiment_tag"]
+                if state.get("sentiment_score") is not None:
+                    news.sentiment_score = state["sentiment_score"]
                 if state.get("investment_summary"):
                     news.investment_summary = state["investment_summary"]
 
@@ -748,7 +752,7 @@ def get_news_pipeline():
 async def run_news_pipeline(
     news_id: str,
     url: str,
-    market: str = "US",
+    market: str = "us",
     symbol: str = "",
     title: str = "",
     summary: str = "",

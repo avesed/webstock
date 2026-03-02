@@ -174,7 +174,10 @@ SUMMARY_SENTIMENT_PROMPT = """你的角色：摘要与情绪分析师
 综合分析新闻情绪并生成投资导向的摘要内容。
 
 情绪判断：
-- sentiment: bullish/bearish/neutral
+- sentiment: bullish/bearish/neutral（分类标签）
+- sentiment_score: -1.0到1.0之间的精确数值
+  (-1.0=极度看空, -0.5=看空, 0=中性, 0.5=看好, 1.0=极度看好)
+  根据新闻内容强度给出精确分数，不要只用整数
 
 标签分类：
 - industry_tags选项: tech/finance/healthcare/energy/consumer/industrial/materials/utilities/realestate/telecom
@@ -257,6 +260,10 @@ AGENT_SCHEMAS: Dict[str, Dict] = {
                         "type": "string",
                         "enum": ["bullish", "bearish", "neutral"],
                     },
+                    "sentiment_score": {
+                        "type": "number",
+                        "description": "Sentiment score from -1.0 (very bearish) to 1.0 (very bullish)",
+                    },
                     "industry_tags": {
                         "type": "array",
                         "items": {"type": "string"},
@@ -268,8 +275,8 @@ AGENT_SCHEMAS: Dict[str, Dict] = {
                     "investment_summary": {"type": "string"},
                     "detailed_summary": {"type": "string"},
                 },
-                "required": ["sentiment", "industry_tags", "event_tags",
-                             "investment_summary", "detailed_summary"],
+                "required": ["sentiment", "sentiment_score", "industry_tags",
+                             "event_tags", "investment_summary", "detailed_summary"],
                 "additionalProperties": False,
             },
         },
@@ -297,6 +304,7 @@ class MultiAgentResult:
     investment_summary: str
     detailed_summary: str
     analysis_report: str  # Always "" — deep analysis is now on-demand
+    sentiment_score: float | None = None  # -1.0 to 1.0 numeric score
     cache_stats: Dict[str, Any] = field(default_factory=dict)
 
 
@@ -799,6 +807,7 @@ class MultiAgentFilterService:
         # --- Summary & Sentiment (merged agent) ---
         ss_data = agent_responses.get("summary_sentiment")
         sentiment = "neutral"
+        sentiment_score: float | None = None
         industry_tags: List[str] = []
         event_tags: List[str] = []
         investment_summary = ""
@@ -808,6 +817,21 @@ class MultiAgentFilterService:
             raw_sentiment = ss_data.data.get("sentiment", "neutral")
             if raw_sentiment in ("bullish", "bearish", "neutral"):
                 sentiment = raw_sentiment
+
+            # Extract numeric sentiment score
+            raw_score = ss_data.data.get("sentiment_score")
+            if raw_score is not None:
+                try:
+                    score = float(raw_score)
+                    sentiment_score = max(-1.0, min(1.0, score))  # clamp to valid range
+                except (ValueError, TypeError):
+                    logger.debug(
+                        "Failed to parse sentiment_score %r as float", raw_score
+                    )
+                    sentiment_score = None
+            else:
+                sentiment_score = None
+
             industry_tags = ss_data.data.get("industry_tags", [])[:5]
             event_tags = ss_data.data.get("event_tags", [])[:5]
 
@@ -848,6 +872,7 @@ class MultiAgentFilterService:
             decision="keep",
             entities=entities,
             sentiment=sentiment,
+            sentiment_score=sentiment_score,
             industry_tags=industry_tags,
             event_tags=event_tags,
             investment_summary=investment_summary,

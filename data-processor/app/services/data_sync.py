@@ -19,6 +19,8 @@ import pandas as pd
 from app.config import get_settings
 from app.context import QlibContext
 from app.utils.bin_writer import (
+    batch_update_instruments,
+    build_calendar_index,
     dataframe_to_bin,
     read_calendar,
     update_calendar,
@@ -390,11 +392,18 @@ class DataSyncService:
         # 2b. Write .bin files with merge for incremental sync
         success_count = 0
         use_merge = update_only and bool(full_calendar)
+
+        # Pre-compute calendar index once (avoids rebuilding per-symbol)
+        cal_index = build_calendar_index(full_calendar) if full_calendar else None
+
         logger.info(
             "Phase 2: writing .bin files for %d symbols "
             "(merge=%s, calendar_size=%d)",
             len(collected), use_merge, len(full_calendar),
         )
+
+        # Collect instrument updates for batch write at the end
+        instrument_updates = []
 
         for qlib_sym, df in collected.items():
             try:
@@ -404,12 +413,13 @@ class DataSyncService:
                     market_dir,
                     calendar=full_calendar if full_calendar else None,
                     merge=use_merge,
+                    cal_index=cal_index,
                 )
                 if ok:
                     dates = sorted(d.strftime("%Y-%m-%d") for d in df.index)
-                    update_instruments(market_dir, qlib_sym, dates[0], dates[-1])
+                    instrument_updates.append((qlib_sym, dates[0], dates[-1]))
                     success_count += 1
-                    if success_count % 100 == 0 or success_count == len(collected):
+                    if success_count % 500 == 0 or success_count == len(collected):
                         _write_sync_progress(data_dir, market, {
                             "status": "syncing",
                             "phase": "writing",
@@ -421,6 +431,10 @@ class DataSyncService:
             except Exception as e:
                 logger.warning("  Failed to write .bin for %s: %s", qlib_sym, e)
                 errors.append(f"{qlib_sym}: bin write error: {e}")
+
+        # Batch update instruments file (single read-modify-write)
+        if instrument_updates:
+            batch_update_instruments(market_dir, instrument_updates)
 
         phase2_elapsed = time.monotonic() - phase2_start
         logger.info(
@@ -446,7 +460,13 @@ class DataSyncService:
         default: str = "2000-01-01",
         date_format: str = "%Y-%m-%d",
     ) -> str:
-        """Determine start date: last calendar entry if update_only, else default."""
+        """Determine start date: last calendar entry if update_only, else default.
+
+        Uses the last calendar date (inclusive) rather than last+1, because
+        a previous sync may have run before daily bar collection finished,
+        leaving some symbols missing for the last calendar date. Re-fetching
+        it is safe since Phase 2 uses merge mode for incremental syncs.
+        """
         if not update_only:
             return default
 
@@ -456,15 +476,11 @@ class DataSyncService:
                 lines = Path(cal_path).read_text().strip().split("\n")
                 if lines:
                     last_date = sorted(lines)[-1].strip()
-                    # Return the day after the last calendar entry
-                    last_dt = pd.Timestamp(last_date)
-                    next_dt = last_dt + pd.Timedelta(days=1)
-                    result = next_dt.strftime(date_format)
                     logger.info(
-                        "Update mode: starting from %s (last calendar: %s)",
-                        result, last_date,
+                        "Update mode: starting from %s (last calendar date, inclusive)",
+                        last_date,
                     )
-                    return result
+                    return last_date
             except Exception as e:
                 logger.warning(
                     "Failed to read calendar for update_only, using default: %s", e

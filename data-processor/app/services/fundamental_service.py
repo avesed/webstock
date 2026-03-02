@@ -2,8 +2,10 @@
 
 Collects PE/PB/ROE and other financial metrics:
 - CN: stock_individual_spot_xq (Xueqiu, real-time ~7 fields)
-      + stock_financial_analysis_indicator (quarterly ~8 fields)
+      + stock_financial_analysis_indicator (quarterly ~8 fields, multi-quarter)
 - US/HK: yfinance Ticker.info -- ~19 fields per stock
+- US/HK backfill: yfinance quarterly_income_stmt + quarterly_balance_sheet
+                   for historical quarterly data (2+ years)
 
 Data stored in stock_fundamentals table with daily_snapshot type.
 Called by APScheduler for daily collection and by feature_service
@@ -13,7 +15,8 @@ for training data retrieval.
 import asyncio
 import json
 import logging
-from datetime import date, datetime, timezone
+from collections import defaultdict
+from datetime import date, datetime, timedelta, timezone
 from typing import Any
 
 import pandas as pd
@@ -127,6 +130,9 @@ _US_HK_FIELD_MAP = {
     "operatingMargins": "operating_margin",
     "payoutRatio": "payout_ratio",
     "earningsQuarterlyGrowth": "eps_growth",
+    # Short interest (available in daily .info)
+    "shortPercentOfFloat": "short_pct_float",
+    "shortRatio": "short_ratio",
 }
 
 # All DB columns for the INSERT statement (order matters)
@@ -138,6 +144,11 @@ _DB_COLUMNS = [
     "dividend_yield", "market_cap",
     "forward_pe", "dividend_rate", "book_value",
     "operating_margin", "payout_ratio", "eps_growth",
+    # Category 1: FCF/valuation ratios (quarterly backfill) — $27-$33
+    "fcf_margin", "fcf_yield", "capex_ratio", "buyback_yield",
+    "ev_ebitda", "rd_ratio", "net_cash_ratio",
+    # Short interest (daily US/HK collection from .info) — $34-$35
+    "short_pct_float", "short_ratio",
     "data_source",
 ]
 
@@ -147,8 +158,11 @@ _INSERT_SQL = """
          roe, roa, profit_margin, gross_margin, revenue, revenue_growth_yoy,
          net_income, eps, debt_to_equity, current_ratio, dividend_yield,
          market_cap, forward_pe, dividend_rate, book_value,
-         operating_margin, payout_ratio, eps_growth, data_source)
-    VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26)
+         operating_margin, payout_ratio, eps_growth,
+         fcf_margin, fcf_yield, capex_ratio, buyback_yield,
+         ev_ebitda, rd_ratio, net_cash_ratio,
+         short_pct_float, short_ratio, data_source)
+    VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34,$35)
     ON CONFLICT (symbol, date, record_type) DO UPDATE SET
         pe_ratio = COALESCE(EXCLUDED.pe_ratio, stock_fundamentals.pe_ratio),
         pb_ratio = COALESCE(EXCLUDED.pb_ratio, stock_fundamentals.pb_ratio),
@@ -171,6 +185,15 @@ _INSERT_SQL = """
         operating_margin = COALESCE(EXCLUDED.operating_margin, stock_fundamentals.operating_margin),
         payout_ratio = COALESCE(EXCLUDED.payout_ratio, stock_fundamentals.payout_ratio),
         eps_growth = COALESCE(EXCLUDED.eps_growth, stock_fundamentals.eps_growth),
+        fcf_margin = COALESCE(EXCLUDED.fcf_margin, stock_fundamentals.fcf_margin),
+        fcf_yield = COALESCE(EXCLUDED.fcf_yield, stock_fundamentals.fcf_yield),
+        capex_ratio = COALESCE(EXCLUDED.capex_ratio, stock_fundamentals.capex_ratio),
+        buyback_yield = COALESCE(EXCLUDED.buyback_yield, stock_fundamentals.buyback_yield),
+        ev_ebitda = COALESCE(EXCLUDED.ev_ebitda, stock_fundamentals.ev_ebitda),
+        rd_ratio = COALESCE(EXCLUDED.rd_ratio, stock_fundamentals.rd_ratio),
+        net_cash_ratio = COALESCE(EXCLUDED.net_cash_ratio, stock_fundamentals.net_cash_ratio),
+        short_pct_float = COALESCE(EXCLUDED.short_pct_float, stock_fundamentals.short_pct_float),
+        short_ratio = COALESCE(EXCLUDED.short_ratio, stock_fundamentals.short_ratio),
         data_source = CASE
             WHEN EXCLUDED.data_source LIKE '%quarterly%' THEN EXCLUDED.data_source
             WHEN stock_fundamentals.data_source LIKE '%quarterly%' THEN stock_fundamentals.data_source
@@ -183,7 +206,10 @@ _SELECT_SQL = """
            profit_margin, gross_margin, revenue_growth_yoy, eps,
            debt_to_equity, current_ratio, dividend_yield, market_cap,
            forward_pe, dividend_rate, book_value,
-           operating_margin, payout_ratio, eps_growth
+           operating_margin, payout_ratio, eps_growth,
+           fcf_margin, fcf_yield, capex_ratio, buyback_yield,
+           ev_ebitda, rd_ratio, net_cash_ratio,
+           short_pct_float, short_ratio
     FROM stock_fundamentals
     WHERE symbol = ANY($1::text[])
       AND date >= $2::date
@@ -204,6 +230,45 @@ def _safe_float(value: Any) -> float | None:
         return v
     except (ValueError, TypeError):
         return None
+
+
+def _parse_quarter_date(date_str: Any) -> date | None:
+    """Parse quarter date from akshare output.
+
+    Format typically: '2024-12-31' or '2024年12月31日'.
+    Returns None on failure.
+    """
+    if not date_str:
+        return None
+    s = str(date_str).strip()
+    # Try standard format first
+    try:
+        return datetime.strptime(s, "%Y-%m-%d").date()
+    except ValueError:
+        pass
+    # Try Chinese format
+    try:
+        clean = s.replace("年", "-").replace("月", "-").replace("日", "")
+        return datetime.strptime(clean.strip(), "%Y-%m-%d").date()
+    except ValueError:
+        pass
+    # Try pandas Timestamp (akshare sometimes returns Timestamp objects)
+    try:
+        ts = pd.Timestamp(date_str)
+        if not pd.isna(ts):
+            return ts.date()
+    except Exception:
+        pass
+    return None
+
+
+def _safe_divide(numerator: float | None, denominator: float | None) -> float | None:
+    """Safe division returning None on zero/None/near-zero denominator."""
+    if numerator is None or denominator is None:
+        return None
+    if denominator == 0:
+        return None
+    return numerator / denominator
 
 
 class FundamentalService:
@@ -349,12 +414,15 @@ class FundamentalService:
 
         Phase 1: Xueqiu (stock_individual_spot_xq) — ~7 fields (pe, pb, eps,
                  dividend_yield, book_value, dividend_rate, market_cap)
+                 Applies to TODAY's date only.
         Phase 2: Quarterly reports (stock_financial_analysis_indicator) — ~8 fields
                  (roe, roa, profit_margin, operating_margin, revenue_growth,
                  eps_growth, current_ratio, gross_margin)
+                 Returns multiple quarter-end dates per symbol.
 
-        Both phases run concurrently. Results are merged in memory (Phase 2 only
-        fills fields that Phase 1 left as None) before a single DB write.
+        Both phases run concurrently. For today's row, Phase 2 latest quarter
+        supplements Phase 1 (only fills None positions). Historical quarter rows
+        are written as separate daily_snapshot records.
         """
         today = date.today()
         total = len(symbols)
@@ -365,21 +433,30 @@ class FundamentalService:
             self._collect_cn_quarterly_batch(symbols, total),
         )
 
-        # Merge: Phase 2 supplements Phase 1 (only fills None positions)
+        # Merge: Phase 1 (today) + Phase 2 latest quarter → today's row
+        # Phase 2 historical quarters → separate rows per quarter date
         all_symbols = set(phase1_result.keys()) | set(phase2_result.keys())
         rows: list[tuple] = []
+        historical_count = 0
 
         for symbol in all_symbols:
             p1 = phase1_result.get(symbol, {})
-            p2 = phase2_result.get(symbol, {})
+            p2_quarters = phase2_result.get(symbol, [])
 
-            # Start with Phase 1 data, fill gaps with Phase 2
+            # Get the latest quarter data for merging with today's row
+            p2_latest: dict[str, float | None] = {}
+            if p2_quarters:
+                # Sort by date, pick the latest
+                p2_quarters_sorted = sorted(p2_quarters, key=lambda x: x[0])
+                p2_latest = p2_quarters_sorted[-1][1]
+
+            # Build today's row: Phase 1 + Phase 2 latest quarter merged
             merged: dict[str, float | None] = dict(p1)
-            for key, val in p2.items():
+            for key, val in p2_latest.items():
                 if merged.get(key) is None and val is not None:
                     merged[key] = val
 
-            data_source = "xueqiu+quarterly" if (p1 and p2) else (
+            data_source = "xueqiu+quarterly" if (p1 and p2_latest) else (
                 "xueqiu" if p1 else "quarterly"
             )
             rows.append(self._build_row(
@@ -390,13 +467,31 @@ class FundamentalService:
                 data_source=data_source,
             ))
 
+            # Write historical quarterly rows (excluding the latest which
+            # is already merged into today's row)
+            if len(p2_quarters) > 1:
+                p2_quarters_sorted = sorted(p2_quarters, key=lambda x: x[0])
+                for quarter_date, quarter_data in p2_quarters_sorted[:-1]:
+                    # Skip if the quarter date is today (already covered)
+                    if quarter_date == today:
+                        continue
+                    rows.append(self._build_row(
+                        symbol=symbol,
+                        market="cn",
+                        record_date=quarter_date,
+                        data=quarter_data,
+                        data_source="quarterly_historical",
+                    ))
+                    historical_count += 1
+
         logger.info(
-            "CN batch collection: %d/%d succeeded "
-            "(phase1=%d, phase2=%d, dual=%d)",
-            len(rows), total,
+            "CN batch collection: %d symbols, %d rows "
+            "(phase1=%d, phase2=%d, dual=%d, historical_quarters=%d)",
+            len(all_symbols), len(rows),
             len(phase1_result), len(phase2_result),
             sum(1 for s in all_symbols
                 if s in phase1_result and s in phase2_result),
+            historical_count,
         )
         return rows
 
@@ -478,29 +573,31 @@ class FundamentalService:
 
     async def _collect_cn_quarterly_batch(
         self, symbols: list[str], total: int,
-    ) -> dict[str, dict[str, float | None]]:
+    ) -> dict[str, list[tuple[date, dict[str, float | None]]]]:
         """Phase 2: Collect from quarterly financial reports.
 
         Uses akshare stock_financial_analysis_indicator() to get profitability,
-        growth, and balance sheet metrics from the latest quarterly report.
+        growth, and balance sheet metrics from ALL available quarterly reports
+        (typically 8-12 quarters with start_year = current_year - 2).
 
         Upstream (Sina Finance) is aggressive with IP bans, so this method
         uses conservative pacing: Semaphore(2), 1.5s delay, and a consecutive
         failure circuit breaker that aborts early on ban detection.
 
-        Returns {symbol: {db_col: value, ...}} for successful fetches.
+        Returns {symbol: [(quarter_date, {db_col: value, ...}), ...]}
+        for successful fetches. Each symbol may have multiple quarter records.
         """
         import akshare as ak
 
         sem = asyncio.Semaphore(2)  # Conservative: Sina bans at ~5 concurrent
-        results: dict[str, dict[str, float | None]] = {}
+        results: dict[str, list[tuple[date, dict[str, float | None]]]] = {}
         lock = asyncio.Lock()
         completed = 0
         consecutive_failures = 0
         fields_validated = False
         aborted = False
         current_year = datetime.now().year
-        start_year = str(current_year - 1)
+        start_year = str(current_year - 2)  # ~8-12 quarters for training data
 
         # Circuit breaker: after N consecutive failures, Sina likely banned us
         max_consecutive_failures = 10
@@ -528,13 +625,11 @@ class FundamentalService:
                         consecutive_failures += 1
                         return
 
-                    # Latest quarter is the last row
-                    latest = df.iloc[-1].to_dict()
-
                     # Validate field names on first successful fetch
                     if not fields_validated:
+                        sample = df.iloc[-1].to_dict()
                         expected = set(_CN_QUARTERLY_FIELD_MAP.keys())
-                        actual = set(latest.keys())
+                        actual = set(sample.keys())
                         missing = expected - actual
                         if missing:
                             logger.warning(
@@ -544,23 +639,36 @@ class FundamentalService:
                             )
                         fields_validated = True
 
-                    row_data: dict[str, float | None] = {}
-                    for src_col, db_col in _CN_QUARTERLY_FIELD_MAP.items():
-                        val = _safe_float(latest.get(src_col))
-                        if val is not None and db_col in _CN_QUARTERLY_PCT_FIELDS:
-                            val = val / 100.0
-                        row_data[db_col] = val
+                    # Extract ALL quarterly rows, not just the latest
+                    quarterly_rows: list[tuple[date, dict[str, float | None]]] = []
+                    for _, row in df.iterrows():
+                        row_dict = row.to_dict()
+                        raw_date = row_dict.get("日期", "")
+                        report_date = _parse_quarter_date(raw_date)
+                        if report_date is None:
+                            logger.debug("Skipping row with unparseable date: %r", raw_date)
+                            continue
 
-                    # Compute gross_margin from cost ratio (销售毛利率 often NaN).
-                    # Uses _safe_float intentionally: gross_margin = 1 - cost_ratio/100,
-                    # not a simple pct→ratio conversion.
-                    cost_ratio = _safe_float(latest.get("主营业务成本率(%)"))
-                    if cost_ratio is not None:
-                        row_data["gross_margin"] = 1.0 - cost_ratio / 100.0
+                        row_data: dict[str, float | None] = {}
+                        for src_col, db_col in _CN_QUARTERLY_FIELD_MAP.items():
+                            val = _safe_float(row_dict.get(src_col))
+                            if val is not None and db_col in _CN_QUARTERLY_PCT_FIELDS:
+                                val = val / 100.0
+                            row_data[db_col] = val
 
-                    async with lock:
-                        results[symbol] = row_data
-                    consecutive_failures = 0  # Reset on success
+                        # Compute gross_margin from cost ratio (销售毛利率 often NaN).
+                        cost_ratio = _safe_float(row_dict.get("主营业务成本率(%)"))
+                        if cost_ratio is not None:
+                            row_data["gross_margin"] = 1.0 - cost_ratio / 100.0
+
+                        quarterly_rows.append((report_date, row_data))
+
+                    if quarterly_rows:
+                        async with lock:
+                            results[symbol] = quarterly_rows
+                        consecutive_failures = 0  # Reset on success
+                    else:
+                        consecutive_failures += 1
 
                 except Exception as e:
                     consecutive_failures += 1
@@ -585,9 +693,11 @@ class FundamentalService:
         tasks = [_fetch_one(s) for s in symbols]
         await asyncio.gather(*tasks)
 
+        total_quarters = sum(len(v) for v in results.values())
         logger.info(
-            "CN Phase 2 (quarterly): %d/%d succeeded%s",
-            len(results), total,
+            "CN Phase 2 (quarterly): %d/%d symbols succeeded, "
+            "%d total quarter records%s",
+            len(results), total, total_quarters,
             " (aborted: Sina rate limit)" if aborted else "",
         )
         return results
@@ -800,6 +910,17 @@ class FundamentalService:
             data.get("operating_margin"),
             data.get("payout_ratio"),
             data.get("eps_growth"),
+            # Category 1: FCF/valuation ($27-$33)
+            data.get("fcf_margin"),
+            data.get("fcf_yield"),
+            data.get("capex_ratio"),
+            data.get("buyback_yield"),
+            data.get("ev_ebitda"),
+            data.get("rd_ratio"),
+            data.get("net_cash_ratio"),
+            # Short interest ($34-$35)
+            data.get("short_pct_float"),
+            data.get("short_ratio"),
             data_source,
         )
 
@@ -862,6 +983,650 @@ class FundamentalService:
         if market == "hk" and not symbol.endswith(".HK"):
             return f"{symbol}.HK"
         return symbol
+
+    # ------------------------------------------------------------------
+    # US/HK Quarterly Fundamental Backfill
+    # ------------------------------------------------------------------
+
+    async def _get_daily_closes(
+        self,
+        symbols: list[str],
+        start_date: date,
+        end_date: date,
+    ) -> dict[str, list[tuple[date, float]]]:
+        """Query daily close prices from stock_daily_bars via asyncpg.
+
+        Returns {symbol: [(date, close), ...]} sorted by date.
+        """
+        from app.core.settings_cache import settings_cache
+
+        pool = settings_cache.pool
+        if not pool:
+            logger.warning("DB pool not available for daily close lookup")
+            return {}
+
+        try:
+            async with pool.acquire(timeout=10) as conn:
+                rows = await conn.fetch(
+                    "SELECT symbol, date, close FROM stock_daily_bars "
+                    "WHERE symbol = ANY($1::text[]) AND date >= $2 AND date <= $3 "
+                    "ORDER BY symbol, date",
+                    symbols, start_date, end_date,
+                )
+        except Exception as e:
+            logger.error("Failed to query stock_daily_bars for close prices: %s", e)
+            return {}
+
+        result: dict[str, list[tuple[date, float]]] = defaultdict(list)
+        for row in rows:
+            close_val = _safe_float(row["close"])
+            if close_val is not None and close_val > 0:
+                result[row["symbol"]].append((row["date"], close_val))
+        return dict(result)
+
+    @staticmethod
+    def _find_closest_close(
+        closes: list[tuple[date, float]],
+        target_date: date,
+        max_offset_days: int = 10,
+    ) -> float | None:
+        """Find the closest daily close price to a target date.
+
+        Searches within +/- max_offset_days window. Returns the close
+        price of the bar with the smallest absolute date difference.
+        """
+        if not closes:
+            return None
+        best_close: float | None = None
+        best_diff = max_offset_days + 1
+        for bar_date, close_val in closes:
+            diff = abs((bar_date - target_date).days)
+            if diff < best_diff:
+                best_diff = diff
+                best_close = close_val
+        if best_diff > max_offset_days:
+            return None
+        return best_close
+
+    @staticmethod
+    def _find_closest_shares(
+        shares_series: "pd.Series",
+        target_date: date,
+        max_offset_days: int = 30,
+    ) -> float | None:
+        """Find closest shares outstanding value from get_shares_full() series.
+
+        shares_series has DatetimeIndex. Finds the entry with smallest
+        absolute date difference within max_offset_days.
+        """
+        if shares_series is None or shares_series.empty:
+            return None
+        # Strip timezone from index to avoid tz-naive/aware comparison errors
+        # (yfinance get_shares_full() returns tz-aware DatetimeIndex)
+        series_idx = shares_series.index
+        if hasattr(series_idx, "tz") and series_idx.tz is not None:
+            series_idx = series_idx.tz_localize(None)
+        target_ts = pd.Timestamp(target_date)
+        # Use searchsorted for efficiency on sorted index
+        pos = series_idx.searchsorted(target_ts)
+        candidates = []
+        if pos > 0:
+            candidates.append(pos - 1)
+        if pos < len(shares_series):
+            candidates.append(pos)
+        best_val: float | None = None
+        best_diff = max_offset_days + 1
+        for ci in candidates:
+            diff = abs((series_idx[ci] - target_ts).days)
+            if diff < best_diff:
+                best_diff = diff
+                val = _safe_float(shares_series.iloc[ci])
+                if val is not None and val > 0:
+                    best_val = val
+                    best_diff = diff
+        return best_val
+
+    @staticmethod
+    def _compute_ttm(
+        quarters_sorted: list[dict[str, Any]],
+        current_idx: int,
+        field_name: str,
+    ) -> float | None:
+        """Sum last 4 quarters of a field for TTM (Trailing Twelve Months).
+
+        Returns None if fewer than 4 quarters available or any value is None.
+        """
+        if current_idx < 3:
+            return None
+        vals = [
+            quarters_sorted[j].get(field_name)
+            for j in range(current_idx - 3, current_idx + 1)
+        ]
+        if all(v is not None for v in vals):
+            return sum(vals)  # type: ignore[arg-type]
+        return None
+
+    async def backfill_us_hk_quarterly(
+        self,
+        market: str,
+        symbols: list[str] | None = None,
+    ) -> dict[str, Any]:
+        """Backfill historical quarterly fundamentals for US/HK from yfinance.
+
+        Fetches quarterly_income_stmt and quarterly_balance_sheet from yfinance,
+        computes derived metrics (PE, PB, ROE, etc.) using the closest daily
+        close price from stock_daily_bars, and writes to stock_fundamentals.
+
+        Args:
+            market: 'us' or 'hk'.
+            symbols: Optional explicit symbol list. If None, resolved from
+                     prediction_universes default universe.
+
+        Returns:
+            Summary dict with success/fail/total counts.
+        """
+        import yfinance as yf
+
+        market = market.lower()
+        if market not in ("us", "hk"):
+            logger.warning("backfill_us_hk_quarterly: unsupported market=%s", market)
+            return {"market": market, "total": 0, "success": 0, "failed": 0, "rows": 0}
+
+        if symbols is None:
+            symbols = await self._resolve_symbols(market)
+
+        if not symbols:
+            logger.warning("No symbols to backfill for market=%s", market)
+            return {"market": market, "total": 0, "success": 0, "failed": 0, "rows": 0}
+
+        logger.info(
+            "Starting US/HK quarterly backfill: market=%s, symbols=%d",
+            market, len(symbols),
+        )
+
+        backfill_key = f"fundamentals:backfill:{market}:progress"
+        total = len(symbols)
+        await _set_backfill_progress(backfill_key, "starting", 0, total)
+
+        sem = asyncio.Semaphore(5)
+        batch_size = 20
+        all_rows: list[tuple] = []
+        success_count = 0
+        failed_count = 0
+
+        for batch_idx in range(0, len(symbols), batch_size):
+            batch = symbols[batch_idx: batch_idx + batch_size]
+
+            # Collect all quarter dates from this batch to query closes in bulk
+            # Each entry: (symbol, quarters, shares_full, dividends)
+            batch_quarter_data: list[tuple[str, list[dict[str, Any]], Any, Any]] = []
+
+            async def _fetch_one_quarterly(symbol: str) -> tuple[str, list[dict[str, Any]], Any, Any] | None:
+                async with sem:
+                    try:
+                        yf_symbol = self._normalize_us_symbol(symbol, market)
+                        quarters, shares_full, dividends = await asyncio.wait_for(
+                            asyncio.to_thread(
+                                self._fetch_yf_quarterly_statements, yf_symbol,
+                            ),
+                            timeout=30.0,
+                        )
+                        if quarters:
+                            return (symbol, quarters, shares_full, dividends)
+                        return None
+                    except Exception as e:
+                        logger.warning(
+                            "Failed to fetch quarterly statements for %s: %s",
+                            symbol, e,
+                        )
+                        return None
+                    finally:
+                        await asyncio.sleep(0.5)
+
+            # Fetch quarterly data for all symbols in this batch
+            fetch_tasks = [_fetch_one_quarterly(s) for s in batch]
+            fetch_results = await asyncio.gather(*fetch_tasks)
+
+            for res in fetch_results:
+                if res is not None:
+                    batch_quarter_data.append(res)
+
+            if not batch_quarter_data:
+                failed_count += len(batch)
+                completed = min(batch_idx + batch_size, total)
+                await _set_backfill_progress(backfill_key, "collecting", completed, total)
+                if batch_idx + batch_size < total:
+                    await asyncio.sleep(3.0)
+                continue
+
+            # Determine date range for daily close lookup
+            all_quarter_dates: list[date] = []
+            all_batch_symbols: list[str] = []
+            for sym, quarters, _sf, _dv in batch_quarter_data:
+                all_batch_symbols.append(sym)
+                for q in quarters:
+                    qd = q.get("quarter_date")
+                    if qd:
+                        all_quarter_dates.append(qd)
+
+            if all_quarter_dates:
+                min_date = min(all_quarter_dates) - timedelta(days=15)
+                max_date = max(all_quarter_dates) + timedelta(days=15)
+                daily_closes = await self._get_daily_closes(
+                    all_batch_symbols, min_date, max_date,
+                )
+            else:
+                daily_closes = {}
+
+            # Compute derived metrics and build rows
+            for symbol, quarters, shares_full, dividends in batch_quarter_data:
+                sym_closes = daily_closes.get(symbol, [])
+                symbol_rows = self._compute_quarterly_rows(
+                    symbol, market, quarters, sym_closes,
+                    shares_series=shares_full,
+                    dividends_series=dividends,
+                )
+                if symbol_rows:
+                    all_rows.extend(symbol_rows)
+                    success_count += 1
+                else:
+                    failed_count += 1
+
+            completed = min(batch_idx + batch_size, total)
+            await _set_backfill_progress(backfill_key, "collecting", completed, total)
+
+            # Batch delay
+            if batch_idx + batch_size < total:
+                logger.debug(
+                    "Backfill batch %d-%d done (%d rows so far), waiting 3s",
+                    batch_idx, batch_idx + len(batch), len(all_rows),
+                )
+                await asyncio.sleep(3.0)
+
+        # Write all rows to DB
+        written = 0
+        if all_rows:
+            await _set_backfill_progress(backfill_key, "writing", len(all_rows), len(all_rows))
+            written = await self._write_to_db(all_rows)
+
+        await _clear_backfill_progress(backfill_key)
+
+        logger.info(
+            "US/HK quarterly backfill complete: market=%s, "
+            "symbols=%d, success=%d, failed=%d, rows_written=%d",
+            market, total, success_count, failed_count, written,
+        )
+        return {
+            "market": market,
+            "total": total,
+            "success": success_count,
+            "failed": failed_count,
+            "rows": written,
+        }
+
+    @staticmethod
+    def _fetch_yf_quarterly_statements(yf_symbol: str) -> tuple[
+        list[dict[str, Any]],
+        "pd.Series | None",
+        "pd.Series | None",
+    ]:
+        """Fetch quarterly statements, shares history, and dividends from yfinance.
+
+        Synchronous — intended to be called via asyncio.to_thread().
+        Returns:
+            - List of dicts (one per quarter) with raw financial values
+            - Historical shares outstanding Series (from get_shares_full)
+            - Per-share dividend history Series (from ticker.dividends)
+        """
+        import yfinance as yf
+
+        ticker = yf.Ticker(yf_symbol)
+
+        # Fetch statements; yfinance returns DataFrames with dates as columns
+        try:
+            income_df = ticker.quarterly_income_stmt
+        except Exception as e:
+            logger.debug("quarterly_income_stmt failed for %s: %s", yf_symbol, e)
+            income_df = None
+
+        try:
+            balance_df = ticker.quarterly_balance_sheet
+        except Exception as e:
+            logger.debug("quarterly_balance_sheet failed for %s: %s", yf_symbol, e)
+            balance_df = None
+
+        # Cash flow — for dividend_paid (total amount, negative)
+        try:
+            cashflow_df = ticker.quarterly_cashflow
+        except Exception as e:
+            logger.debug("quarterly_cashflow failed for %s: %s", yf_symbol, e)
+            cashflow_df = None
+
+        # Historical shares outstanding — accurate for multi-class stocks
+        # (BRK-B, GOOG, META) where balance sheet Ordinary Shares Number is wrong
+        shares_full: pd.Series | None = None
+        try:
+            sf = ticker.get_shares_full(start="2022-01-01")
+            if sf is not None and not sf.empty:
+                shares_full = sf
+        except Exception as e:
+            logger.debug("get_shares_full failed for %s: %s", yf_symbol, e)
+
+        # Per-share dividend history (adjusted for splits)
+        dividends: pd.Series | None = None
+        try:
+            divs = ticker.dividends
+            if divs is not None and not divs.empty:
+                dividends = divs
+        except Exception as e:
+            logger.debug("dividends failed for %s: %s", yf_symbol, e)
+
+        if (income_df is None or income_df.empty) and (balance_df is None or balance_df.empty):
+            return [], shares_full, dividends
+
+        # Collect all available quarter dates from both statements
+        quarter_dates: set[Any] = set()
+        if income_df is not None and not income_df.empty:
+            quarter_dates.update(income_df.columns)
+        if balance_df is not None and not balance_df.empty:
+            quarter_dates.update(balance_df.columns)
+
+        results: list[dict[str, Any]] = []
+        for qdate in sorted(quarter_dates):
+            parsed_date = _parse_quarter_date(qdate)
+            if parsed_date is None:
+                continue
+
+            record: dict[str, Any] = {"quarter_date": parsed_date}
+
+            # Extract income statement fields
+            if income_df is not None and not income_df.empty and qdate in income_df.columns:
+                col = income_df[qdate]
+                record["net_income"] = _safe_float(col.get("Net Income"))
+                record["total_revenue"] = _safe_float(col.get("Total Revenue"))
+                record["basic_eps"] = _safe_float(
+                    col.get("Basic EPS") or col.get("Diluted EPS")
+                )
+                record["gross_profit"] = _safe_float(col.get("Gross Profit"))
+                record["operating_income"] = _safe_float(col.get("Operating Income"))
+                record["ebitda"] = _safe_float(col.get("EBITDA"))
+                # Category 1: R&D expense
+                record["rd_expense"] = _safe_float(col.get("Research And Development"))
+
+            # Extract balance sheet fields
+            if balance_df is not None and not balance_df.empty and qdate in balance_df.columns:
+                col = balance_df[qdate]
+                record["stockholders_equity"] = _safe_float(
+                    col.get("Stockholders Equity") or col.get("Total Equity Gross Minority Interest")
+                )
+                record["total_debt"] = _safe_float(
+                    col.get("Total Debt") or col.get("Net Debt")
+                )
+                record["current_assets"] = _safe_float(col.get("Current Assets"))
+                record["current_liabilities"] = _safe_float(col.get("Current Liabilities"))
+                record["total_assets"] = _safe_float(col.get("Total Assets"))
+                record["ordinary_shares"] = _safe_float(col.get("Ordinary Shares Number"))
+
+            # Extract cash flow fields
+            if cashflow_df is not None and not cashflow_df.empty and qdate in cashflow_df.columns:
+                col = cashflow_df[qdate]
+                record["dividend_paid"] = _safe_float(
+                    col.get("Common Stock Dividend Paid") or col.get("Cash Dividends Paid")
+                )
+                # Category 1: FCF and related fields
+                # yfinance provides a direct "Free Cash Flow" row in quarterly_cashflow
+                record["free_cash_flow"] = _safe_float(col.get("Free Cash Flow"))
+                record["capital_expenditure"] = _safe_float(col.get("Capital Expenditure"))
+                record["repurchase"] = _safe_float(
+                    col.get("Repurchase Of Capital Stock") or col.get("Common Stock Repurchase")
+                )
+                record["cash_end"] = _safe_float(col.get("End Cash Position"))
+
+            results.append(record)
+
+        return results, shares_full, dividends
+
+    def _compute_quarterly_rows(
+        self,
+        symbol: str,
+        market: str,
+        quarters: list[dict[str, Any]],
+        sym_closes: list[tuple[date, float]],
+        shares_series: "pd.Series | None" = None,
+        dividends_series: "pd.Series | None" = None,
+    ) -> list[tuple]:
+        """Compute derived fundamental metrics for each quarter and build DB rows.
+
+        Uses the closest daily close price for valuation ratios (P/E, P/B, P/S).
+        Uses get_shares_full() for accurate shares outstanding (handles
+        multi-class stocks like BRK-B, GOOG, META correctly).
+        Uses ticker.dividends for per-share dividend history.
+        Uses quarterly_cashflow for total dividend paid (payout ratio).
+        """
+        rows: list[tuple] = []
+
+        # Sort quarters by date for TTM calculations
+        quarters_sorted = sorted(quarters, key=lambda q: q.get("quarter_date", date.min))
+
+        for i, quarter in enumerate(quarters_sorted):
+            quarter_date = quarter.get("quarter_date")
+            if not quarter_date:
+                continue
+
+            close_price = self._find_closest_close(sym_closes, quarter_date)
+
+            net_income = quarter.get("net_income")
+            total_revenue = quarter.get("total_revenue")
+            basic_eps = quarter.get("basic_eps")
+            gross_profit = quarter.get("gross_profit")
+            operating_income = quarter.get("operating_income")
+            equity = quarter.get("stockholders_equity")
+            total_debt = quarter.get("total_debt")
+            current_assets = quarter.get("current_assets")
+            current_liabilities = quarter.get("current_liabilities")
+            total_assets = quarter.get("total_assets")
+
+            # --- Shares outstanding (3-tier fallback) ---
+            # 1. get_shares_full(): accurate for all stocks incl. multi-class
+            # 2. Ordinary Shares Number: from balance sheet (wrong for BRK-B/GOOG)
+            # 3. net_income / basic_eps: last resort approximation
+            shares: float | None = None
+            if shares_series is not None:
+                shares = self._find_closest_shares(shares_series, quarter_date)
+            if shares is None:
+                shares = quarter.get("ordinary_shares")
+            if shares is None and basic_eps and basic_eps != 0 and net_income and net_income != 0:
+                approx = net_income / basic_eps
+                if approx > 0:
+                    shares = approx
+
+            # --- TTM calculations ---
+            ttm_eps = self._compute_ttm(quarters_sorted, i, "basic_eps")
+            ttm_net_income = self._compute_ttm(quarters_sorted, i, "net_income")
+            ttm_revenue = self._compute_ttm(quarters_sorted, i, "total_revenue")
+
+            # Compute derived metrics with safe division
+            data: dict[str, float | None] = {}
+
+            # P/E ratio: close / TTM_EPS
+            if close_price is not None:
+                eps_for_pe = ttm_eps
+                if eps_for_pe is None and basic_eps is not None and basic_eps != 0:
+                    eps_for_pe = basic_eps * 4  # Annualize single quarter
+                data["pe_ratio"] = _safe_divide(close_price, eps_for_pe)
+
+            # P/B ratio: close / (equity / shares) — using real shares
+            book_value_per_share = _safe_divide(equity, shares)
+            if close_price is not None and book_value_per_share is not None:
+                data["pb_ratio"] = _safe_divide(close_price, book_value_per_share)
+
+            # P/S ratio: close / (TTM_revenue / shares)
+            if close_price is not None and shares is not None:
+                rev_for_ps = ttm_revenue
+                if rev_for_ps is None and total_revenue is not None:
+                    rev_for_ps = total_revenue * 4  # Annualize fallback
+                revenue_per_share = _safe_divide(rev_for_ps, shares)
+                data["ps_ratio"] = _safe_divide(close_price, revenue_per_share)
+
+            # Market cap: close × shares
+            if close_price is not None and shares is not None:
+                data["market_cap"] = close_price * shares
+
+            # ROE, ROA — use TTM net income to match yfinance .info
+            roe_income = ttm_net_income if ttm_net_income is not None else (
+                net_income * 4 if net_income is not None else None
+            )
+            data["roe"] = _safe_divide(roe_income, equity)
+            data["roa"] = _safe_divide(roe_income, total_assets)
+
+            # Margin ratios
+            data["profit_margin"] = _safe_divide(net_income, total_revenue)
+            data["operating_margin"] = _safe_divide(operating_income, total_revenue)
+            data["gross_margin"] = _safe_divide(gross_profit, total_revenue)
+
+            # Balance sheet ratios
+            data["current_ratio"] = _safe_divide(current_assets, current_liabilities)
+            data["debt_to_equity"] = _safe_divide(total_debt, equity)
+
+            # EPS: use TTM (matching yfinance .info)
+            if ttm_eps is not None:
+                data["eps"] = ttm_eps
+            elif basic_eps is not None:
+                data["eps"] = basic_eps * 4  # Annualize single quarter as fallback
+            data["net_income"] = net_income
+            data["revenue"] = total_revenue
+            if book_value_per_share is not None:
+                data["book_value"] = book_value_per_share
+
+            # Revenue growth YoY: compare same quarter last year (i-4)
+            if i >= 4:
+                prev_rev = quarters_sorted[i - 4].get("total_revenue")
+                if prev_rev and prev_rev != 0 and total_revenue is not None:
+                    data["revenue_growth_yoy"] = (total_revenue - prev_rev) / abs(prev_rev)
+
+            # EPS growth YoY: compare same quarter last year (i-4)
+            if i >= 4:
+                prev_eps = quarters_sorted[i - 4].get("basic_eps")
+                if prev_eps and prev_eps != 0 and basic_eps is not None:
+                    data["eps_growth"] = (basic_eps - prev_eps) / abs(prev_eps)
+
+            # Dividend yield / rate from ticker.dividends (per-share, split-adjusted)
+            if dividends_series is not None and not dividends_series.empty:
+                end_dt = pd.Timestamp(quarter_date)
+                start_dt = end_dt - pd.Timedelta(days=365)
+                # Strip timezone from dividends index (yfinance returns tz-aware)
+                div_idx = dividends_series.index
+                if hasattr(div_idx, "tz") and div_idx.tz is not None:
+                    div_idx = div_idx.tz_localize(None)
+                mask = (div_idx >= start_dt) & (div_idx <= end_dt)
+                ttm_div_per_share = float(dividends_series.loc[mask].sum())
+                if ttm_div_per_share > 0:
+                    data["dividend_rate"] = ttm_div_per_share
+                    if close_price is not None and close_price > 0:
+                        data["dividend_yield"] = ttm_div_per_share / close_price
+
+            # Payout ratio: TTM dividends paid / TTM net income
+            if i >= 3 and ttm_net_income is not None and ttm_net_income > 0:
+                div_vals = [
+                    quarters_sorted[j].get("dividend_paid")
+                    for j in range(i - 3, i + 1)
+                ]
+                if all(v is not None for v in div_vals):
+                    ttm_div_paid = abs(sum(div_vals))  # type: ignore[arg-type]
+                    if ttm_div_paid > 0:
+                        data["payout_ratio"] = ttm_div_paid / ttm_net_income
+
+            # --- Category 1: FCF / valuation ratios ---
+            ttm_ebitda = self._compute_ttm(quarters_sorted, i, "ebitda")
+
+            # FCF: yfinance "Free Cash Flow" is already a quarterly figure;
+            # sum 4 quarters for TTM.
+            ttm_fcf = self._compute_ttm(quarters_sorted, i, "free_cash_flow")
+
+            # fcf_margin: TTM FCF / TTM revenue
+            data["fcf_margin"] = _safe_divide(ttm_fcf, ttm_revenue)
+
+            # fcf_yield: TTM FCF / market cap
+            data["fcf_yield"] = _safe_divide(ttm_fcf, data.get("market_cap"))
+
+            # capex_ratio: |CapEx| / TTM revenue  (CapEx is negative in yfinance)
+            capex = quarter.get("capital_expenditure")
+            if capex is not None:
+                data["capex_ratio"] = _safe_divide(abs(capex), ttm_revenue)
+
+            # buyback_yield: |Repurchase| / market cap (Repurchase is negative)
+            repurchase = quarter.get("repurchase")
+            if repurchase is not None:
+                data["buyback_yield"] = _safe_divide(
+                    abs(repurchase), data.get("market_cap"),
+                )
+
+            # ev_ebitda: (market_cap + total_debt - cash) / TTM EBITDA
+            cash_end = quarter.get("cash_end")
+            mkt_cap = data.get("market_cap")
+            if (
+                mkt_cap is not None
+                and total_debt is not None
+                and cash_end is not None
+                and ttm_ebitda is not None
+                and ttm_ebitda != 0
+            ):
+                ev = mkt_cap + total_debt - cash_end
+                data["ev_ebitda"] = _safe_divide(ev, ttm_ebitda)
+
+            # rd_ratio: R&D expense / TTM revenue (R&D is a quarterly figure)
+            rd_expense = quarter.get("rd_expense")
+            data["rd_ratio"] = _safe_divide(rd_expense, ttm_revenue)
+
+            # net_cash_ratio: (cash - total_debt) / market_cap
+            if mkt_cap is not None and total_debt is not None and cash_end is not None:
+                data["net_cash_ratio"] = _safe_divide(cash_end - total_debt, mkt_cap)
+
+            # Skip if we have essentially no data
+            non_none = sum(1 for v in data.values() if v is not None)
+            if non_none < 2:
+                continue
+
+            rows.append(self._build_row(
+                symbol=symbol,
+                market=market,
+                record_date=quarter_date,
+                data=data,
+                data_source="yfinance_quarterly",
+            ))
+
+        return rows
+
+
+# -----------------------------------------------------------------------
+# Backfill progress helpers (separate from daily collection progress)
+# -----------------------------------------------------------------------
+
+
+async def _set_backfill_progress(key: str, phase: str, current: int, total: int) -> None:
+    """Write backfill progress to Redis DB 0."""
+    try:
+        r = await _get_progress_redis()
+        percent = int(current / total * 100) if total > 0 else 0
+        data = json.dumps({
+            "phase": phase,
+            "current": current,
+            "total": total,
+            "percent": percent,
+            "updatedAt": datetime.now(timezone.utc).isoformat(),
+        })
+        await r.set(key, data, ex=7200)  # 2h TTL (backfill takes longer)
+    except Exception as e:
+        logger.debug("Failed to set backfill progress: %s", e)
+
+
+async def _clear_backfill_progress(key: str) -> None:
+    """Remove backfill progress key from Redis DB 0."""
+    try:
+        r = await _get_progress_redis()
+        await r.delete(key)
+    except Exception as e:
+        logger.debug("Failed to clear backfill progress: %s", e)
 
 
 # Module singleton

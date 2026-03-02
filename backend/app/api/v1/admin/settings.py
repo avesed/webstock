@@ -27,6 +27,7 @@ from app.schemas.admin import (
     NewsConfig,
     Phase2Config,
     Phase2ModelAssignment,
+    PredictionConfig,
     SystemConfigResponse,
     SystemMonitorStatsResponse,
     SystemResourceStats,
@@ -450,6 +451,11 @@ async def get_system_config(
             provider_id=str(settings.discussion_provider_id) if settings.discussion_provider_id else None,
             model=settings.discussion_model or "gpt-4o",
         ),
+        prediction=PredictionConfig(
+            enabled=settings.prediction_enabled,
+            provider_id=str(settings.prediction_provider_id) if settings.prediction_provider_id else None,
+            model=settings.prediction_model or "gpt-4o-mini",
+        ),
     )
 
 
@@ -614,6 +620,19 @@ async def update_system_config(
             settings.discussion_model = d.model or None
         if d.provider_id is not None:
             settings.discussion_provider_id = UUID(d.provider_id) if d.provider_id else None
+
+    # Update prediction settings
+    if data.prediction:
+        p = data.prediction
+        if p.enabled is not None:
+            settings.prediction_enabled = p.enabled
+        if p.model is not None:
+            settings.prediction_model = p.model or None
+        if p.provider_id is not None:
+            if p.provider_id == "" or p.provider_id == "null":
+                settings.prediction_provider_id = None
+            else:
+                settings.prediction_provider_id = UUID(p.provider_id)
 
     settings.updated_at = datetime.now(timezone.utc)
     settings.updated_by = admin.id
@@ -895,6 +914,8 @@ async def delete_llm_provider(
         active_assignments.append("content_extraction")
     if settings.discussion_provider_id == provider_id:
         active_assignments.append("discussion")
+    if settings.prediction_provider_id == provider_id:
+        active_assignments.append("prediction")
 
     if active_assignments:
         raise HTTPException(

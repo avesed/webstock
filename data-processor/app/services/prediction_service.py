@@ -75,21 +75,38 @@ DIRECTION_UP_THRESHOLD = 0.70
 DIRECTION_DOWN_THRESHOLD = 0.30
 
 # LightGBM default hyperparameters (lambdarank objective)
+# Tuned for cross-sectional stock ranking with ~500 stocks/date:
+# - Moderate learning rate with regularization for stable learning
+# - Feature/bagging subsampling to reduce overfitting
+# - L2 regularization prevents fitting to noise
 _DEFAULT_LGB_PARAMS: dict[str, Any] = {
     "objective": "lambdarank",
     "metric": "ndcg",
     "ndcg_eval_at": [5, 10, 20],
-    "learning_rate": 0.05,
-    "num_leaves": 63,
-    "min_child_samples": 50,
-    "feature_fraction": 0.8,
+    # learning_rate 0.05→0.01: With correct cross-sectional groups (~387 stocks/date),
+    # each tree contributes a weaker signal than the old (buggy) temporal training.
+    # Lower LR allows the model to take smaller steps and explore more iterations
+    # before overfitting. Old params caused best_iter=7 (stopped at iter 57).
+    "learning_rate": 0.01,
+    # num_leaves 63→31: For ~387 stocks/date query size, 63 leaves allows leaves
+    # with just 6 stocks — too few for stable ranking signal. 31 leaves is
+    # more appropriate, requiring ~12+ stocks per leaf (min_child_samples=50 is still binding).
+    "num_leaves": 31,
+    "min_child_samples": 30,
+    "feature_fraction": 0.7,
     "bagging_fraction": 0.8,
-    "bagging_freq": 5,
+    "bagging_freq": 1,
+    # lambda_l2 0.1→1.0: Stronger regularization reduces memorization of
+    # specific stocks/dates in the training set.
+    "lambda_l2": 1.0,
     "verbose": -1,
 }
 
-_DEFAULT_NUM_BOOST_ROUND = 500
-_DEFAULT_EARLY_STOPPING = 50
+_DEFAULT_NUM_BOOST_ROUND = 1000
+# 100 rounds of patience (was 50): with LR=0.01, per-iteration improvement
+# is ~5x smaller, so we need more patience for the early stopping signal to
+# distinguish genuine improvement from NDCG estimation noise.
+_DEFAULT_EARLY_STOPPING = 100
 
 
 # ---------------------------------------------------------------------------
@@ -680,6 +697,24 @@ class PredictionService:
             task.message = f"Resolved {len(symbols)} symbols"
             task.progress = 10.0
 
+            # Step 1.5: Data freshness check
+            is_fresh, freshness_msg = self._check_data_freshness(market)
+            if not is_fresh:
+                logger.warning(
+                    "Skipping prediction for %s: %s", market, freshness_msg
+                )
+                task.status = "completed"
+                task.progress = 100.0
+                task.completed_at = datetime.now()
+                task.message = f"Skipped: {freshness_msg}"
+                task.results = {
+                    "market": market,
+                    "skipped": True,
+                    "reason": freshness_msg,
+                }
+                return
+            logger.info("Data freshness OK for %s: %s", market, freshness_msg)
+
             # Step 2: Check if retraining is needed
             today = date.today()
             model_id: Optional[Any] = None
@@ -1059,6 +1094,16 @@ class PredictionService:
         train_df = df[train_mask].copy()
         val_df = df[val_mask].copy()
 
+        # Sort by [date, symbol] so that lambdarank group boundaries align with rows.
+        # df was sorted by [symbol, date] for forward-return computation (shift per symbol),
+        # but lgb.Dataset(group=...) requires rows to be grouped consecutively by date:
+        # the first group[0] rows belong to date_0, next group[1] rows to date_1, etc.
+        # Without this sort, groupby("date").size() is date-ordered but rows are
+        # symbol-ordered, causing every group boundary to be wrong and NDCG to be
+        # garbage → early stopping at best_iter=2.
+        train_df = train_df.sort_values(["date", "symbol"]).reset_index(drop=True)
+        val_df = val_df.sort_values(["date", "symbol"]).reset_index(drop=True)
+
         logger.info(
             "Train/Val split: train=%d rows (%d dates), val=%d rows (%d dates), "
             "purge gap=%d days",
@@ -1081,9 +1126,11 @@ class PredictionService:
         X_val = val_df[feature_cols].values
         y_val = val_df["label"].values
 
-        # Group sizes for lambdarank (number of stocks per date)
-        train_group = train_df.groupby("date").size().values
-        val_group = val_df.groupby("date").size().values
+        # Group sizes for lambdarank (number of stocks per date).
+        # After sort_values(["date", "symbol"]), groupby("date") is date-ordered
+        # and rows are also date-grouped, so group sizes align with row order.
+        train_group = train_df.groupby("date", sort=True).size().values
+        val_group = val_df.groupby("date", sort=True).size().values
 
         task.message = f"Training LightGBM ({len(feature_cols)} features)"
         task.progress = 45.0
@@ -1461,14 +1508,49 @@ class PredictionService:
 
         inference_df["date"] = pd.to_datetime(inference_df["date"])
 
-        # Use only the latest date
-        latest_date = inference_df["date"].max()
+        # Pick the latest date that has adequate symbol coverage.
+        # Using max() alone is fragile: if Qlib data sync is partial,
+        # a few symbols may have a newer date than the rest, causing
+        # the filter to drop >99% of symbols.
+        date_symbol_counts = (
+            inference_df.groupby("date")["symbol"].nunique().sort_index()
+        )
+        max_date = date_symbol_counts.index.max()
+        max_date_count = date_symbol_counts.loc[max_date]
+        total_symbols = inference_df["symbol"].nunique()
+
+        if max_date_count >= total_symbols * 0.5:
+            # Max date covers ≥50% of symbols — safe to use
+            latest_date = max_date
+        else:
+            # Max date is sparse — fall back to the most recent date
+            # that covers ≥50% of symbols
+            threshold = total_symbols * 0.5
+            candidates = date_symbol_counts[date_symbol_counts >= threshold]
+            if candidates.empty:
+                # No date has good coverage; use the one with the most
+                latest_date = date_symbol_counts.idxmax()
+            else:
+                latest_date = candidates.index.max()
+            logger.warning(
+                "Max date %s has only %d/%d symbols (%.0f%%). "
+                "Using %s (%d symbols) instead.",
+                max_date.strftime("%Y-%m-%d"),
+                max_date_count,
+                total_symbols,
+                max_date_count / total_symbols * 100,
+                latest_date.strftime("%Y-%m-%d"),
+                date_symbol_counts.loc[latest_date],
+            )
+
         latest_df = inference_df[inference_df["date"] == latest_date].copy()
 
         logger.info(
-            "Inference data: %d symbols for date %s",
+            "Inference data: %d symbols for date %s (max_date=%s had %d symbols)",
             len(latest_df),
             latest_date.strftime("%Y-%m-%d"),
+            max_date.strftime("%Y-%m-%d"),
+            max_date_count,
         )
 
         if latest_df.empty:
@@ -2080,6 +2162,157 @@ class PredictionService:
             d["feature_importance_top30"] = None
             d.pop("metadata", None)
         return d
+
+
+    # ------------------------------------------------------------------
+    # Model file cleanup
+    # ------------------------------------------------------------------
+
+    async def cleanup_old_models(self) -> dict:
+        """Delete model files older than MODEL_RETENTION_DAYS.
+
+        Always keeps at least MODEL_MIN_QUALITY_KEEP quality-passed models
+        per market, even if they exceed the retention period.
+
+        Returns:
+            Summary dict with counts of deleted/kept directories.
+        """
+        from app.core.settings_cache import settings_cache
+
+        settings = get_settings()
+        retention_days = settings.MODEL_RETENTION_DAYS
+        min_keep = settings.MODEL_MIN_QUALITY_KEEP
+        base_dir = settings.PREDICTION_DATA_DIR
+        cutoff = date.today() - timedelta(days=retention_days)
+
+        pool = settings_cache.pool
+        deleted = 0
+        kept = 0
+        errors = 0
+
+        for market_dir in ("cn", "us", "hk"):
+            market_path = os.path.join(base_dir, market_dir)
+            if not os.path.isdir(market_path):
+                continue
+
+            # Query DB for quality-passed model dates to protect
+            protected_dates: set[str] = set()
+            if pool:
+                try:
+                    async with pool.acquire(timeout=10) as conn:
+                        rows = await conn.fetch(
+                            """SELECT TO_CHAR(model_date, 'YYYYMMDD') as d
+                            FROM prediction_models
+                            WHERE market = $1 AND quality_passed = TRUE
+                            ORDER BY model_date DESC
+                            LIMIT $2""",
+                            market_dir, min_keep,
+                        )
+                        protected_dates = {r["d"] for r in rows}
+                except Exception as e:
+                    logger.warning("Failed to query protected models for %s: %s", market_dir, e)
+
+            # Scan date directories
+            try:
+                date_dirs = sorted(os.listdir(market_path))
+            except OSError as e:
+                logger.warning("Cannot list %s: %s", market_path, e)
+                continue
+
+            for dirname in date_dirs:
+                dirpath = os.path.join(market_path, dirname)
+                if not os.path.isdir(dirpath):
+                    continue
+
+                # Protect quality-passed models
+                if dirname in protected_dates:
+                    kept += 1
+                    continue
+
+                # Parse date from dirname (YYYYMMDD)
+                try:
+                    dir_date = date(int(dirname[:4]), int(dirname[4:6]), int(dirname[6:8]))
+                except (ValueError, IndexError):
+                    continue
+
+                if dir_date < cutoff:
+                    try:
+                        import shutil
+                        shutil.rmtree(dirpath)
+                        deleted += 1
+                        logger.debug("Deleted old model dir: %s", dirpath)
+                    except OSError as e:
+                        logger.warning("Failed to delete %s: %s", dirpath, e)
+                        errors += 1
+                else:
+                    kept += 1
+
+        logger.info(
+            "Model cleanup: deleted=%d, kept=%d, errors=%d, retention=%dd",
+            deleted, kept, errors, retention_days,
+        )
+        return {"deleted": deleted, "kept": kept, "errors": errors}
+
+    # ------------------------------------------------------------------
+    # Data freshness check
+    # ------------------------------------------------------------------
+
+    def _check_data_freshness(self, market: str) -> tuple[bool, str]:
+        """Check if Qlib data is fresh enough for training.
+
+        Reads the last date from the Qlib calendar file and compares
+        with today. Returns (is_fresh, message).
+        """
+        settings = get_settings()
+        max_stale = settings.PREDICTION_MAX_STALE_DAYS
+        if max_stale <= 0:
+            return True, "Freshness check disabled"
+
+        # Map market to Qlib data dir
+        market_map = {"cn": "cn_data", "us": "us_data", "hk": "hk_data"}
+        qlib_market = market_map.get(market)
+        if not qlib_market:
+            return True, f"Unknown market {market}, skipping freshness check"
+
+        calendar_path = os.path.join(
+            settings.QLIB_DATA_DIR, qlib_market, "calendars", "day.txt"
+        )
+
+        if not os.path.exists(calendar_path):
+            return False, f"Calendar file not found: {calendar_path}"
+
+        try:
+            with open(calendar_path) as f:
+                lines = f.read().strip().splitlines()
+            if not lines:
+                return False, "Calendar file is empty"
+
+            last_date_str = lines[-1].strip()
+            last_date = date.fromisoformat(last_date_str)
+        except Exception as e:
+            return False, f"Failed to parse calendar: {e}"
+
+        today = date.today()
+        gap_days = (today - last_date).days
+
+        # Convert calendar days to approximate trading days (5/7 ratio)
+        approx_trading_gap = int(gap_days * 5 / 7)
+
+        if approx_trading_gap > max_stale:
+            return False, (
+                f"Qlib data stale: last_date={last_date_str}, "
+                f"gap={gap_days}d (~{approx_trading_gap} trading days), "
+                f"threshold={max_stale} trading days"
+            )
+
+        if approx_trading_gap >= max_stale - 2:
+            logger.info(
+                "Qlib data approaching staleness: market=%s, last_date=%s, "
+                "gap=%dd (~%d trading days)",
+                market, last_date_str, gap_days, approx_trading_gap,
+            )
+
+        return True, f"Data fresh: last_date={last_date_str}, gap={gap_days}d"
 
 
 # ---------------------------------------------------------------------------

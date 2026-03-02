@@ -194,6 +194,13 @@
       "maxRounds": "Max Debate Rounds",
       "maxRoundsHint": "Maximum number of debate rounds between moderator and experts (1-5). Default: 3",
       "model": "Discussion Model"
+    },
+    "prediction": {
+      "title": "AI Prediction",
+      "description": "ML model auto-training and stock ranking prediction",
+      "enabled": "Enable AI Prediction",
+      "enabledDescription": "When enabled, models are trained on schedule and predictions generated automatically",
+      "model": "Prediction Model"
     }
   },
   "monitor": {

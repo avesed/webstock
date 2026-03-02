@@ -24,6 +24,7 @@ Architecture:
 - Redis DB 3 for factor caching, backtest progress, sync status
 """
 
+import asyncio
 import logging
 import os
 import sys
@@ -152,6 +153,28 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             except Exception as e:
                 logger.error("Scheduled backfill_returns failed: %s", e, exc_info=True)
 
+        # Qlib data sync (after data-service daily bar collection)
+        # data-service collects bars at CN 08:00, HK 09:00, US 22:00, Metal 22:30.
+        # Sync runs 15 min later to ensure collection has finished.
+        async def _sync_qlib(market: str) -> None:
+            try:
+                from app.services.data_sync import DataSyncService
+                svc = DataSyncService()
+                result = await svc.sync_market(market, update_only=True)
+                logger.info(
+                    "Scheduled Qlib sync for %s: %d symbols in %.1fs",
+                    market,
+                    result.get("symbol_count", 0),
+                    result.get("duration_s", 0),
+                )
+            except Exception as e:
+                logger.error("Scheduled Qlib sync failed for %s: %s", market, e, exc_info=True)
+
+        scheduler.add_job(_sync_qlib, 'cron', args=['cn'], hour=8, minute=15, id='sync_qlib_cn')
+        scheduler.add_job(_sync_qlib, 'cron', args=['hk'], hour=9, minute=15, id='sync_qlib_hk')
+        scheduler.add_job(_sync_qlib, 'cron', args=['us'], hour=22, minute=15, id='sync_qlib_us')
+        scheduler.add_job(_sync_qlib, 'cron', args=['metal'], hour=22, minute=45, id='sync_qlib_metal')
+
         # Fundamental collection (after market close)
         scheduler.add_job(_guarded_fundamentals, 'cron', args=['cn'], hour=8, minute=30, id='collect_fundamentals_cn')
         scheduler.add_job(_guarded_fundamentals, 'cron', args=['hk'], hour=9, minute=30, id='collect_fundamentals_hk')
@@ -164,6 +187,54 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
         # Daily return backfill
         scheduler.add_job(_backfill_returns, 'cron', hour=0, minute=0, id='backfill_returns')
+
+        # Market signals: analyst snapshots + options flow + earnings events
+        # Runs after US/HK market close, along with fundamental collection.
+        async def _collect_market_signals(market: str) -> None:
+            """Collect analyst snapshots, options flow, and earnings events."""
+            try:
+                from app.services.fundamental_service import fundamental_service as _fs
+                from app.services.analyst_service import analyst_service as _as
+                from app.services.options_service import options_service as _os
+                from app.services.earnings_service import earnings_service as _es
+
+                symbols = await _fs._resolve_symbols(market)
+                if not symbols:
+                    logger.warning("No symbols for market signal collection: %s", market)
+                    return
+
+                await asyncio.gather(
+                    _es.collect_earnings_events(market, symbols),
+                    _as.collect_analyst_snapshots(market, symbols),
+                    _os.collect_options_flow(market, symbols),
+                    return_exceptions=True,
+                )
+                logger.info("Market signal collection done for %s", market)
+            except Exception as e:
+                logger.error(
+                    "Market signal collection failed for %s: %s", market, e, exc_info=True,
+                )
+
+        # US signals: 23:45 UTC (after US fundamental collection at 22:30)
+        # HK signals: 10:00 UTC (after HK fundamental collection at 09:30)
+        scheduler.add_job(
+            _collect_market_signals, 'cron', args=['us'],
+            hour=23, minute=45, id='collect_signals_us',
+        )
+        scheduler.add_job(
+            _collect_market_signals, 'cron', args=['hk'],
+            hour=10, minute=0, id='collect_signals_hk',
+        )
+
+        # Model file cleanup (daily 1:00 UTC)
+        async def _cleanup_models() -> None:
+            try:
+                from app.services.prediction_service import prediction_service
+                await prediction_service.cleanup_old_models()
+            except Exception as e:
+                logger.error("Model cleanup failed: %s", e, exc_info=True)
+
+        scheduler.add_job(_cleanup_models, 'cron', hour=1, minute=0, id='cleanup_models')
 
         scheduler.start()
         logger.info("APScheduler started with %d jobs", len(scheduler.get_jobs()))

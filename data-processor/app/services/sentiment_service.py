@@ -34,6 +34,8 @@ SENTIMENT_FEATURE_COLUMNS = [
     "article_count_7d",
     "bullish_ratio_7d",
     "sentiment_volatility_7d",
+    "has_news_7d",
+    "has_news_30d",
 ]
 
 # Query raw daily aggregates from news table.
@@ -211,7 +213,7 @@ class SentimentService:
         (sentiment=0, count=0) before computing rolling windows.
         """
         if raw_df.empty:
-            # 没有新闻数据: 返回全零 neutral DataFrame
+            # 没有新闻数据: 返回 NaN-filled DataFrame (LightGBM handles NaN natively)
             return self._build_neutral_frame(symbols, start_date, end_date)
 
         full_dates = pd.date_range(start=start_date, end=end_date, freq="D")
@@ -223,18 +225,25 @@ class SentimentService:
                 symbol_df = raw_df.loc[mask].copy()
                 symbol_df = symbol_df.set_index("date").sort_index()
             else:
-                # 该股票完全没有新闻
-                symbol_df = pd.DataFrame(index=pd.DatetimeIndex([], name="date"))
+                # 该股票完全没有新闻 — 创建带列名的空 DataFrame
+                # 避免 reindex 后缺少列导致 KeyError
+                symbol_df = pd.DataFrame(
+                    index=pd.DatetimeIndex([], name="date"),
+                    columns=["sentiment_avg", "article_count", "bullish_ratio", "content_score_avg"],
+                )
 
-            # 对齐到完整日期范围, 无新闻日填充中性值
+            # 对齐到完整日期范围
             symbol_df = symbol_df.reindex(full_dates)
             symbol_df["symbol"] = symbol
-            symbol_df["sentiment_avg"] = symbol_df["sentiment_avg"].fillna(0.0)
-            symbol_df["article_count"] = symbol_df["article_count"].fillna(0.0)
-            symbol_df["bullish_ratio"] = symbol_df["bullish_ratio"].fillna(0.0)
-            symbol_df["content_score_avg"] = symbol_df["content_score_avg"].fillna(0.0)
 
-            # 滚动窗口特征
+            # article_count: 无新闻日 = 0 (确实没有文章)
+            symbol_df["article_count"] = symbol_df["article_count"].fillna(0.0)
+
+            # sentiment_avg, bullish_ratio, content_score_avg: 保留 NaN
+            # LightGBM 原生支持 NaN，能自动学习最佳分裂方向
+            # 不再 fillna(0.0)，避免 "无新闻" 与 "中性新闻" 混淆
+
+            # 滚动窗口特征 (NaN 会被 rolling 自动跳过)
             symbol_df["sentiment_7d_ma"] = (
                 symbol_df["sentiment_avg"].rolling(7, min_periods=1).mean()
             )
@@ -248,7 +257,15 @@ class SentimentService:
                 symbol_df["bullish_ratio"].rolling(7, min_periods=1).mean()
             )
             symbol_df["sentiment_volatility_7d"] = (
-                symbol_df["sentiment_avg"].rolling(7, min_periods=2).std().fillna(0.0)
+                symbol_df["sentiment_avg"].rolling(7, min_periods=2).std()
+            )
+
+            # has_news: 显式布尔特征，让模型学习 "有新闻" vs "无新闻"
+            symbol_df["has_news_7d"] = (
+                symbol_df["article_count"].rolling(7, min_periods=1).sum().gt(0).astype(float)
+            )
+            symbol_df["has_news_30d"] = (
+                symbol_df["article_count"].rolling(30, min_periods=1).sum().gt(0).astype(float)
             )
 
             symbol_df = symbol_df.reset_index().rename(columns={"index": "date"})
@@ -268,14 +285,26 @@ class SentimentService:
     def _build_neutral_frame(
         symbols: list[str], start_date: str, end_date: str
     ) -> pd.DataFrame:
-        """Build an all-neutral DataFrame when no news data exists."""
+        """Build a DataFrame when no news data exists.
+
+        article_count and has_news fields are 0 (factual: no articles).
+        Sentiment fields are NaN (unknown: no data to derive sentiment from).
+        """
+        import numpy as np
+
         dates = pd.date_range(start=start_date, end=end_date, freq="D")
+        # Fields that are NaN when no news exists (sentiment is unknown)
+        nan_cols = {
+            "sentiment_avg", "bullish_ratio", "content_score_avg",
+            "sentiment_7d_ma", "sentiment_30d_ma",
+            "bullish_ratio_7d", "sentiment_volatility_7d",
+        }
         rows = []
         for symbol in symbols:
             for d in dates:
-                row = {"symbol": symbol, "date": d}
+                row: dict = {"symbol": symbol, "date": d}
                 for col in SENTIMENT_FEATURE_COLUMNS:
-                    row[col] = 0.0
+                    row[col] = np.nan if col in nan_cols else 0.0
                 rows.append(row)
         return pd.DataFrame(rows) if rows else pd.DataFrame()
 

@@ -232,6 +232,38 @@ class PredictionClient:
             timeout=httpx.Timeout(30.0, connect=10.0),
         )
 
+    async def backfill_fundamentals(self, market: str) -> Dict[str, Any]:
+        """Trigger historical quarterly fundamental backfill for US/HK market.
+
+        This is a long-running background operation on data-processor.
+        The endpoint returns immediately; progress is tracked via Redis.
+        """
+        return await self._request(
+            "POST", f"/predictions/fundamentals/backfill/{market}",
+            timeout=httpx.Timeout(30.0, connect=10.0),
+        )
+
+    async def collect_earnings(self, market: str) -> Dict[str, Any]:
+        """Trigger EPS surprise event collection for a market."""
+        return await self._request(
+            "POST", f"/predictions/earnings/collect/{market}",
+            timeout=httpx.Timeout(30.0, connect=10.0),
+        )
+
+    async def collect_analyst(self, market: str) -> Dict[str, Any]:
+        """Trigger analyst snapshot + insider activity collection for a market."""
+        return await self._request(
+            "POST", f"/predictions/analyst/collect/{market}",
+            timeout=httpx.Timeout(30.0, connect=10.0),
+        )
+
+    async def collect_options(self, market: str) -> Dict[str, Any]:
+        """Trigger options put/call ratio collection for a market (US only)."""
+        return await self._request(
+            "POST", f"/predictions/options/collect/{market}",
+            timeout=httpx.Timeout(30.0, connect=10.0),
+        )
+
 
 async def get_prediction_client() -> "PredictionClient":
     """Get the singleton PredictionClient instance (async-safe)."""

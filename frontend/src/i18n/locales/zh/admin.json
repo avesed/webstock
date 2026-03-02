@@ -194,6 +194,13 @@
       "maxRounds": "最大辩论轮次",
       "maxRoundsHint": "主持人与专家之间的最大辩论轮数（1-5），默认: 3",
       "model": "讨论模型"
+    },
+    "prediction": {
+      "title": "AI预测",
+      "description": "ML模型自动训练和股票排名预测",
+      "enabled": "启用AI预测",
+      "enabledDescription": "开启后将按计划自动训练模型并生成预测",
+      "model": "预测模型"
     }
   },
   "monitor": {

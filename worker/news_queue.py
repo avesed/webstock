@@ -32,7 +32,7 @@ async def enqueue_process_article(
     url: str,
     source: str = "",
     file_path: Optional[str] = None,
-    market: str = "US",
+    market: str = "us",
     symbol: str = "",
     title: str = "",
     summary: str = "",
@@ -45,6 +45,7 @@ async def enqueue_process_article(
 
     Returns the new queue length.
     """
+    market = market.lower()
     message = {
         "task_type": "process_article",
         "news_id": news_id,

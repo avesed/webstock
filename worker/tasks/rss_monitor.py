@@ -209,7 +209,7 @@ async def _monitor_rss_feeds_async() -> Dict[str, Any]:
                             "summary": a.summary or "",
                             "source": a.source or "unknown",
                             "symbol": a.symbol or "",
-                            "market": a.market or "US",
+                            "market": (a.market or "us").lower(),
                             "published_at": a.published_at.isoformat() if a.published_at else None,
                         }
                         for a in all_new_articles if a.url in timed_out_url_set
@@ -309,7 +309,7 @@ async def _monitor_rss_feeds_async() -> Dict[str, Any]:
                             batch.append({
                                 "news_id": str(news_obj.id),
                                 "url": news_obj.url,
-                                "market": news_obj.market or "US",
+                                "market": (news_obj.market or "us").lower(),
                                 "symbol": news_obj.symbol or "",
                                 "title": news_obj.title or "",
                                 "summary": news_obj.summary or "",

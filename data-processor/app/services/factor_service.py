@@ -62,6 +62,31 @@ SINGLE_STOCK_FEATURES = [
     "Sum(If($close>Ref($close,1),1,0),20)/20",
     # Delta features
     "Delta(Mean($close,5),5)", "Delta(Mean($close,10),5)",
+    # === Additional high-alpha factors ===
+    # Medium-term momentum (Jegadeesh-Titman — critical for US equities)
+    "Ref($close,60)/$close",
+    # Longer-term trend
+    "$close/Mean($close,60)",
+    # Return volatility (realized vol, different from price std)
+    "Std(($close-Ref($close,1))/Ref($close,1)+1e-8,20)",
+    "Std(($close-Ref($close,1))/Ref($close,1)+1e-8,60)",
+    # Max drawdown (downside risk)
+    "Min($close,20)/Max($close,20)",
+    "Min($close,60)/Max($close,60)",
+    # Amihud illiquidity proxy: |daily return| / relative volume
+    "Mean(Abs(($close-Ref($close,1))/$close)/($volume/Mean($volume,20)+1e-8),20)",
+    # Return-volume correlation (smart money flow)
+    "Corr(($close-Ref($close,1))/$close,$volume,10)",
+    "Corr(($close-Ref($close,1))/$close,$volume,20)",
+    # RSI-like: ratio of up-move magnitude to total move magnitude
+    "Sum(If($close>Ref($close,1),$close-Ref($close,1),0),14)/(Sum(Abs($close-Ref($close,1)),14)+1e-8)",
+    # MA crossover signals (trend change detection)
+    "EMA($close,5)/EMA($close,20)",
+    "EMA($close,12)/EMA($close,26)",
+    # Volume kurtosis (distribution tail risk)
+    "Kurt($volume,20)",
+    # Longer-term volatility context
+    "Std($close,20)/Std($close,60)",
 ]
 
 # Human-readable names for the features above (1:1 positional mapping)
@@ -91,6 +116,17 @@ FEATURE_NAMES = [
     "hl_range5", "hl_range20",
     "up_ratio5", "up_ratio10", "up_ratio20",
     "delta_ma5", "delta_ma10",
+    # Additional high-alpha factors
+    "ret60",
+    "close_ma60_ratio",
+    "return_vol20", "return_vol60",
+    "drawdown20", "drawdown60",
+    "amihud20",
+    "corr_ret_vol10", "corr_ret_vol20",
+    "rsi14",
+    "ema_cross_5_20", "ema_cross_12_26",
+    "vol_kurt20",
+    "vol_regime",
 ]
 
 

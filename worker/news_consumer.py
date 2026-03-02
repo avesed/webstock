@@ -260,7 +260,7 @@ class NewsConsumer:
             final_state = await run_news_pipeline(
                 news_id=message["news_id"],
                 url=message.get("url", ""),
-                market=message.get("market", "US"),
+                market=message.get("market", "us").lower(),
                 symbol=message.get("symbol", ""),
                 title=message.get("title", ""),
                 summary=message.get("summary", ""),

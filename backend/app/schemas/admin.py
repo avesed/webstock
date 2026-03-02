@@ -266,6 +266,14 @@ class DiscussionConfig(CamelModel):
     model: Optional[str] = None
 
 
+class PredictionConfig(CamelModel):
+    """ML prediction configuration."""
+
+    enabled: Optional[bool] = None
+    provider_id: Optional[str] = None
+    model: Optional[str] = None
+
+
 class SystemConfigResponse(CamelModel):
     """System configuration response matching frontend SystemConfig type."""
 
@@ -276,6 +284,7 @@ class SystemConfigResponse(CamelModel):
     model_assignments: Optional[ModelAssignmentsConfig] = None
     phase2: Optional[Phase2Config] = None
     discussion: Optional[DiscussionConfig] = None
+    prediction: Optional[PredictionConfig] = None
 
 
 class UpdateSystemConfigRequest(CamelModel):
@@ -288,6 +297,7 @@ class UpdateSystemConfigRequest(CamelModel):
     model_assignments: Optional[ModelAssignmentsConfig] = None
     phase2: Optional[Phase2Config] = None
     discussion: Optional[DiscussionConfig] = None
+    prediction: Optional[PredictionConfig] = None
 
 
 # ============== System Monitor Stats Schemas ==============

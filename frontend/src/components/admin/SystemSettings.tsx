@@ -20,7 +20,7 @@ import { ModelAssignments } from './ModelAssignments'
 import { useToast } from '@/hooks'
 import { adminApi } from '@/api/admin'
 import { cn } from '@/lib/utils'
-import type { SystemConfig, ModelAssignmentsConfig, LlmProvider, Phase2Config, DiscussionConfig } from '@/types'
+import type { SystemConfig, ModelAssignmentsConfig, LlmProvider, Phase2Config, DiscussionConfig, PredictionConfig } from '@/types'
 
 const DEFAULT_MODEL_ASSIGNMENTS: ModelAssignmentsConfig = {
   chat: { providerId: null, model: 'gpt-4o-mini' },
@@ -52,6 +52,12 @@ const DEFAULT_DISCUSSION_CONFIG: DiscussionConfig = {
   maxRounds: 3,
   providerId: null,
   model: 'gpt-4o',
+}
+
+const DEFAULT_PREDICTION_CONFIG: PredictionConfig = {
+  enabled: false,
+  providerId: null,
+  model: 'gpt-4o-mini',
 }
 
 const DEFAULT_CONFIG: SystemConfig = {
@@ -88,6 +94,7 @@ const DEFAULT_CONFIG: SystemConfig = {
   modelAssignments: DEFAULT_MODEL_ASSIGNMENTS,
   phase2: DEFAULT_PHASE2_CONFIG,
   discussion: DEFAULT_DISCUSSION_CONFIG,
+  prediction: DEFAULT_PREDICTION_CONFIG,
 }
 
 interface ToggleSwitchProps {
@@ -216,6 +223,7 @@ export function SystemSettings() {
         modelAssignments: config.modelAssignments ?? DEFAULT_MODEL_ASSIGNMENTS,
         phase2: config.phase2 ?? DEFAULT_PHASE2_CONFIG,
         discussion: config.discussion ?? DEFAULT_DISCUSSION_CONFIG,
+        prediction: config.prediction ?? DEFAULT_PREDICTION_CONFIG,
       })
       setHasNewsChanges(false)
       setHasFeaturesChanges(false)
@@ -332,6 +340,18 @@ export function SystemSettings() {
     setHasFeaturesChanges(true)
   }, [])
 
+  // Prediction config changes (from Features tab)
+  const handlePredictionChange = useCallback((key: keyof PredictionConfig, value: unknown) => {
+    setFormData((prev) => ({
+      ...prev,
+      prediction: {
+        ...(prev.prediction ?? DEFAULT_PREDICTION_CONFIG),
+        [key]: value,
+      },
+    }))
+    setHasFeaturesChanges(true)
+  }, [])
+
   // Cache changes (from Models tab)
   const handleCacheChange = useCallback(<K extends 'cacheEnabled' | 'cacheTtlMinutes'>(key: K, value: Phase2Config[K]) => {
     setFormData((prev) => ({
@@ -374,7 +394,7 @@ export function SystemSettings() {
   }
 
   const handleSaveFeatures = () => {
-    updateMutation.mutate({ features: formData.features, discussion: formData.discussion } as Partial<SystemConfig>, {
+    updateMutation.mutate({ features: formData.features, discussion: formData.discussion, prediction: formData.prediction } as Partial<SystemConfig>, {
       onSuccess: () => {
         queryClient.invalidateQueries({ queryKey: ['admin-system-config'] })
         toast({ title: t('settings.saved') })
@@ -434,6 +454,7 @@ export function SystemSettings() {
         ...prev,
         features: config.features,
         discussion: config.discussion ?? DEFAULT_DISCUSSION_CONFIG,
+        prediction: config.prediction ?? DEFAULT_PREDICTION_CONFIG,
       }))
       setHasFeaturesChanges(false)
     }
@@ -908,6 +929,40 @@ export function SystemSettings() {
                         providers={enabledProviders}
                         onProviderChange={(id) => handleDiscussionChange('providerId', id)}
                         onModelChange={(m) => handleDiscussionChange('model', m)}
+                        t={t}
+                      />
+                    )}
+                  </div>
+                </div>
+
+                {/* Prediction Config */}
+                <Separator className="my-4" />
+                <div className="space-y-4">
+                  <div>
+                    <h4 className="text-sm font-medium">{t('settings.prediction.title')}</h4>
+                    <p className="text-sm text-muted-foreground">{t('settings.prediction.description')}</p>
+                  </div>
+
+                  <div className="flex items-center justify-between">
+                    <div className="space-y-0.5">
+                      <Label>{t('settings.prediction.enabled')}</Label>
+                      <p className="text-sm text-muted-foreground">{t('settings.prediction.enabledDescription')}</p>
+                    </div>
+                    <ToggleSwitch
+                      checked={(formData.prediction ?? DEFAULT_PREDICTION_CONFIG).enabled}
+                      onCheckedChange={(checked) => handlePredictionChange('enabled', checked)}
+                    />
+                  </div>
+
+                  <div className={cn('space-y-4 transition-opacity', !(formData.prediction ?? DEFAULT_PREDICTION_CONFIG).enabled && 'opacity-50 pointer-events-none')}>
+                    {enabledProviders.length > 0 && (
+                      <ModelSelectorRow
+                        label={t('settings.prediction.model')}
+                        providerId={(formData.prediction ?? DEFAULT_PREDICTION_CONFIG).providerId}
+                        model={(formData.prediction ?? DEFAULT_PREDICTION_CONFIG).model}
+                        providers={enabledProviders}
+                        onProviderChange={(id) => handlePredictionChange('providerId', id)}
+                        onModelChange={(m) => handlePredictionChange('model', m)}
                         t={t}
                       />
                     )}
