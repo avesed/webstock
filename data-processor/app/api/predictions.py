@@ -50,11 +50,16 @@ async def get_latest_predictions(
     market: str,
     top_n: int = Query(50, ge=1, le=500),
     symbol: Optional[str] = Query(None),
+    forward_days: Optional[int] = Query(None, ge=0, le=60),
 ):
-    """Get the latest prediction results for a market."""
+    """Get the latest prediction results for a market.
+
+    When forward_days is specified, only return predictions for that horizon.
+    forward_days=0 returns combined multi-horizon signal.
+    """
     market = market.lower()
     results = await prediction_service.get_latest_predictions(
-        market=market, top_n=top_n, symbol=symbol,
+        market=market, top_n=top_n, symbol=symbol, forward_days=forward_days,
     )
     return {"market": market, "count": len(results), "predictions": results}
 
@@ -89,6 +94,18 @@ async def get_prediction_history(
     market = market.lower()
     history = await prediction_service.get_prediction_history(market=market, days=days)
     return {"market": market, "days": days, "count": len(history), "predictions": history}
+
+
+@router.get("/{market}/accuracy")
+async def get_accuracy(
+    market: str,
+    days: int = Query(30, ge=1, le=365),
+):
+    """Get prediction accuracy summary (direction accuracy, IC, ICIR)."""
+    market = market.lower()
+    if market not in ("us", "hk", "cn"):
+        raise HTTPException(400, f"Unsupported market: {market}")
+    return await prediction_service.get_accuracy(market=market, days=days)
 
 
 @router.get("/models/{model_id}/feature-importance")
@@ -126,6 +143,65 @@ async def get_performance_metrics(
         raise HTTPException(400, f"Unsupported market: {market}")
     result = await prediction_service.get_performance_metrics(market=market, days=days)
     return result
+
+
+@router.get("/{market}/turnover")
+async def get_turnover_metrics(
+    market: str,
+    days: int = Query(90, ge=7, le=365),
+    top_n: int = Query(20, ge=5, le=100),
+):
+    """Prediction rank stability: rank autocorrelation and top-N retention."""
+    market = market.lower()
+    if market not in ("us", "hk", "cn"):
+        raise HTTPException(400, f"Unsupported market: {market}")
+    result = await prediction_service.get_turnover_metrics(
+        market=market, days=days, top_n=top_n,
+    )
+    return result
+
+
+@router.get("/{market}/ic-decay")
+async def get_ic_decay(
+    market: str,
+    days: int = Query(90, ge=7, le=365),
+):
+    """IC at multiple forward horizons (alpha decay curve)."""
+    market = market.lower()
+    if market not in ("us", "hk", "cn"):
+        raise HTTPException(400, f"Unsupported market: {market}")
+    result = await prediction_service.get_ic_decay(market=market, days=days)
+    return result
+
+
+@router.get("/{market}/attribution")
+async def get_return_attribution(
+    market: str,
+    days: int = Query(90, ge=7, le=365),
+    top_n: int = Query(20, ge=5, le=100),
+):
+    """Return attribution decomposition: sector, size, and alpha components."""
+    market = market.lower()
+    if market not in ("us", "hk", "cn"):
+        raise HTTPException(400, f"Unsupported market: {market}")
+    return await prediction_service.get_return_attribution(
+        market=market, days=days, top_n=top_n,
+    )
+
+
+@router.get("/{market}/prediction-dates")
+async def get_prediction_dates(
+    market: str,
+    n_dates: int = Query(2, ge=1, le=10),
+    forward_days: int = Query(5, ge=0, le=60),
+):
+    """Get predictions for the last N prediction dates (for holdings change)."""
+    market = market.lower()
+    if market not in ("us", "hk", "cn"):
+        raise HTTPException(400, f"Unsupported market: {market}")
+    return await prediction_service.get_recent_predictions(
+        market=market, n_dates=n_dates, forward_days=forward_days,
+    )
 
 
 @router.post("/backfill-returns")
@@ -300,6 +376,60 @@ async def collect_options(market: str):
 
     asyncio.create_task(_run())
     return {"status": "started", "market": market}
+
+
+@router.post("/sectors/{market}/collect")
+async def collect_sectors(market: str):
+    """Trigger sector/industry classification collection for a market.
+
+    US/HK: yfinance sector/industry (GICS).
+    CN: akshare industry classification via data-service.
+
+    Only re-fetches stale entries (>7 days old). Non-blocking.
+    """
+    market = market.lower()
+    if market not in ("us", "hk", "cn"):
+        raise HTTPException(status_code=400, detail=f"Invalid market: {market}")
+
+    guard_key = f"sectors:{market}"
+    if guard_key in _running_signal_collections:
+        raise HTTPException(status_code=409, detail=f"Sector collection already running for {market}")
+
+    _running_signal_collections.add(guard_key)
+
+    async def _run():
+        try:
+            from app.services.fundamental_service import fundamental_service
+            await fundamental_service.collect_sector_data(market)
+        except Exception as e:
+            logger.error("Background sector collection failed for %s: %s", market, e, exc_info=True)
+        finally:
+            _running_signal_collections.discard(guard_key)
+
+    asyncio.create_task(_run())
+    return {"status": "started", "market": market}
+
+
+@router.get("/sectors/{market}")
+async def get_sectors(market: str):
+    """Get sector classification data for a market."""
+    market = market.lower()
+    if market not in ("us", "hk", "cn"):
+        raise HTTPException(status_code=400, detail=f"Invalid market: {market}")
+
+    from app.services.fundamental_service import fundamental_service
+    sector_map = await fundamental_service.get_sector_map(market)
+    # Count unique sectors
+    sector_counts: dict[str, int] = {}
+    for sector in sector_map.values():
+        sector_counts[sector] = sector_counts.get(sector, 0) + 1
+
+    return {
+        "market": market,
+        "total_symbols": len(sector_map),
+        "unique_sectors": len(sector_counts),
+        "sector_counts": sector_counts,
+    }
 
 
 @router.post("/fundamentals/backfill/{market}")

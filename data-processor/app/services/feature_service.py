@@ -17,6 +17,7 @@ from typing import Optional
 import pandas as pd
 
 from app.config import get_settings
+from app.services.market_config import get_market_config
 from app.services.factor_service import FEATURE_NAMES
 from app.services.factor_registry import factor_registry
 from app.services.fundamental_service import fundamental_service
@@ -75,6 +76,22 @@ INSIDER_FEATURES: list[str] = ["net_shares_pct", "insider_ownership_pct"]
 # Category 4: Options put/call ratio (US only, cold-start ~3 months)
 OPTIONS_FEATURES: list[str] = ["put_call_ratio"]
 
+# Cross-feature interactions — computed from merged raw values before rank transform.
+# Pure-technical (1-8) use Alpha158 features (~100% coverage).
+# Cross-category (9-10) use fundamentals × technical (sparse in CN/HK).
+INTERACTION_FEATURES: list[str] = [
+    "momentum_vol_ratio",       # ret20 / (std20 + ε)  — risk-adjusted momentum
+    "volume_price_confirm",     # vol_ratio5 × |ret5|  — volume-confirmed moves
+    "momentum_divergence",      # ret5 − ret60         — short vs long momentum gap
+    "drawdown_recovery",        # drawdown20 × vol_ratio5 — recovery + volume
+    "trend_vol_interaction",    # rsi14 × std20        — RSI in volatility context
+    "price_ma_volume",          # close_ma20_ratio × vol_ratio5 — MA breakout + volume
+    "volatility_acceleration",  # return_vol20 − return_vol60 — vol regime change
+    "momentum_acceleration",    # ret5 − ret20         — short-term acceleration
+    "value_momentum",           # pb_ratio × ret20     — value × momentum cross
+    "yield_vol_adj",            # dividend_yield / (std20 + ε) — risk-adjusted yield
+]
+
 # ThreadPoolExecutor for synchronous Qlib calls (D.features)
 # Single thread since Qlib's global state is not thread-safe for concurrent inits
 _qlib_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="feature-qlib")
@@ -112,6 +129,8 @@ class FeatureService:
             All feature values are rank-transformed to [0, 1] percentiles
             cross-sectionally (per date). Empty DataFrame on total failure.
         """
+        market = market.lower()
+
         if not symbols:
             logger.warning("build_feature_matrix called with empty symbol list")
             return pd.DataFrame()
@@ -178,7 +197,7 @@ class FeatureService:
         if include_fundamental:
             tasks.append(
                 asyncio.create_task(
-                    self._safe_get_fundamentals(symbols, start_date, end_date),
+                    self._safe_get_fundamentals(symbols, start_date, end_date, market),
                 )
             )
             task_names.append("fundamentals")
@@ -191,11 +210,12 @@ class FeatureService:
             )
             task_names.append("sentiment")
 
-        # Always attempt all 4 new signal categories
-        tasks.append(asyncio.create_task(
-            self._safe_get_earnings(symbols, start_date, end_date),
-        ))
-        task_names.append("earnings")
+        # Only fetch earnings if EARNINGS_FEATURES is non-empty
+        if EARNINGS_FEATURES:
+            tasks.append(asyncio.create_task(
+                self._safe_get_earnings(symbols, start_date, end_date),
+            ))
+            task_names.append("earnings")
 
         tasks.append(asyncio.create_task(
             self._safe_get_analyst(symbols, start_date, end_date),
@@ -214,6 +234,7 @@ class FeatureService:
 
         if tasks:
             results = await asyncio.gather(*tasks, return_exceptions=True)
+            failed_sources: list[str] = []
             for name, res in zip(task_names, results):
                 if isinstance(res, pd.DataFrame):
                     if name == "fundamentals":
@@ -229,7 +250,15 @@ class FeatureService:
                     elif name == "options":
                         options_df = res
                 elif isinstance(res, Exception):
+                    failed_sources.append(name)
                     logger.warning("%s feature fetch failed: %s", name, res)
+
+            if failed_sources:
+                logger.error(
+                    "Feature sources failed (%d/%d): %s. "
+                    "Feature matrix may be degraded.",
+                    len(failed_sources), len(task_names), failed_sources,
+                )
 
         # Step 4: 合并 — 以 Alpha158 为基准左连接
         merged = alpha_df.copy()
@@ -319,24 +348,59 @@ class FeatureService:
         for col in feature_cols:
             merged[col] = pd.to_numeric(merged[col], errors="coerce").astype("float64")
 
+        # Step 5: 特征交互 — 计算跨类别交互特征
+        # Computed from raw (pre-rank) values so multiplicative/ratio
+        # relationships are preserved.  The sparse filter (next step) will
+        # automatically drop any interaction columns that end up too NaN-heavy.
+        # CN/HK: legacy training mode + small universes make interactions harmful.
+        # Controlled by MarketConfig.use_interactions.
+        cfg = get_market_config(market)
+        if cfg.use_interactions:
+            merged = self._compute_interaction_features(merged)
+        else:
+            logger.info(
+                "Skipping interaction features for market=%s (MarketConfig.use_interactions=False)",
+                market,
+            )
+
         # Step 5.5: 特征质量过滤 — 剔除 NaN 率过高的特征列
         # 高 NaN 列（如无基本面/情绪数据的市场）会稀释有效特征被采样到的概率
-        # Threshold 0.75: drops features that are >75% NaN in the training matrix.
-        # This covers two categories:
-        #   1. Truly absent features (analyst/insider/options, 100% NaN until 3mo of
-        #      daily collection — analyst/insider/options cold-start period)
-        #   2. High-NaN fundamental/sentiment features (revenue_growth_yoy ~76% NaN,
-        #      eps_growth ~78% NaN, sentiment rolling aggregates ~80% NaN in 2yr window)
-        #      These have enough NaN to create spurious "has-data?" splits in LightGBM
-        #      that overfit to dataset membership rather than signal.
-        # Note: last_eps_surprise (77% NaN, earnings DB coverage ~30% of universe) is
-        # excluded explicitly via EARNINGS_FEATURES=[] for the same spurious-split reason.
-        merged, dropped = self._drop_sparse_features(merged, max_nan_ratio=0.75)
+        # Threshold controlled by MarketConfig.nan_threshold:
+        # US (75%): Protects from spurious "has-data?" splits in LightGBM where
+        #   high-NaN features (revenue_growth_yoy ~76%, eps_growth ~78%) cause
+        #   overfitting to dataset membership. last_eps_surprise (77%) is also
+        #   excluded explicitly via EARNINGS_FEATURES=[].
+        # CN/HK (90%): These markets have sparser fundamental data from
+        #   akshare/yfinance, so core fundamentals like pe_ratio, pb_ratio,
+        #   market_cap often exceed 75% NaN. Keeping them at 90% preserves
+        #   critical financial features that contribute to the signal.
+        merged, dropped = self._drop_sparse_features(merged, max_nan_ratio=cfg.nan_threshold)
 
         # Step 6: 截面排名变换 — 每个日期内将所有股票的特征排名到百分位 [0, 1]
         # Rank transform creates uniform distributions optimal for tree-based
-        # models: balanced splits at every threshold for maximum information gain.
-        merged = self._rank_transform(merged)
+        # ranking models: every threshold splits evenly → maximum information gain
+        # per tree. Especially suited for lambdarank objective which inherently
+        # learns to rank — rank-transformed inputs are a natural fit.
+        # Note: _cross_sectional_normalize() (MAD-based) was tested but produced
+        # lower IC (0.006 vs 0.017) because concentrated distributions reduce
+        # effective split points in the tails.
+        # Sector-adjusted ranking: valuation features ranked within sectors
+        # so that PE=30 in tech is comparable to PE=30 in utilities.
+        # CN/HK: sector groups have only 3-10 stocks → sector mean is noise.
+        # Disabled via MarketConfig.use_sector_rank.
+        if cfg.use_sector_rank:
+            sector_map = await fundamental_service.get_sector_map(market, symbols)
+            logger.info(
+                "Sector-adjusted feature ranking enabled for market=%s", market,
+            )
+        else:
+            sector_map = {}
+            logger.info(
+                "Sector-adjusted feature ranking disabled for market=%s "
+                "(MarketConfig.use_sector_rank=False)",
+                market,
+            )
+        merged = self._rank_transform(merged, sector_map=sector_map or None)
 
         remaining = len([c for c in merged.columns if c not in ("symbol", "date")])
         logger.info(
@@ -529,12 +593,16 @@ class FeatureService:
 
     @staticmethod
     async def _safe_get_fundamentals(
-        symbols: list[str], start_date: str, end_date: str
+        symbols: list[str], start_date: str, end_date: str, market: str,
     ) -> pd.DataFrame:
-        """Fetch fundamentals with error isolation."""
+        """Fetch fundamentals with error isolation.
+
+        Passes market to get_fundamentals() so ffill_limit is correctly applied
+        per-market (CN=90 days, US/HK=45 days).
+        """
         try:
             return await fundamental_service.get_fundamentals(
-                symbols, start_date, end_date
+                symbols, start_date, end_date, market=market
             )
         except Exception as e:
             logger.warning("Fundamental feature retrieval failed: %s", e)
@@ -604,6 +672,72 @@ class FeatureService:
         except Exception as e:
             logger.warning("Options feature retrieval failed: %s", e)
             return pd.DataFrame()
+
+    # ------------------------------------------------------------------
+    # Feature interactions
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _compute_interaction_features(df: pd.DataFrame) -> pd.DataFrame:
+        """Compute cross-feature interaction columns from raw merged values.
+
+        Called after all source features are merged but before rank transform,
+        so interactions use raw (unranked) values — preserving multiplicative
+        and ratio relationships that tree models struggle to learn via
+        axis-aligned splits.
+
+        Only computes an interaction if ALL required source columns exist in df.
+        Missing interactions are silently skipped (e.g. cross-category features
+        when fundamentals are absent).
+
+        Uses pd.concat to avoid DataFrame fragmentation warnings.
+        """
+        import numpy as np
+
+        cols = set(df.columns)
+        _EPS = 1e-8  # avoid division by zero
+        new_cols: dict[str, "pd.Series"] = {}
+
+        # --- Pure technical interactions (Alpha158 × Alpha158) ---
+
+        if {"ret20", "std20"} <= cols:
+            new_cols["momentum_vol_ratio"] = df["ret20"] / (df["std20"].abs() + _EPS)
+
+        if {"vol_ratio5", "ret5"} <= cols:
+            new_cols["volume_price_confirm"] = df["vol_ratio5"] * df["ret5"].abs()
+
+        if {"ret5", "ret60"} <= cols:
+            new_cols["momentum_divergence"] = df["ret5"] - df["ret60"]
+
+        if {"drawdown20", "vol_ratio5"} <= cols:
+            new_cols["drawdown_recovery"] = df["drawdown20"] * df["vol_ratio5"]
+
+        if {"rsi14", "std20"} <= cols:
+            new_cols["trend_vol_interaction"] = df["rsi14"] * df["std20"]
+
+        if {"close_ma20_ratio", "vol_ratio5"} <= cols:
+            new_cols["price_ma_volume"] = df["close_ma20_ratio"] * df["vol_ratio5"]
+
+        if {"return_vol20", "return_vol60"} <= cols:
+            new_cols["volatility_acceleration"] = df["return_vol20"] - df["return_vol60"]
+
+        if {"ret5", "ret20"} <= cols:
+            new_cols["momentum_acceleration"] = df["ret5"] - df["ret20"]
+
+        # --- Cross-category interactions (fundamental × technical) ---
+
+        if {"pb_ratio", "ret20"} <= cols:
+            new_cols["value_momentum"] = df["pb_ratio"] * df["ret20"]
+
+        if {"dividend_yield", "std20"} <= cols:
+            new_cols["yield_vol_adj"] = df["dividend_yield"] / (df["std20"].abs() + _EPS)
+
+        if new_cols:
+            import pandas as _pd
+            df = _pd.concat([df, _pd.DataFrame(new_cols, index=df.index)], axis=1)
+            logger.info("Computed %d interaction features", len(new_cols))
+
+        return df
 
     # ------------------------------------------------------------------
     # Feature quality control
@@ -690,20 +824,80 @@ class FeatureService:
         return result
 
     @staticmethod
-    def _rank_transform(df: pd.DataFrame) -> pd.DataFrame:
+    def _rank_transform(
+        df: pd.DataFrame,
+        sector_map: dict[str, str] | None = None,
+    ) -> pd.DataFrame:
         """Apply cross-sectional percentile ranking per date.
 
-        DEPRECATED: Kept for backward compatibility. Rank transform destroys
-        magnitude information which hurts tree-based models. Use
-        _cross_sectional_normalize() instead.
+        Preferred over _cross_sectional_normalize() for lambdarank:
+        uniform [0,1] distribution maximizes split information per tree,
+        and rank inputs naturally match the ranking objective.
+        MAD normalization was tested (IC=0.006 vs rank IC=0.017).
+
+        If sector_map is provided with sufficient coverage (≥30%),
+        valuation features are ranked within sectors instead of
+        cross-sectionally. This makes PE=30 in tech comparable to
+        PE=30 in utilities. Non-valuation features (technical,
+        sentiment) remain cross-sectional.
         """
         feature_cols = [c for c in df.columns if c not in ("symbol", "date")]
         if not feature_cols:
             return df
 
+        # Determine which features to rank within sectors
+        _SECTOR_RANK_FEATURES = {
+            "pe_ratio", "pb_ratio", "ps_ratio", "forward_pe",
+            "ev_ebitda", "dividend_yield", "dividend_rate",
+            "roe", "roa", "profit_margin", "gross_margin",
+            "operating_margin", "payout_ratio", "debt_to_equity",
+            "current_ratio", "eps_growth", "revenue_growth_yoy",
+        }
+
+        use_sector_rank = False
+        if sector_map:
+            df["_sector"] = df["symbol"].map(sector_map)
+            coverage = df["_sector"].notna().mean()
+            if coverage >= 0.3:
+                use_sector_rank = True
+                logger.info(
+                    "Sector-adjusted ranking enabled for %d valuation features "
+                    "(%.0f%% sector coverage)",
+                    len(_SECTOR_RANK_FEATURES & set(feature_cols)),
+                    coverage * 100,
+                )
+            else:
+                logger.info(
+                    "Sector coverage too low (%.0f%%) for feature ranking, "
+                    "using cross-sectional",
+                    coverage * 100,
+                )
+
         result = df.copy()
         for col in feature_cols:
-            result[col] = result.groupby("date")[col].rank(pct=True)
+            if use_sector_rank and col in _SECTOR_RANK_FEATURES:
+                # Within-sector ranking for valuation/fundamental features.
+                # Stocks without sector fall back to overall date ranking.
+                has_sector = result["_sector"].notna()
+                # Rank within (date, sector) for stocks with sector data
+                result.loc[has_sector, col] = (
+                    result.loc[has_sector]
+                    .groupby(["date", "_sector"])[col]
+                    .rank(pct=True)
+                )
+                # Cross-sectional fallback for stocks without sector
+                if (~has_sector).any():
+                    result.loc[~has_sector, col] = (
+                        result.loc[~has_sector]
+                        .groupby("date")[col]
+                        .rank(pct=True)
+                    )
+            else:
+                result[col] = result.groupby("date")[col].rank(pct=True)
+
+        # Clean up temporary column
+        if "_sector" in result.columns:
+            result = result.drop(columns=["_sector"])
 
         return result
 
@@ -742,6 +936,70 @@ class FeatureService:
     ) -> int:
         """Return total number of features for the given configuration."""
         return len(self.get_feature_names(include_fundamental, include_sentiment))
+
+    # ------------------------------------------------------------------
+    # Feature drift detection (PSI)
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def compute_feature_psi(
+        train_df: pd.DataFrame,
+        inference_df: pd.DataFrame,
+        feature_cols: list[str],
+        bins: int = 10,
+    ) -> dict[str, float]:
+        """Compute Population Stability Index (PSI) for each feature.
+
+        PSI measures distribution shift between training and inference data.
+        Values:
+        - < 0.1: insignificant change
+        - 0.1-0.2: moderate change, monitor
+        - > 0.2: significant change, model may be unreliable
+
+        Args:
+            train_df: Training feature matrix.
+            inference_df: Inference feature matrix.
+            feature_cols: Feature column names to evaluate.
+            bins: Number of histogram bins for distribution comparison.
+
+        Returns:
+            {feature_name: psi_score} dict. Only features present in both
+            DataFrames with sufficient non-NaN values are included.
+        """
+        import numpy as np
+
+        psi_scores: dict[str, float] = {}
+        _EPS = 1e-6  # Avoid log(0)
+
+        for col in feature_cols:
+            if col not in train_df.columns or col not in inference_df.columns:
+                continue
+
+            train_vals = train_df[col].dropna().values
+            infer_vals = inference_df[col].dropna().values
+
+            if len(train_vals) < bins * 2 or len(infer_vals) < bins * 2:
+                continue
+
+            # Use training data quantiles as bin edges for consistent binning
+            bin_edges = np.percentile(train_vals, np.linspace(0, 100, bins + 1))
+            bin_edges[0] = -np.inf
+            bin_edges[-1] = np.inf
+
+            train_hist = np.histogram(train_vals, bins=bin_edges)[0]
+            infer_hist = np.histogram(infer_vals, bins=bin_edges)[0]
+
+            # Normalize to proportions
+            train_prop = train_hist / len(train_vals) + _EPS
+            infer_prop = infer_hist / len(infer_vals) + _EPS
+
+            # PSI = Σ (p_i - q_i) × ln(p_i / q_i)
+            psi = float(np.sum(
+                (infer_prop - train_prop) * np.log(infer_prop / train_prop)
+            ))
+            psi_scores[col] = round(psi, 6)
+
+        return psi_scores
 
 
 # Module singleton

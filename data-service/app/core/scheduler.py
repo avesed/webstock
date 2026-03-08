@@ -70,6 +70,16 @@ async def start_scheduler() -> None:
 
     _scheduler = AsyncIOScheduler(timezone="UTC")
 
+    # Shared reliability kwargs — misfire_grace_time is intentionally low (60s)
+    # because stale-data catchup is handled by _catchup_stale_collections()
+    # at startup, which runs markets sequentially to avoid 429 rate limits.
+    _job_kwargs = dict(
+        misfire_grace_time=60,
+        coalesce=True,
+        max_instances=1,
+        replace_existing=True,
+    )
+
     # Register collection jobs
     _scheduler.add_job(
         _run_collection,
@@ -77,7 +87,7 @@ async def start_scheduler() -> None:
         args=["cn"],
         id="collect_cn",
         name="Collect CN daily bars",
-        replace_existing=True,
+        **_job_kwargs,
     )
     _scheduler.add_job(
         _run_collection,
@@ -85,7 +95,7 @@ async def start_scheduler() -> None:
         args=["hk"],
         id="collect_hk",
         name="Collect HK daily bars",
-        replace_existing=True,
+        **_job_kwargs,
     )
     _scheduler.add_job(
         _run_collection,
@@ -93,7 +103,7 @@ async def start_scheduler() -> None:
         args=["us"],
         id="collect_us",
         name="Collect US daily bars",
-        replace_existing=True,
+        **_job_kwargs,
     )
     _scheduler.add_job(
         _run_collection,
@@ -101,7 +111,7 @@ async def start_scheduler() -> None:
         args=["metal"],
         id="collect_metal",
         name="Collect Metal daily bars",
-        replace_existing=True,
+        **_job_kwargs,
     )
 
     # Stock list update (daily, same schedule as backend Celery beat)
@@ -110,7 +120,7 @@ async def start_scheduler() -> None:
         CronTrigger(hour=5, minute=30),
         id="update_stock_list",
         name="Update stock list",
-        replace_existing=True,
+        **_job_kwargs,
     )
 
     # Stock profile collection (weekly Sunday 6 AM UTC -- matches Celery beat)
@@ -119,7 +129,7 @@ async def start_scheduler() -> None:
         CronTrigger(day_of_week="sun", hour=6, minute=0),
         id="build_stock_kb",
         name="Build stock knowledge base (all markets)",
-        replace_existing=True,
+        **_job_kwargs,
     )
 
     # Concept board sync (daily Mon-Sat 6 AM UTC -- matches Celery beat)
@@ -128,7 +138,7 @@ async def start_scheduler() -> None:
         CronTrigger(day_of_week="mon-sat", hour=6, minute=0),
         id="sync_concept_boards",
         name="Sync concept boards",
-        replace_existing=True,
+        **_job_kwargs,
     )
 
     # Leadership heartbeat
@@ -147,6 +157,9 @@ async def start_scheduler() -> None:
 
     # Check if stock_symbols table is empty — trigger immediate build on first deploy
     asyncio.create_task(_check_empty_stock_list())
+
+    # Catch up any stale markets (e.g. container restarted after scheduled time)
+    asyncio.create_task(_catchup_stale_collections())
 
 
 async def stop_scheduler() -> None:
@@ -341,6 +354,102 @@ async def _check_empty_stock_list() -> None:
                 await asyncio.sleep(30)
             else:
                 logger.warning("Scheduler: startup stock list check failed after 3 attempts: %s", exc)
+
+
+_COLLECTION_SCHEDULE_UTC = {"cn": 8, "hk": 9, "us": 22, "metal": 22}
+
+
+async def _catchup_stale_collections() -> None:
+    """Detect markets whose scheduled collection was missed and run them sequentially.
+
+    Called once at startup (leader only).  For each market, if the latest bar
+    in stock_daily_bars is older than yesterday's expected collection, we
+    assume the cron job was missed (e.g. container restart) and run catchup.
+
+    Markets are processed sequentially with a 30-second gap to avoid
+    overwhelming external data providers with concurrent requests (429).
+    """
+    if not _is_leader:
+        return
+
+    # Wait for DB to be ready (same pattern as _check_empty_stock_list)
+    await asyncio.sleep(10)
+
+    try:
+        from app.core.database import get_db_pool
+        from datetime import datetime, timezone, timedelta
+
+        pool = get_db_pool()
+        now = datetime.now(timezone.utc)
+        stale_markets: list[str] = []
+
+        for market in ("cn", "hk", "us", "metal"):
+            row = await pool.fetchrow(
+                "SELECT MAX(date) AS latest FROM stock_daily_bars WHERE market = $1",
+                market,
+            )
+            latest = row["latest"] if row else None
+            if latest is None:
+                stale_markets.append(market)
+                continue
+
+            age_days = (now.date() - latest).days
+
+            # 1. Stale: latest bar is more than 2 calendar days old
+            #    (accounts for weekends: Friday bar checked on Sunday = 2 days)
+            if age_days > 2:
+                stale_markets.append(market)
+                logger.info(
+                    "Scheduler catchup: %s latest bar is %s (%d days old)",
+                    market, latest, age_days,
+                )
+                continue
+
+            # 2. Partial: latest date has far fewer symbols than the previous date
+            #    (e.g. collection was interrupted mid-way)
+            coverage = await pool.fetchrow(
+                "SELECT "
+                "  (SELECT COUNT(*) FROM stock_daily_bars "
+                "   WHERE market = $1 AND date = $2) AS latest_cnt, "
+                "  (SELECT COUNT(*) FROM stock_daily_bars "
+                "   WHERE market = $1 AND date = ("
+                "     SELECT MAX(date) FROM stock_daily_bars "
+                "     WHERE market = $1 AND date < $2"
+                "   )) AS prev_cnt",
+                market, latest,
+            )
+            latest_cnt = coverage["latest_cnt"] or 0
+            prev_cnt = coverage["prev_cnt"] or 0
+            if prev_cnt > 0 and latest_cnt < prev_cnt * 0.8:
+                stale_markets.append(market)
+                logger.info(
+                    "Scheduler catchup: %s partial collection on %s "
+                    "(%d/%d symbols = %.0f%%)",
+                    market, latest, latest_cnt, prev_cnt,
+                    latest_cnt / prev_cnt * 100,
+                )
+
+        if not stale_markets:
+            logger.info("Scheduler catchup: all markets up to date, no catchup needed")
+            return
+
+        logger.info(
+            "Scheduler catchup: %d stale market(s): %s — running sequentially",
+            len(stale_markets), stale_markets,
+        )
+
+        for i, market in enumerate(stale_markets):
+            if not _is_leader:
+                logger.warning("Scheduler catchup: lost leadership, aborting")
+                return
+            if i > 0:
+                await asyncio.sleep(30)
+            await _run_collection(market)
+
+        logger.info("Scheduler catchup: all stale markets processed")
+
+    except Exception as exc:
+        logger.warning("Scheduler catchup failed: %s", exc)
 
 
 _RENEW_LEADER_LUA = """

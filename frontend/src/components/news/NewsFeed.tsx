@@ -108,6 +108,22 @@ export default function NewsFeed({
     containerRef.current?.scrollTo({ top: 0 })
   }, [filters?.search, filters?.sentimentTag, filters?.market])
 
+  // Restore scroll position when returning from article reader (full-page mode only)
+  const shouldRestoreScroll = !compact && !maxHeight
+  useEffect(() => {
+    if (!shouldRestoreScroll) return
+    const saved = sessionStorage.getItem('news-feed-scroll')
+    if (saved == null) return
+    sessionStorage.removeItem('news-feed-scroll')
+    // Double rAF ensures cached React Query data has rendered before scrolling
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        const main = document.querySelector('main')
+        if (main) main.scrollTop = Number(saved)
+      })
+    })
+  }, [shouldRestoreScroll])
+
   const handleSymbolClick = (clickedSymbol: string) => {
     navigate(`/stock/${clickedSymbol}`)
   }

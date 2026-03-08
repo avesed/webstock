@@ -49,8 +49,10 @@ class Settings(BaseSettings):
     PREDICTION_DATA_DIR: str = "/app/data/predictions"
 
     # Prediction quality gate thresholds (model must exceed BOTH to pass)
-    PREDICTION_MIN_IC: float = 0.0
-    PREDICTION_MIN_ICIR: float = 0.0
+    # Based on historical baselines: CN≈0.013, HK≈0.009, US≈0.017.
+    # 0.0 default is a production fatal flaw — allows negative-IC models to deploy.
+    PREDICTION_MIN_IC: float = 0.01
+    PREDICTION_MIN_ICIR: float = 0.1
 
     # Model retention: keep models for N days, always keep M quality-passed per market
     MODEL_RETENTION_DAYS: int = 30
@@ -58,6 +60,27 @@ class Settings(BaseSettings):
 
     # Data freshness: skip training if Qlib data is older than N trading days
     PREDICTION_MAX_STALE_DAYS: int = 5
+
+    # Inference: minimum fraction of universe symbols that must have data
+    INFERENCE_MIN_COVERAGE: float = 0.7
+
+    # Ensemble: train N models with different seeds, average predictions.
+    # Reduces IC variance by ~sqrt(N). Set to 1 to disable ensemble.
+    ENSEMBLE_SIZE: int = 5
+
+    # Walk-forward: evaluate across N non-overlapping OOS windows for IC confidence.
+    # Set to 1 to disable walk-forward (single 80/20 split).
+    WALKFORWARD_FOLDS: int = 3
+
+    # Multi-horizon: train separate models for each forward_days, combine signals.
+    # Comma-separated integers. Default "5" preserves single-horizon behavior.
+    # Set to "1,5,10" for short/medium/long coverage.
+    PREDICTION_HORIZONS: str = "5"
+
+    # RD-Agent LLM model configuration
+    # These are written into the per-run .env file that RD-Agent reads via load_dotenv().
+    RDAGENT_CHAT_MODEL: str = "gpt-4o-mini"
+    RDAGENT_EMBED_MODEL: str = "text-embedding-3-small"
 
     # Settings cache TTL
     SETTINGS_CACHE_TTL: int = 60  # seconds

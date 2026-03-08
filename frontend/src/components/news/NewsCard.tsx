@@ -17,6 +17,11 @@ import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/comp
 import { cn, formatRelativeTime, decodeHtmlEntities } from '@/lib/utils'
 import type { NewsArticle, NewsSentiment, NewsNavigationContext } from '@/types'
 
+// Module-level touch tracking for distinguishing scroll from tap on mobile PWA.
+// Only one touch sequence is active at a time, so a single variable pair is safe.
+let _touchStartY = 0
+let _wasScrolling = false
+
 interface NewsCardProps {
   article: NewsArticle
   compact?: boolean
@@ -256,13 +261,38 @@ export default function NewsCard({ article, compact = false, className, navigati
           to={`/news/${article.id}`}
           state={{ article, navigation: navigationContext, origin: location.pathname + location.search }}
           className="block px-1 py-4 hover:bg-accent/30 transition-colors rounded-sm -mx-1"
+          onTouchStart={(e) => {
+            const touch = e.touches[0]
+            if (touch) { _touchStartY = touch.clientY; _wasScrolling = false }
+          }}
+          onTouchMove={(e) => {
+            const touch = e.touches[0]
+            if (touch && Math.abs(touch.clientY - _touchStartY) > 10) _wasScrolling = true
+          }}
+          onClick={(e) => {
+            if (_wasScrolling) { e.preventDefault(); _wasScrolling = false; return }
+            // Save scroll position for restore on back navigation
+            const main = document.querySelector('main')
+            if (main) sessionStorage.setItem('news-feed-scroll', String(main.scrollTop))
+          }}
         >
           {cardContent}
         </Link>
       ) : (
         <div
           className="px-1 py-4 hover:bg-accent/30 transition-colors rounded-sm -mx-1 cursor-pointer"
-          onClick={handleOpenArticle}
+          onTouchStart={(e) => {
+            const touch = e.touches[0]
+            if (touch) { _touchStartY = touch.clientY; _wasScrolling = false }
+          }}
+          onTouchMove={(e) => {
+            const touch = e.touches[0]
+            if (touch && Math.abs(touch.clientY - _touchStartY) > 10) _wasScrolling = true
+          }}
+          onClick={() => {
+            if (_wasScrolling) { _wasScrolling = false; return }
+            handleOpenArticle()
+          }}
         >
           {cardContent}
         </div>

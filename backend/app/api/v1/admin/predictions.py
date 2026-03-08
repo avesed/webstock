@@ -299,7 +299,7 @@ async def get_prediction_accuracy(
     market = _validate_market(market)
     client = await get_prediction_client()
     try:
-        return await client.get_prediction_history(market=market, days=days)
+        return await client.get_accuracy(market=market, days=days)
     except PredictionServiceError as e:
         raise HTTPException(
             status_code=e.status_code or 502,
@@ -330,6 +330,120 @@ async def get_performance_metrics(
     except PredictionServiceError as e:
         status = e.status_code or 502
         raise HTTPException(status_code=status, detail=_sanitize_service_error(e))
+
+
+# ---------------------------------------------------------------------------
+# Signal quality — IC decay, turnover, sectors
+# ---------------------------------------------------------------------------
+
+
+@router.get(
+    "/predictions/{market}/ic-decay",
+    summary="Get IC decay curve",
+    description="Returns IC decay across multiple horizons for a market.",
+)
+async def get_ic_decay(
+    market: str,
+    days: int = Query(60, ge=7, le=365),
+    _user: User = Depends(require_admin),
+) -> Dict[str, Any]:
+    market = _validate_market(market)
+    try:
+        client = await get_prediction_client()
+        return await client.get_ic_decay(market, days)
+    except PredictionServiceError as e:
+        raise HTTPException(status_code=e.status_code or 502, detail=_sanitize_service_error(e))
+
+
+@router.get(
+    "/predictions/{market}/turnover",
+    summary="Get prediction turnover",
+    description="Returns rank autocorrelation and top-N retention metrics.",
+)
+async def get_turnover(
+    market: str,
+    days: int = Query(60, ge=7, le=365),
+    top_n: int = Query(20, ge=5, le=100),
+    _user: User = Depends(require_admin),
+) -> Dict[str, Any]:
+    market = _validate_market(market)
+    try:
+        client = await get_prediction_client()
+        return await client.get_turnover(market, days, top_n)
+    except PredictionServiceError as e:
+        raise HTTPException(status_code=e.status_code or 502, detail=_sanitize_service_error(e))
+
+
+@router.get(
+    "/predictions/sectors/{market}",
+    summary="Get sector data summary",
+    description="Returns sector data coverage and distribution for a market.",
+)
+async def get_sectors(
+    market: str,
+    _user: User = Depends(require_admin),
+) -> Dict[str, Any]:
+    market = _validate_market(market)
+    try:
+        client = await get_prediction_client()
+        return await client.get_sectors(market)
+    except PredictionServiceError as e:
+        raise HTTPException(status_code=e.status_code or 502, detail=_sanitize_service_error(e))
+
+
+@router.post(
+    "/predictions/sectors/{market}/collect",
+    summary="Trigger sector collection",
+    description="Trigger sector data collection for a market.",
+)
+async def collect_sectors(
+    market: str,
+    _user: User = Depends(require_admin),
+) -> Dict[str, Any]:
+    market = _validate_market(market)
+    try:
+        client = await get_prediction_client()
+        return await client.collect_sectors(market)
+    except PredictionServiceError as e:
+        raise HTTPException(status_code=e.status_code or 502, detail=_sanitize_service_error(e))
+
+
+@router.get(
+    "/predictions/{market}/attribution",
+    summary="Get return attribution",
+    description="Decompose model returns into sector, size, and alpha components.",
+)
+async def get_attribution(
+    market: str,
+    days: int = Query(90, ge=7, le=365),
+    top_n: int = Query(20, ge=5, le=100),
+    _user: User = Depends(require_admin),
+) -> Dict[str, Any]:
+    market = _validate_market(market)
+    try:
+        client = await get_prediction_client()
+        return await client.get_attribution(market, days, top_n)
+    except PredictionServiceError as e:
+        raise HTTPException(status_code=e.status_code or 502, detail=_sanitize_service_error(e))
+
+
+@router.get(
+    "/predictions/{market}/prediction-dates",
+    summary="Get predictions for recent dates",
+    description="Returns predictions for last N dates for holdings change analysis.",
+)
+async def get_prediction_dates(
+    market: str,
+    n_dates: int = Query(2, ge=1, le=10),
+    forward_days: int = Query(5, ge=0, le=60),
+    _user: User = Depends(require_admin),
+) -> Dict[str, Any]:
+    market = _validate_market(market)
+    try:
+        client = await get_prediction_client()
+        return await client.get_prediction_dates(market, n_dates, forward_days)
+    except PredictionServiceError as e:
+        raise HTTPException(status_code=e.status_code or 502, detail=_sanitize_service_error(e))
 
 
 # ---------------------------------------------------------------------------

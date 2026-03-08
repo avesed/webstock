@@ -437,6 +437,10 @@ class AnalystService:
 
         df = pd.DataFrame([dict(r) for r in analyst_rows])
         df["date"] = pd.to_datetime(df["date"])
+        # asyncpg returns NUMERIC as decimal.Decimal — convert to float
+        for col in df.columns:
+            if col not in ("symbol", "date"):
+                df[col] = pd.to_numeric(df[col], errors="coerce")
 
         # Compute derived ratios
         total = (
@@ -468,6 +472,8 @@ class AnalystService:
         if premium_rows:
             prem_df = pd.DataFrame([dict(r) for r in premium_rows])
             prem_df["date"] = pd.to_datetime(prem_df["date"])
+            prem_df["target_price_mean"] = pd.to_numeric(prem_df["target_price_mean"], errors="coerce")
+            prem_df["close"] = pd.to_numeric(prem_df["close"], errors="coerce")
             prem_df["target_premium"] = (
                 prem_df["target_price_mean"] / prem_df["close"] - 1.0
             )

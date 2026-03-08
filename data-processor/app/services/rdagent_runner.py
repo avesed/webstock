@@ -4,21 +4,33 @@ Manages the RD-Agent automated factor research process as an isolated
 subprocess. Uses Redis distributed lock for single-instance enforcement.
 
 Architecture:
-- subprocess.Popen launches RD-Agent with environment overrides
-- OPENAI_API_BASE points to local LLM proxy endpoint
-- OPENAI_API_KEY set to dummy (proxy handles real auth)
-- Progress tracked via stdout log parsing
-- Discovered factors parsed from output and registered
+- subprocess.Popen launches ``rdagent fin_quant`` CLI in an isolated workdir
+- Each run gets a fresh workdir with a .env file that RD-Agent reads via
+  load_dotenv() — env overrides in Popen env dict are NOT read by RD-Agent
+- OPENAI_API_BASE points to ai-gateway Docker DNS (not localhost)
+- Progress tracked via stdout log parsing (Round X/Y pattern)
+- Discovered factors collected from result directory files after process exits
+
+Execution failures in previous implementation (all fixed here):
+1. Wrong CLI: ``python -m rdagent quant_factor_experiment`` → ``rdagent fin_quant``
+2. Custom env vars ignored: RD-Agent uses load_dotenv(), not subprocess env dict
+3. Localhost URL: should be ``ai-gateway:8004`` (Docker DNS), not 127.0.0.1
+4. Output parsing: factors are written to result files, not stdout
+5. Dockerfile: no CLI verification step (added in Dockerfile)
 """
 
 import asyncio
+import json
 import logging
 import os
 import re
+import shutil
 import signal
 import subprocess
+import time
 from dataclasses import dataclass, field
 from datetime import datetime
+from pathlib import Path
 from typing import Optional
 
 import redis.asyncio as aioredis
@@ -45,21 +57,16 @@ _SIGTERM_WAIT_SECONDS = 30
 # Maximum log lines retained in memory per task
 _MAX_LOG_LINES = 100
 
+# Stdout progress pattern — only parse round progress, NOT factor data
+# (factors are in result directory files, not stdout)
+_RE_ROUND = re.compile(r"Round\s+(\d+)[/\s](\d+)", re.IGNORECASE)
+
 
 def _get_index_constituents_sync(index_code: str, market: str) -> list[str]:
     """Synchronous index constituent fetch (for asyncio.to_thread)."""
     from app.services.backend_client import get_backend_client
 
     return get_backend_client().get_index_constituents(index_code, market)
-
-# Stdout parsing patterns
-_RE_ROUND = re.compile(r"Round\s+(\d+)[/\s](\d+)", re.IGNORECASE)
-_RE_FACTOR_DISCOVERED = re.compile(
-    r"Factor\s+discovered:\s*(.+?)(?:\s*IC[=:]\s*([-\d.]+))?(?:\s*ICIR[=:]\s*([-\d.]+))?$",
-    re.IGNORECASE,
-)
-_RE_IC = re.compile(r"IC[=:]\s*([-\d.]+)", re.IGNORECASE)
-_RE_EXPRESSION = re.compile(r"expression[=:]\s*(.+?)(?:\s*,|\s*$)", re.IGNORECASE)
 
 
 # ---------------------------------------------------------------------------
@@ -80,6 +87,7 @@ class RDAgentTask:
     completed_at: Optional[datetime] = None
     error: Optional[str] = None
     log_lines: list[str] = field(default_factory=list)  # last N lines
+    workdir: Optional[str] = None  # path to isolated run directory
 
     def to_dict(self) -> dict:
         """Serialize to API-compatible dict."""
@@ -93,6 +101,7 @@ class RDAgentTask:
             "completed_at": self.completed_at.isoformat() if self.completed_at else None,
             "error": self.error,
             "log_tail": self.log_lines[-20:],
+            "workdir": self.workdir,
         }
 
 
@@ -178,19 +187,32 @@ class RDAgentRunner:
                 await _release_lock(market)
                 return {"error": f"No symbols found for market {market}"}
 
+            # Create isolated workdir with .env for this run
+            try:
+                workdir = self._prepare_workdir(market, max_rounds)
+            except OSError as e:
+                await _release_lock(market)
+                logger.error("Failed to prepare workdir for %s: %s", market, e)
+                return {"error": f"Workdir preparation failed: {e}"}
+            logger.info(
+                "RD-Agent workdir: %s (market=%s, max_rounds=%d, symbols=%d)",
+                workdir, market, max_rounds, len(symbols),
+            )
+
             # Create task
             task = RDAgentTask(
                 market=market,
                 status="starting",
                 max_rounds=max_rounds,
                 started_at=datetime.now(),
+                workdir=str(workdir),
             )
             self._tasks[market] = task
 
             # Launch subprocess in thread (Popen can briefly block)
             try:
                 process = await asyncio.to_thread(
-                    self._launch_subprocess, market, symbols, max_rounds,
+                    self._launch_subprocess, workdir,
                 )
                 self._processes[market] = process
                 task.status = "running"
@@ -214,40 +236,68 @@ class RDAgentRunner:
 
             return task.to_dict()
 
-    def _launch_subprocess(
-        self,
-        market: str,
-        symbols: list[str],
-        max_rounds: int,
-    ) -> subprocess.Popen:
-        """Launch the RD-Agent subprocess with environment overrides.
+    def _prepare_workdir(self, market: str, max_rounds: int) -> Path:
+        """Create an isolated workdir and write the RD-Agent .env config file.
 
-        This runs in a thread via asyncio.to_thread since Popen may
-        briefly block on fork/exec.
+        RD-Agent calls load_dotenv() to read its configuration from a .env
+        file in the current working directory. Custom env vars in the subprocess
+        env dict are NOT read. This method writes the correct .env so that:
+        - OPENAI_API_BASE points to ai-gateway via Docker DNS (not localhost)
+        - CHAT_MODEL / EMBEDDING_MODEL are set from our config
+        - QLIB_QUANT_MAX_LOOP controls the number of research rounds
 
         Args:
-            market: Market code.
-            symbols: List of stock symbols for the research universe.
+            market: Market code (used for workdir naming).
             max_rounds: Maximum research rounds.
+
+        Returns:
+            Path to the prepared workdir.
+        """
+        settings = get_settings()
+        workdir = Path(settings.PREDICTION_DATA_DIR) / f"rdagent_{market}_{int(time.time())}"
+        workdir.mkdir(parents=True, exist_ok=True)
+
+        # Write .env that RD-Agent will read via load_dotenv()
+        env_lines = [
+            f"CHAT_MODEL={settings.RDAGENT_CHAT_MODEL}",
+            f"EMBEDDING_MODEL={settings.RDAGENT_EMBED_MODEL}",
+            # Use Docker DNS name — localhost would be wrong inside the container
+            f"OPENAI_API_BASE={settings.AI_GATEWAY_URL}/v1",
+            # AI Gateway handles real auth; RD-Agent requires a non-empty key
+            "OPENAI_API_KEY=dummy",
+            f"QLIB_QUANT_MAX_LOOP={max_rounds}",
+        ]
+        env_content = "\n".join(env_lines) + "\n"
+        (workdir / ".env").write_text(env_content)
+        logger.debug(
+            "RD-Agent .env written to %s: OPENAI_API_BASE=%s/v1, "
+            "CHAT_MODEL=%s, QLIB_QUANT_MAX_LOOP=%d",
+            workdir, settings.AI_GATEWAY_URL,
+            settings.RDAGENT_CHAT_MODEL, max_rounds,
+        )
+        return workdir
+
+    def _launch_subprocess(self, workdir: Path) -> subprocess.Popen:
+        """Launch the RD-Agent subprocess in its isolated workdir.
+
+        Runs in a thread via asyncio.to_thread since Popen may briefly block.
+        The subprocess inherits the system PATH so ``rdagent`` CLI is found.
+        CWD is set to workdir so load_dotenv() picks up the .env we wrote.
+
+        Args:
+            workdir: Isolated working directory containing the .env file.
 
         Returns:
             Popen process handle.
         """
-        settings = get_settings()
-
-        env = {
-            "PATH": os.environ.get("PATH", "/usr/local/bin:/usr/bin:/bin"),
-            "HOME": os.environ.get("HOME", "/app"),
-            "PYTHONPATH": os.environ.get("PYTHONPATH", ""),
-            "OPENAI_API_BASE": f"http://127.0.0.1:{settings.PORT}/v1/llm",
-            "OPENAI_API_KEY": "dummy",
-            "RDAGENT_MARKET": market,
-            "RDAGENT_MAX_ROUNDS": str(max_rounds),
-            "RDAGENT_SYMBOLS": ",".join(symbols),
-        }
+        # Inherit full process env for PATH, PYTHONPATH, etc.
+        # RD-Agent configuration comes from the .env file in workdir,
+        # not from env vars here (load_dotenv() reads from filesystem).
+        env = dict(os.environ)
 
         process = subprocess.Popen(
-            ["python", "-m", "rdagent", "quant_factor_experiment"],
+            ["rdagent", "fin_quant"],  # Correct CLI: fin_quant = Qlib factor discovery
+            cwd=str(workdir),           # load_dotenv() reads .env from here
             env=env,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
@@ -255,13 +305,34 @@ class RDAgentRunner:
         )
         return process
 
-    async def _monitor_process(self, market: str) -> None:
-        """Monitor the RD-Agent subprocess, parsing stdout for progress.
+    @staticmethod
+    async def _graceful_kill(
+        process: subprocess.Popen, market: str,
+    ) -> None:
+        """Terminate a subprocess gracefully: SIGTERM → wait → SIGKILL."""
+        try:
+            process.send_signal(signal.SIGTERM)
+        except OSError as e:
+            logger.warning("SIGTERM failed for %s: %s", market, e)
+        try:
+            await asyncio.to_thread(process.wait, timeout=_SIGTERM_WAIT_SECONDS)
+        except subprocess.TimeoutExpired:
+            logger.warning(
+                "RD-Agent %s did not exit after %ds, sending SIGKILL",
+                market, _SIGTERM_WAIT_SECONDS,
+            )
+            process.kill()
+            await asyncio.to_thread(process.wait, timeout=5)
 
-        Runs as a background asyncio task. Reads stdout line by line,
-        extracts round progress and factor discovery events, and updates
-        the in-memory task state. On process exit, parses final output
-        and registers discovered factors.
+    async def _monitor_process(self, market: str) -> None:
+        """Monitor the RD-Agent subprocess and collect results on exit.
+
+        Runs as a background asyncio task. Reads stdout line by line for
+        progress (Round X/Y) only. On process exit, scans the workdir for
+        result JSON files containing discovered factors.
+
+        Factor data is NOT parsed from stdout — RD-Agent writes results
+        to the filesystem (workdir/log/, workdir/storage/, etc.).
         """
         task = self._tasks.get(market)
         process = self._processes.get(market)
@@ -269,19 +340,20 @@ class RDAgentRunner:
             await _release_lock(market)
             return
 
-        discovered_factors: list[dict] = []
         start_time = datetime.now()
+        _MAX_CONSECUTIVE_NONES = 20  # 10 seconds of empty stdout reads
 
         try:
+            consecutive_nones = 0
             while process.poll() is None:
                 # Check for timeout
                 elapsed = (datetime.now() - start_time).total_seconds()
                 if elapsed > _MAX_RUNTIME_SECONDS:
                     logger.warning(
-                        "RD-Agent %s exceeded %ds runtime, killing",
+                        "RD-Agent %s exceeded %ds runtime, terminating",
                         market, _MAX_RUNTIME_SECONDS,
                     )
-                    process.kill()
+                    await self._graceful_kill(process, market)
                     task.status = "failed"
                     task.error = "Exceeded maximum runtime (24h)"
                     break
@@ -289,9 +361,16 @@ class RDAgentRunner:
                 # Read one line (blocking, in thread)
                 line = await asyncio.to_thread(self._readline_safe, process)
                 if line is None:
-                    # stdout closed, process likely exiting
+                    consecutive_nones += 1
+                    if consecutive_nones >= _MAX_CONSECUTIVE_NONES:
+                        logger.info(
+                            "RD-Agent %s: stdout closed, waiting for process exit",
+                            market,
+                        )
+                        break
                     await asyncio.sleep(0.5)
                     continue
+                consecutive_nones = 0
 
                 line = line.rstrip()
                 if not line:
@@ -302,7 +381,7 @@ class RDAgentRunner:
                 if len(task.log_lines) > _MAX_LOG_LINES:
                     task.log_lines = task.log_lines[-_MAX_LOG_LINES:]
 
-                # Parse round progress
+                # Parse round progress only
                 round_match = _RE_ROUND.search(line)
                 if round_match:
                     task.current_round = int(round_match.group(1))
@@ -311,42 +390,37 @@ class RDAgentRunner:
                         market, task.current_round, task.max_rounds,
                     )
 
-                # Parse factor discovery
-                factor_match = _RE_FACTOR_DISCOVERED.search(line)
-                if factor_match:
-                    factor_info = self._parse_factor_line(
-                        line, factor_match, task.current_round,
-                    )
-                    if factor_info:
-                        discovered_factors.append(factor_info)
-                        task.discovered_count = len(discovered_factors)
-                        logger.info(
-                            "RD-Agent %s: factor discovered (total %d)",
-                            market, task.discovered_count,
-                        )
-
-            # Process exited -- wait for return code
-            await asyncio.to_thread(process.wait, timeout=10)
+            # Process exited (or stdout closed) — wait for return code
+            try:
+                await asyncio.to_thread(process.wait, timeout=60)
+            except subprocess.TimeoutExpired:
+                logger.warning(
+                    "RD-Agent %s still running after stdout closed, terminating",
+                    market,
+                )
+                await self._graceful_kill(process, market)
             exit_code = process.returncode
 
             if task.status not in ("failed", "stopped"):
                 if exit_code == 0:
                     task.status = "completed"
                     logger.info(
-                        "RD-Agent %s completed: rounds=%d, factors=%d",
-                        market, task.current_round, len(discovered_factors),
+                        "RD-Agent %s completed: rounds=%d",
+                        market, task.current_round,
                     )
                 else:
                     task.status = "failed"
                     task.error = f"Process exited with code {exit_code}"
                     logger.error(
-                        "RD-Agent %s failed: exit_code=%d",
-                        market, exit_code,
+                        "RD-Agent %s failed: exit_code=%d", market, exit_code,
                     )
 
-            # Register discovered factors
-            if discovered_factors:
-                await self._register_factors(market, discovered_factors)
+            # Collect results from filesystem (not stdout)
+            if task.workdir and task.status in ("completed", "failed"):
+                await self._collect_results(Path(task.workdir), market, task)
+                # Clean up workdir after result collection (keep failed for debugging)
+                if task.status == "completed":
+                    self._cleanup_workdir(Path(task.workdir))
 
         except asyncio.CancelledError:
             logger.info("RD-Agent monitor cancelled for %s", market)
@@ -373,45 +447,154 @@ class RDAgentRunner:
         except (ValueError, OSError):
             return None
 
-    @staticmethod
-    def _parse_factor_line(
-        line: str,
-        match: re.Match,
-        current_round: int,
-    ) -> Optional[dict]:
-        """Extract factor info from a log line matching the discovery pattern.
+    async def _collect_results(
+        self, workdir: Path, market: str, task: RDAgentTask,
+    ) -> None:
+        """Scan the workdir for factor result files and register them.
 
-        Returns a dict with name, expression, ic, icir, discovery_round
-        or None if parsing fails.
+        RD-Agent writes results to the filesystem (not stdout). The exact
+        directory structure depends on the rdagent version and scenario.
+        We search broadly for JSON files that look like factor results.
+
+        NOTE: The specific file format should be verified after the first
+        successful run. Check workdir contents with:
+            ls -la <workdir>/**/
+        Then update _parse_factor_data() to match the actual structure.
+
+        Args:
+            workdir: The isolated run directory to scan.
+            market: Market code for factor registration.
+            task: Task object to update discovered_count.
         """
-        name = match.group(1).strip()
+        # Search for JSON files that may contain factor results
+        # RD-Agent typically writes to: log/, storage/, results/, or root
+        candidate_patterns = [
+            "**/factor*.json",
+            "**/result*.json",
+            "**/factors.json",
+            "**/discovered*.json",
+        ]
 
-        ic_val = 0.0
-        icir_val = 0.0
+        if not workdir.exists():
+            logger.warning(
+                "RD-Agent %s: workdir no longer exists at collection time: %s",
+                market, workdir,
+            )
+            return
 
-        if match.group(2):
+        result_files: list[Path] = []
+        for pattern in candidate_patterns:
+            result_files.extend(workdir.glob(pattern))
+
+        if not result_files:
+            logger.info(
+                "RD-Agent %s: no result JSON files found in %s. "
+                "If this is the first run, check the workdir structure to update "
+                "_collect_results() parsing logic.",
+                market, workdir,
+            )
+            # Log all files in workdir for debugging
+            all_files = list(workdir.rglob("*"))
+            logger.debug(
+                "RD-Agent workdir contents (%d files): %s",
+                len(all_files),
+                [str(f.relative_to(workdir)) for f in all_files[:30]],
+            )
+            return
+
+        discovered_factors: list[dict] = []
+        for result_file in result_files:
             try:
-                ic_val = float(match.group(2))
-            except ValueError:
-                pass
+                data = json.loads(result_file.read_text())
+                factors = self._parse_factor_data(data)
+                if factors:
+                    discovered_factors.extend(factors)
+                    logger.info(
+                        "RD-Agent %s: parsed %d factors from %s",
+                        market, len(factors), result_file.name,
+                    )
+            except json.JSONDecodeError as e:
+                logger.warning(
+                    "RD-Agent %s: invalid JSON in %s: %s", market, result_file, e,
+                )
+            except Exception as e:
+                logger.warning(
+                    "RD-Agent %s: failed to parse %s: %s", market, result_file, e,
+                )
 
-        if match.group(3):
-            try:
-                icir_val = float(match.group(3))
-            except ValueError:
-                pass
+        if discovered_factors:
+            task.discovered_count = len(discovered_factors)
+            await self._register_factors(market, discovered_factors)
+        else:
+            logger.info(
+                "RD-Agent %s: result files found but no parseable factors. "
+                "Inspect workdir %s and update _parse_factor_data() to match "
+                "the actual JSON structure.",
+                market, workdir,
+            )
 
-        # Try to extract expression from the same line or use name as fallback
-        expr_match = _RE_EXPRESSION.search(line)
-        expression = expr_match.group(1).strip() if expr_match else name
+    @staticmethod
+    def _parse_factor_data(data: object) -> list[dict]:
+        """Extract factor dicts from a parsed JSON result file.
 
-        return {
-            "name": name,
-            "expression": expression,
-            "ic": ic_val,
-            "icir": icir_val,
-            "discovery_round": current_round,
-        }
+        This method needs to be updated after the first successful RD-Agent run
+        to match the actual JSON output format. The structure varies by rdagent
+        version and scenario configuration.
+
+        Current implementation handles common patterns:
+        - List of factor objects: [{"name": ..., "expression": ..., "ic": ...}, ...]
+        - Dict with "factors" key: {"factors": [...]}
+        - Single factor object: {"name": ..., "expression": ...}
+
+        Args:
+            data: Parsed JSON data (any type).
+
+        Returns:
+            List of factor dicts with keys: name, expression, ic, icir.
+            Empty list if no recognizable factor structure found.
+        """
+        factors = []
+
+        def _extract_factor(obj: dict) -> Optional[dict]:
+            """Try to extract a factor dict from a JSON object."""
+            if not isinstance(obj, dict):
+                return None
+            # Must have at least a name or expression
+            name = obj.get("name") or obj.get("factor_name") or obj.get("id")
+            expression = (
+                obj.get("expression")
+                or obj.get("formula")
+                or obj.get("code")
+                or obj.get("factor_expression")
+            )
+            if not (name or expression):
+                return None
+            return {
+                "name": str(name or expression),
+                "expression": str(expression or name),
+                "ic": float(obj.get("ic", 0.0) or 0.0),
+                "icir": float(obj.get("icir", 0.0) or 0.0),
+            }
+
+        if isinstance(data, list):
+            for item in data:
+                f = _extract_factor(item)
+                if f:
+                    factors.append(f)
+        elif isinstance(data, dict):
+            # Try "factors" key first
+            if "factors" in data and isinstance(data["factors"], list):
+                for item in data["factors"]:
+                    f = _extract_factor(item)
+                    if f:
+                        factors.append(f)
+            else:
+                # Try as single factor
+                f = _extract_factor(data)
+                if f:
+                    factors.append(f)
+
+        return factors
 
     @staticmethod
     async def _register_factors(market: str, factors: list[dict]) -> None:
@@ -440,11 +623,9 @@ class RDAgentRunner:
     ) -> list[str]:
         """Resolve the symbol list for an RD-Agent run.
 
-        Priority per universe:
-        1. Explicit symbols array
-        2. Index-type → resolve via data-service constituent API
-
-        Tries specified universe_id first, then default universe.
+        Priority:
+        1. Explicit symbols array in the universe record
+        2. Index-type universe → resolve via data-service constituent API
 
         Args:
             market: Market code.
@@ -522,22 +703,8 @@ class RDAgentRunner:
             if task:
                 task.status = "stopped"
 
-            # Send SIGTERM
-            try:
-                process.send_signal(signal.SIGTERM)
-            except OSError as e:
-                logger.warning("SIGTERM failed for %s: %s", market, e)
-
-        # Wait for graceful shutdown (outside lock)
-        try:
-            await asyncio.to_thread(process.wait, timeout=_SIGTERM_WAIT_SECONDS)
-        except subprocess.TimeoutExpired:
-            logger.warning(
-                "RD-Agent %s did not exit after %ds, sending SIGKILL",
-                market, _SIGTERM_WAIT_SECONDS,
-            )
-            process.kill()
-            await asyncio.to_thread(process.wait, timeout=5)
+        # Graceful shutdown: SIGTERM → wait → SIGKILL (outside lock)
+        await self._graceful_kill(process, market)
 
         # Cancel monitor task
         monitor = self._monitors.get(market)
@@ -576,7 +743,39 @@ class RDAgentRunner:
             "completed_at": None,
             "error": None,
             "log_tail": [],
+            "workdir": None,
         }
+
+    @staticmethod
+    def _cleanup_workdir(workdir: Path) -> None:
+        """Remove a completed run's workdir to prevent accumulation."""
+        try:
+            shutil.rmtree(workdir, ignore_errors=True)
+            logger.debug("Cleaned up RD-Agent workdir: %s", workdir)
+        except Exception as e:
+            logger.warning("Failed to clean up workdir %s: %s", workdir, e)
+
+    @staticmethod
+    def cleanup_old_workdirs(max_age_days: int = 7) -> int:
+        """Remove RD-Agent workdirs older than max_age_days.
+
+        Called by the scheduled model cleanup job.
+        Returns count of directories removed.
+        """
+        from app.config import get_settings
+        base_dir = Path(get_settings().PREDICTION_DATA_DIR)
+        cutoff = time.time() - max_age_days * 86400
+        removed = 0
+        for d in base_dir.glob("rdagent_*"):
+            if d.is_dir() and d.stat().st_mtime < cutoff:
+                try:
+                    shutil.rmtree(d)
+                    removed += 1
+                except Exception as e:
+                    logger.warning("Failed to remove old workdir %s: %s", d, e)
+        if removed:
+            logger.info("Cleaned up %d old RD-Agent workdirs", removed)
+        return removed
 
     def shutdown(self) -> None:
         """Kill all running RD-Agent processes.

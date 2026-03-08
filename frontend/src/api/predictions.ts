@@ -22,7 +22,74 @@ export interface PredictionModel {
   ndcg: number | null
   qualityPassed: boolean
   featureImportanceTop30: Record<string, number> | null
+  ensembleSize?: number | undefined
+  foldIcs?: number[] | undefined
   createdAt: string
+}
+
+export interface IcDecayResponse {
+  market: string
+  days: number
+  horizons: Record<string, { avg_ic: number; ic_std: number; n_dates: number }>
+  dataPoints: number
+}
+
+export interface TurnoverResponse {
+  market: string
+  days: number
+  dataPoints: number
+  summary: {
+    avgRankAutocorr: number | null
+    avgTopNRetention: number | null
+    topN: number
+    totalDates: number
+  }
+  daily: Array<{
+    date: string
+    rankAutocorr: number | null
+    topNRetention: number | null
+  }>
+}
+
+export interface SectorResponse {
+  market: string
+  totalSymbols: number
+  uniqueSectors: number
+  sectorCounts: Record<string, number>
+}
+
+export interface AttributionDaily {
+  date: string
+  portfolioReturn: number
+  universeReturn: number
+  sectorAttr: number
+  sizeAttr: number
+  alpha: number
+}
+
+export interface AttributionSummary {
+  totalReturn: number
+  sectorPct: number
+  sizePct: number
+  alphaPct: number
+  avgDailyAlpha: number
+  sectorBreakdown: Record<string, number>
+}
+
+export interface AttributionResponse {
+  market: string
+  days: number
+  topN: number
+  dataPoints: number
+  daily: AttributionDaily[]
+  summary: AttributionSummary
+}
+
+export interface PredictionDatesResponse {
+  market: string
+  forwardDays: number
+  dates: string[]
+  predictions: Record<string, PredictionResult[]>
 }
 
 export interface PredictionTask {
@@ -75,6 +142,7 @@ export interface PredictionAccuracy {
   accuracy: number
   avgIc: number | null
   avgIcir: number | null
+  pendingCount: number
 }
 
 export interface FeatureImportance {
@@ -144,6 +212,9 @@ function toCamelModel(m: Record<string, any>): PredictionModel {
     null
   ) as Record<string, number> | null
 
+  const ensembleSize = (metadata?.ensemble_size ?? m.ensemble_size ?? m.ensembleSize) as number | undefined
+  const foldIcs = (metadata?.fold_ics ?? m.fold_ics ?? m.foldIcs) as number[] | undefined
+
   return {
     id: String(m.id),
     market: m.market as string,
@@ -155,6 +226,8 @@ function toCamelModel(m: Record<string, any>): PredictionModel {
     ndcg: (m.ndcg ?? null) as number | null,
     qualityPassed: (m.quality_passed ?? m.qualityPassed ?? true) as boolean,
     featureImportanceTop30,
+    ensembleSize,
+    foldIcs,
     createdAt: (m.created_at ?? m.createdAt) as string,
   }
 }
@@ -209,6 +282,7 @@ function toCamelAccuracy(a: Record<string, any>): PredictionAccuracy {
     accuracy: (a.accuracy) as number,
     avgIc: (a.avg_ic ?? a.avgIc ?? null) as number | null,
     avgIcir: (a.avg_icir ?? a.avgIcir ?? null) as number | null,
+    pendingCount: (a.pending_count ?? a.pendingCount ?? 0) as number,
   }
 }
 
@@ -390,4 +464,116 @@ export const predictionsApi = {
     apiClient.get<{ lastUpdated: string | null; totalSymbols: number }>(
       '/admin/predictions/fundamentals/status'
     ).then(r => r.data),
+
+  // Signal Quality — IC decay, turnover, sectors
+  getIcDecay: (market: string, days = 60) =>
+    apiClient.get<Record<string, unknown>>(`/admin/predictions/${market}/ic-decay`, {
+      params: { days },
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    }).then(r => {
+      const d = r.data as Record<string, any>
+      return {
+        market: d.market as string,
+        days: d.days as number,
+        horizons: (d.horizons ?? {}) as IcDecayResponse['horizons'],
+        dataPoints: (d.data_points ?? d.dataPoints ?? 0) as number,
+      } satisfies IcDecayResponse
+    }),
+
+  getTurnover: (market: string, days = 60, topN = 20) =>
+    apiClient.get<Record<string, unknown>>(`/admin/predictions/${market}/turnover`, {
+      params: { days, top_n: topN },
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    }).then(r => {
+      const d = r.data as Record<string, any>
+      const s = d.summary as Record<string, any> | undefined
+      return {
+        market: d.market as string,
+        days: d.days as number,
+        dataPoints: (d.data_points ?? d.dataPoints ?? 0) as number,
+        summary: {
+          avgRankAutocorr: (s?.avg_rank_autocorr ?? s?.avgRankAutocorr ?? null) as number | null,
+          avgTopNRetention: (s?.avg_topN_retention ?? s?.avgTopNRetention ?? null) as number | null,
+          topN: (s?.top_n ?? s?.topN ?? topN) as number,
+          totalDates: (s?.total_dates ?? s?.totalDates ?? 0) as number,
+        },
+        daily: Array.isArray(d.daily)
+          ? (d.daily as Record<string, any>[]).map(dd => ({
+              date: dd.date as string,
+              rankAutocorr: (dd.rank_autocorr ?? dd.rankAutocorr ?? null) as number | null,
+              topNRetention: (dd.topN_retention ?? dd.topNRetention ?? null) as number | null,
+            }))
+          : [],
+      } satisfies TurnoverResponse
+    }),
+
+  getSectors: (market: string) =>
+    apiClient.get<Record<string, unknown>>(`/admin/predictions/sectors/${market}`)
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    .then(r => {
+      const d = r.data as Record<string, any>
+      return {
+        market: d.market as string,
+        totalSymbols: (d.total_symbols ?? d.totalSymbols ?? 0) as number,
+        uniqueSectors: (d.unique_sectors ?? d.uniqueSectors ?? 0) as number,
+        sectorCounts: (d.sector_counts ?? d.sectorCounts ?? {}) as Record<string, number>,
+      } satisfies SectorResponse
+    }),
+
+  collectSectors: (market: string) =>
+    apiClient.post<Record<string, unknown>>(`/admin/predictions/sectors/${market}/collect`)
+    .then(r => r.data),
+
+  getAttribution: (market: string, days = 90, topN = 20) =>
+    apiClient.get<Record<string, unknown>>(`/admin/predictions/${market}/attribution`, {
+      params: { days, top_n: topN },
+    }).then(r => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const d = r.data as Record<string, any>
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const s = (d.summary ?? {}) as Record<string, any>
+      return {
+        market: d.market as string,
+        days: d.days as number,
+        topN: (d.top_n ?? d.topN ?? topN) as number,
+        dataPoints: (d.data_points ?? d.dataPoints ?? 0) as number,
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        daily: Array.isArray(d.daily) ? (d.daily as Record<string, any>[]).map(dd => ({
+          date: dd.date as string,
+          portfolioReturn: (dd.portfolio_return ?? dd.portfolioReturn ?? 0) as number,
+          universeReturn: (dd.universe_return ?? dd.universeReturn ?? 0) as number,
+          sectorAttr: (dd.sector_attr ?? dd.sectorAttr ?? 0) as number,
+          sizeAttr: (dd.size_attr ?? dd.sizeAttr ?? 0) as number,
+          alpha: (dd.alpha ?? 0) as number,
+        })) : [],
+        summary: {
+          totalReturn: (s.total_return ?? s.totalReturn ?? 0) as number,
+          sectorPct: (s.sector_pct ?? s.sectorPct ?? 0) as number,
+          sizePct: (s.size_pct ?? s.sizePct ?? 0) as number,
+          alphaPct: (s.alpha_pct ?? s.alphaPct ?? 0) as number,
+          avgDailyAlpha: (s.avg_daily_alpha ?? s.avgDailyAlpha ?? 0) as number,
+          sectorBreakdown: (s.sector_breakdown ?? s.sectorBreakdown ?? {}) as Record<string, number>,
+        },
+      } satisfies AttributionResponse
+    }),
+
+  getPredictionDates: (market: string, nDates = 2, forwardDays = 5) =>
+    apiClient.get<Record<string, unknown>>(`/admin/predictions/${market}/prediction-dates`, {
+      params: { n_dates: nDates, forward_days: forwardDays },
+    }).then(r => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const d = r.data as Record<string, any>
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const rawPreds = (d.predictions ?? {}) as Record<string, Record<string, any>[]>
+      const predictions: Record<string, PredictionResult[]> = {}
+      for (const [dt, preds] of Object.entries(rawPreds)) {
+        predictions[dt] = preds.map(toCamelPrediction)
+      }
+      return {
+        market: d.market as string,
+        forwardDays: (d.forward_days ?? d.forwardDays ?? 5) as number,
+        dates: (d.dates ?? []) as string[],
+        predictions,
+      } satisfies PredictionDatesResponse
+    }),
 }

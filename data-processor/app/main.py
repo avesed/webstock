@@ -122,14 +122,34 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
         # Helper: check if prediction is enabled before running
         async def _guarded_prediction(market: str) -> None:
-            """Only run prediction if enabled in settings."""
+            """Only run prediction if enabled in settings.
+
+            Checks for performance decay flag (set by backfill_returns)
+            and forces retrain if the model's rolling IC has decayed.
+            Supports multi-horizon training when PREDICTION_HORIZONS has >1 value.
+            """
             try:
                 config = await _sc.get_config()
                 if not config.llm.enabled:
                     logger.debug("Prediction disabled, skipping %s", market)
                     return
-                from app.services.prediction_service import prediction_service
-                await prediction_service.run_prediction(market)
+                from app.services.prediction_service import (
+                    prediction_service, _get_prediction_horizons,
+                )
+                force = await prediction_service.check_retrain_needed(market)
+                if force:
+                    logger.info(
+                        "Performance decay flag set for %s, forcing retrain", market,
+                    )
+                horizons = _get_prediction_horizons()
+                if len(horizons) > 1:
+                    await prediction_service.run_multi_horizon(
+                        market, force_retrain=force,
+                    )
+                else:
+                    await prediction_service.run_prediction(
+                        market, force_retrain=force, forward_days=horizons[0],
+                    )
             except Exception as e:
                 logger.error("Scheduled prediction failed for %s: %s", market, e, exc_info=True)
 
@@ -170,23 +190,35 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             except Exception as e:
                 logger.error("Scheduled Qlib sync failed for %s: %s", market, e, exc_info=True)
 
-        scheduler.add_job(_sync_qlib, 'cron', args=['cn'], hour=8, minute=15, id='sync_qlib_cn')
-        scheduler.add_job(_sync_qlib, 'cron', args=['hk'], hour=9, minute=15, id='sync_qlib_hk')
-        scheduler.add_job(_sync_qlib, 'cron', args=['us'], hour=22, minute=15, id='sync_qlib_us')
-        scheduler.add_job(_sync_qlib, 'cron', args=['metal'], hour=22, minute=45, id='sync_qlib_metal')
+        # Common reliability parameters for all cron jobs:
+        # misfire_grace_time=600: allow up to 10-min scheduling delay (container restart, etc.)
+        # coalesce=True: if multiple triggers accumulated, fire only once
+        # max_instances=1: prevent duplicate concurrent executions
+        # replace_existing=True: safe for re-registration on warm restarts
+        _JOB_KWARGS = dict(
+            misfire_grace_time=600,
+            coalesce=True,
+            max_instances=1,
+            replace_existing=True,
+        )
+
+        scheduler.add_job(_sync_qlib, 'cron', args=['cn'], hour=8, minute=15, id='sync_qlib_cn', **_JOB_KWARGS)
+        scheduler.add_job(_sync_qlib, 'cron', args=['hk'], hour=9, minute=15, id='sync_qlib_hk', **_JOB_KWARGS)
+        scheduler.add_job(_sync_qlib, 'cron', args=['us'], hour=22, minute=15, id='sync_qlib_us', **_JOB_KWARGS)
+        scheduler.add_job(_sync_qlib, 'cron', args=['metal'], hour=22, minute=45, id='sync_qlib_metal', **_JOB_KWARGS)
 
         # Fundamental collection (after market close)
-        scheduler.add_job(_guarded_fundamentals, 'cron', args=['cn'], hour=8, minute=30, id='collect_fundamentals_cn')
-        scheduler.add_job(_guarded_fundamentals, 'cron', args=['hk'], hour=9, minute=30, id='collect_fundamentals_hk')
-        scheduler.add_job(_guarded_fundamentals, 'cron', args=['us'], hour=22, minute=30, id='collect_fundamentals_us')
+        scheduler.add_job(_guarded_fundamentals, 'cron', args=['cn'], hour=8, minute=30, id='collect_fundamentals_cn', **_JOB_KWARGS)
+        scheduler.add_job(_guarded_fundamentals, 'cron', args=['hk'], hour=9, minute=30, id='collect_fundamentals_hk', **_JOB_KWARGS)
+        scheduler.add_job(_guarded_fundamentals, 'cron', args=['us'], hour=22, minute=30, id='collect_fundamentals_us', **_JOB_KWARGS)
 
         # Prediction runs (after fundamentals complete)
-        scheduler.add_job(_guarded_prediction, 'cron', args=['cn'], hour=9, minute=30, id='predict_cn')
-        scheduler.add_job(_guarded_prediction, 'cron', args=['hk'], hour=10, minute=30, id='predict_hk')
-        scheduler.add_job(_guarded_prediction, 'cron', args=['us'], hour=23, minute=30, id='predict_us')
+        scheduler.add_job(_guarded_prediction, 'cron', args=['cn'], hour=9, minute=30, id='predict_cn', **_JOB_KWARGS)
+        scheduler.add_job(_guarded_prediction, 'cron', args=['hk'], hour=10, minute=30, id='predict_hk', **_JOB_KWARGS)
+        scheduler.add_job(_guarded_prediction, 'cron', args=['us'], hour=23, minute=30, id='predict_us', **_JOB_KWARGS)
 
         # Daily return backfill
-        scheduler.add_job(_backfill_returns, 'cron', hour=0, minute=0, id='backfill_returns')
+        scheduler.add_job(_backfill_returns, 'cron', hour=0, minute=0, id='backfill_returns', **_JOB_KWARGS)
 
         # Market signals: analyst snapshots + options flow + earnings events
         # Runs after US/HK market close, along with fundamental collection.
@@ -203,13 +235,20 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
                     logger.warning("No symbols for market signal collection: %s", market)
                     return
 
-                await asyncio.gather(
+                results = await asyncio.gather(
                     _es.collect_earnings_events(market, symbols),
                     _as.collect_analyst_snapshots(market, symbols),
                     _os.collect_options_flow(market, symbols),
                     return_exceptions=True,
                 )
-                logger.info("Market signal collection done for %s", market)
+                failed = [r for r in results if isinstance(r, Exception)]
+                if failed:
+                    logger.warning(
+                        "Market signal collection for %s: %d/%d sources failed: %s",
+                        market, len(failed), len(results), failed,
+                    )
+                else:
+                    logger.info("Market signal collection done for %s", market)
             except Exception as e:
                 logger.error(
                     "Market signal collection failed for %s: %s", market, e, exc_info=True,
@@ -219,22 +258,54 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         # HK signals: 10:00 UTC (after HK fundamental collection at 09:30)
         scheduler.add_job(
             _collect_market_signals, 'cron', args=['us'],
-            hour=23, minute=45, id='collect_signals_us',
+            hour=23, minute=45, id='collect_signals_us', **_JOB_KWARGS,
         )
         scheduler.add_job(
             _collect_market_signals, 'cron', args=['hk'],
-            hour=10, minute=0, id='collect_signals_hk',
+            hour=10, minute=0, id='collect_signals_hk', **_JOB_KWARGS,
         )
 
-        # Model file cleanup (daily 1:00 UTC)
+        # Sector data collection (weekly, Sunday 02:00 UTC)
+        # US/HK sectors are piggybacked during daily fundamental collection.
+        # CN sectors need explicit collection via data-service API.
+        async def _collect_sectors(market: str) -> None:
+            try:
+                from app.services.fundamental_service import fundamental_service
+                result = await fundamental_service.collect_sector_data(market)
+                logger.info(
+                    "Sector collection for %s: wrote=%d, skipped=%d",
+                    market, result.get("success", 0), result.get("skipped", 0),
+                )
+            except Exception as e:
+                logger.error("Sector collection failed for %s: %s", market, e, exc_info=True)
+
+        scheduler.add_job(
+            _collect_sectors, 'cron', args=['cn'],
+            day_of_week='sun', hour=2, minute=0, id='collect_sectors_cn', **_JOB_KWARGS,
+        )
+        scheduler.add_job(
+            _collect_sectors, 'cron', args=['us'],
+            day_of_week='sun', hour=2, minute=30, id='collect_sectors_us', **_JOB_KWARGS,
+        )
+        scheduler.add_job(
+            _collect_sectors, 'cron', args=['hk'],
+            day_of_week='sun', hour=3, minute=0, id='collect_sectors_hk', **_JOB_KWARGS,
+        )
+
+        # Model file + RD-Agent workdir cleanup (daily 1:00 UTC)
         async def _cleanup_models() -> None:
             try:
                 from app.services.prediction_service import prediction_service
                 await prediction_service.cleanup_old_models()
             except Exception as e:
                 logger.error("Model cleanup failed: %s", e, exc_info=True)
+            try:
+                from app.services.rdagent_runner import RDAgentRunner
+                RDAgentRunner.cleanup_old_workdirs(max_age_days=7)
+            except Exception as e:
+                logger.error("RD-Agent workdir cleanup failed: %s", e, exc_info=True)
 
-        scheduler.add_job(_cleanup_models, 'cron', hour=1, minute=0, id='cleanup_models')
+        scheduler.add_job(_cleanup_models, 'cron', hour=1, minute=0, id='cleanup_models', **_JOB_KWARGS)
 
         scheduler.start()
         logger.info("APScheduler started with %d jobs", len(scheduler.get_jobs()))

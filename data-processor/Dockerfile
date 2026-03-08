@@ -14,7 +14,9 @@ ENV PATH="/opt/venv/bin:$PATH"
 
 COPY requirements.txt /tmp/requirements.txt
 RUN pip install --no-cache-dir --upgrade pip && \
-    pip install --no-cache-dir -r /tmp/requirements.txt
+    pip install --no-cache-dir -r /tmp/requirements.txt && \
+    python -c "import rdagent; print('rdagent import OK')" && \
+    rdagent --help > /dev/null && echo "rdagent CLI OK"
 
 
 # Stage 2: Runtime -- lean image with only runtime dependencies

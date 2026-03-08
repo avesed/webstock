@@ -1,9 +1,10 @@
-import { Fragment, useState, useCallback, useEffect, useRef } from 'react'
+import { Fragment, useState, useMemo, useCallback, useEffect, useRef } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { useTranslation } from 'react-i18next'
 import {
   TrendingUp, Play, RefreshCw, Loader2, ChevronDown, ChevronRight,
   BarChart3, Target, Brain, AlertCircle, CheckCircle2, XCircle, Activity,
+  ArrowUpRight, ArrowDownRight, Minus, PieChart,
 } from 'lucide-react'
 
 import { predictionsApi } from '@/api/predictions'
@@ -65,6 +66,9 @@ function StatusOverview({ status }: { status: Record<string, PredictionStatusIte
         const latestModel = s?.models?.[0]
         const latestPrediction = s?.latestPredictions?.[0]
         const lastIc = latestModel?.ic ?? null
+        const lastIcir = latestModel?.icir ?? null
+        const ensembleSize = latestModel?.ensembleSize
+        const foldIcs = latestModel?.foldIcs
         return (
           <Card key={mkt}>
             <CardHeader className="pb-2">
@@ -80,7 +84,7 @@ function StatusOverview({ status }: { status: Record<string, PredictionStatusIte
                 <>
                   <div className="flex justify-between">
                     <span className="text-muted-foreground">{td(t, 'predictions.lastPrediction')}</span>
-                    <span>{latestPrediction?.predictionDate ?? '-'}</span>
+                    <span>{latestPrediction?.predictionDate ?? latestModel?.modelDate ?? '-'}</span>
                   </div>
                   <div className="flex justify-between">
                     <span className="text-muted-foreground">{td(t, 'predictions.modelIc')}</span>
@@ -91,6 +95,41 @@ function StatusOverview({ status }: { status: Record<string, PredictionStatusIte
                       {formatIc(lastIc)}
                     </span>
                   </div>
+                  <div className="flex justify-between">
+                    <span className="text-muted-foreground">ICIR</span>
+                    <span className={cn(
+                      lastIcir != null && lastIcir > 0.5 && 'text-green-600 dark:text-green-400',
+                      lastIcir != null && lastIcir < 0.1 && 'text-red-600 dark:text-red-400',
+                    )}>
+                      {formatIc(lastIcir)}
+                    </span>
+                  </div>
+                  {ensembleSize != null && (
+                    <div className="flex justify-between">
+                      <span className="text-muted-foreground">{td(t, 'predictions.ensemble')}</span>
+                      <span>{ensembleSize} {td(t, 'predictions.members')}</span>
+                    </div>
+                  )}
+                  {foldIcs && foldIcs.length > 0 && (
+                    <div className="flex justify-between items-center">
+                      <span className="text-muted-foreground">{td(t, 'predictions.foldIcs')}</span>
+                      <div className="flex gap-1">
+                        {foldIcs.map((ic, i) => (
+                          <Badge
+                            key={i}
+                            variant="outline"
+                            className={cn(
+                              'text-[10px] px-1 py-0',
+                              ic > 0.02 && 'border-green-500 text-green-600 dark:text-green-400',
+                              ic < 0 && 'border-red-500 text-red-600 dark:text-red-400',
+                            )}
+                          >
+                            {ic.toFixed(3)}
+                          </Badge>
+                        ))}
+                      </div>
+                    </div>
+                  )}
                   <div className="flex justify-between">
                     <span className="text-muted-foreground">{td(t, 'predictions.models')}</span>
                     <span>{s?.models?.length ?? 0}</span>
@@ -444,7 +483,7 @@ function AccuracySection() {
         </div>
         {isLoading ? (
           <Skeleton className="h-20 w-full" />
-        ) : accuracy ? (
+        ) : accuracy && accuracy.totalPredictions > 0 ? (
           <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
             <div>
               <p className="text-xs text-muted-foreground">{td(t, 'predictions.totalPredictions')}</p>
@@ -470,7 +509,14 @@ function AccuracySection() {
             </div>
           </div>
         ) : (
-          <p className="text-sm text-muted-foreground text-center py-4">{td(t, 'predictions.noAccuracyData')}</p>
+          <div className="text-center py-4 space-y-1">
+            <p className="text-sm text-muted-foreground">{td(t, 'predictions.noAccuracyData')}</p>
+            {accuracy && accuracy.pendingCount > 0 && (
+              <p className="text-xs text-muted-foreground">
+                {td(t, 'predictions.pendingVerification', { count: accuracy.pendingCount })}
+              </p>
+            )}
+          </div>
         )}
       </CardContent>
     </Card>
@@ -593,6 +639,201 @@ function TriggerSection() {
           })}
         </div>
       </CardContent>
+    </Card>
+  )
+}
+
+// ── Signal Quality (IC Decay, Turnover, Sectors) ──
+
+function SignalQualitySection() {
+  const { t } = useTranslation('admin')
+  const { toast } = useToast()
+  const [selectedMarket, setSelectedMarket] = useState<MarketKey>('us')
+  const [expanded, setExpanded] = useState(false)
+
+  const { data: icDecay, isLoading: icLoading } = useQuery({
+    queryKey: ['admin', 'predictions', 'ic-decay', selectedMarket],
+    queryFn: () => predictionsApi.getIcDecay(selectedMarket),
+    staleTime: 10 * 60_000,
+    enabled: expanded,
+  })
+
+  const { data: turnover, isLoading: turnoverLoading } = useQuery({
+    queryKey: ['admin', 'predictions', 'turnover', selectedMarket],
+    queryFn: () => predictionsApi.getTurnover(selectedMarket),
+    staleTime: 10 * 60_000,
+    enabled: expanded,
+  })
+
+  const { data: sectors, isLoading: sectorsLoading } = useQuery({
+    queryKey: ['admin', 'predictions', 'sectors', selectedMarket],
+    queryFn: () => predictionsApi.getSectors(selectedMarket),
+    staleTime: 30 * 60_000,
+    enabled: expanded,
+  })
+
+  const collectMutation = useMutation({
+    mutationFn: (market: string) => predictionsApi.collectSectors(market),
+    onSuccess: () => {
+      toast({ title: td(t, 'predictions.sectorCollectStarted') })
+    },
+    onError: (err) => {
+      toast({ title: td(t, 'predictions.sectorCollectError'), description: getErrorMessage(err), variant: 'destructive' })
+    },
+  })
+
+  const horizonEntries = icDecay?.horizons
+    ? Object.entries(icDecay.horizons).sort(([a], [b]) => Number(a) - Number(b))
+    : []
+
+  return (
+    <Card>
+      <CardHeader className="pb-2 cursor-pointer" onClick={() => setExpanded(prev => !prev)}>
+        <CardTitle className="flex items-center gap-2 text-base">
+          {expanded ? <ChevronDown className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />}
+          <Activity className="h-4 w-4" />
+          {td(t, 'predictions.signalQuality')}
+        </CardTitle>
+        <CardDescription className="text-xs">{td(t, 'predictions.signalQualityDesc')}</CardDescription>
+      </CardHeader>
+      {expanded && (
+        <CardContent className="space-y-6">
+          {/* Market tabs */}
+          <div className="flex gap-1">
+            {MARKETS.map(mkt => (
+              <Button
+                key={mkt}
+                variant={selectedMarket === mkt ? 'default' : 'outline'}
+                size="sm"
+                onClick={() => setSelectedMarket(mkt)}
+              >
+                {mkt.toUpperCase()}
+              </Button>
+            ))}
+          </div>
+
+          {/* Sector Coverage */}
+          <div>
+            <div className="flex items-center justify-between mb-2">
+              <p className="text-sm font-medium">{td(t, 'predictions.sectorCoverage')}</p>
+              <Button
+                size="sm"
+                variant="outline"
+                className="h-7 text-xs"
+                disabled={collectMutation.isPending}
+                onClick={() => collectMutation.mutate(selectedMarket)}
+              >
+                <RefreshCw className={cn('h-3 w-3 mr-1', collectMutation.isPending && 'animate-spin')} />
+                {td(t, 'predictions.collectSectors')}
+              </Button>
+            </div>
+            {sectorsLoading ? (
+              <Skeleton className="h-16 w-full" />
+            ) : sectors ? (
+              <div className="space-y-2">
+                <div className="flex gap-4 text-sm">
+                  <div>
+                    <span className="text-muted-foreground">{td(t, 'predictions.symbols')}: </span>
+                    <span className="font-medium">{sectors.totalSymbols}</span>
+                  </div>
+                  <div>
+                    <span className="text-muted-foreground">{td(t, 'predictions.sectorCount')}: </span>
+                    <span className="font-medium">{sectors.uniqueSectors}</span>
+                  </div>
+                </div>
+                {Object.keys(sectors.sectorCounts).length > 0 && (
+                  <div className="flex flex-wrap gap-1">
+                    {Object.entries(sectors.sectorCounts)
+                      .sort(([, a], [, b]) => b - a)
+                      .map(([name, count]) => (
+                        <Badge key={name} variant="outline" className="text-[10px] py-0">
+                          {name} ({count})
+                        </Badge>
+                      ))}
+                  </div>
+                )}
+              </div>
+            ) : (
+              <p className="text-xs text-muted-foreground">{td(t, 'predictions.noSectorData')}</p>
+            )}
+          </div>
+
+          {/* IC Decay */}
+          <div>
+            <p className="text-sm font-medium mb-2">{td(t, 'predictions.icDecay')}</p>
+            {icLoading ? (
+              <Skeleton className="h-16 w-full" />
+            ) : horizonEntries.length > 0 ? (
+              <div className="space-y-1.5">
+                {horizonEntries.map(([horizon, data]) => {
+                  const ic = data.avg_ic
+                  const maxIc = Math.max(...horizonEntries.map(([, d]) => Math.abs(d.avg_ic)), 0.001)
+                  const pct = Math.abs(ic) / maxIc * 100
+                  return (
+                    <div key={horizon} className="flex items-center gap-2 text-xs">
+                      <span className="w-10 text-right text-muted-foreground">t+{horizon}</span>
+                      <div className="flex-1 h-4 bg-muted rounded-full overflow-hidden">
+                        <div
+                          className={cn(
+                            'h-full rounded-full',
+                            ic > 0 ? 'bg-green-500/60' : 'bg-red-500/60',
+                          )}
+                          style={{ width: `${Math.min(pct, 100)}%` }}
+                        />
+                      </div>
+                      <span className={cn(
+                        'w-16 text-right font-mono',
+                        ic > 0 ? 'text-green-600 dark:text-green-400' : 'text-red-600 dark:text-red-400',
+                      )}>
+                        {ic.toFixed(4)}
+                      </span>
+                      <span className="w-8 text-right text-muted-foreground">n={data.n_dates}</span>
+                    </div>
+                  )
+                })}
+              </div>
+            ) : (
+              <p className="text-xs text-muted-foreground">{td(t, 'predictions.noIcDecayData')}</p>
+            )}
+          </div>
+
+          {/* Turnover */}
+          <div>
+            <p className="text-sm font-medium mb-2">{td(t, 'predictions.turnover')}</p>
+            {turnoverLoading ? (
+              <Skeleton className="h-16 w-full" />
+            ) : turnover && turnover.dataPoints > 0 ? (
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <p className="text-xs text-muted-foreground">{td(t, 'predictions.avgRankAutocorr')}</p>
+                  <p className={cn(
+                    'text-lg font-semibold',
+                    turnover.summary.avgRankAutocorr != null && turnover.summary.avgRankAutocorr > 0.5 && 'text-green-600 dark:text-green-400',
+                    turnover.summary.avgRankAutocorr != null && turnover.summary.avgRankAutocorr < 0.2 && 'text-red-600 dark:text-red-400',
+                  )}>
+                    {turnover.summary.avgRankAutocorr != null ? turnover.summary.avgRankAutocorr.toFixed(3) : '-'}
+                  </p>
+                  <p className="text-[10px] text-muted-foreground">{td(t, 'predictions.rankAutocorrHelp')}</p>
+                </div>
+                <div>
+                  <p className="text-xs text-muted-foreground">{td(t, 'predictions.avgTopNRetention')}</p>
+                  <p className={cn(
+                    'text-lg font-semibold',
+                    turnover.summary.avgTopNRetention != null && turnover.summary.avgTopNRetention > 0.5 && 'text-green-600 dark:text-green-400',
+                  )}>
+                    {turnover.summary.avgTopNRetention != null ? formatPercent(turnover.summary.avgTopNRetention) : '-'}
+                  </p>
+                  <p className="text-[10px] text-muted-foreground">
+                    Top {turnover.summary.topN} {td(t, 'predictions.retentionHelp')}
+                  </p>
+                </div>
+              </div>
+            ) : (
+              <p className="text-xs text-muted-foreground">{td(t, 'predictions.noTurnoverData')}</p>
+            )}
+          </div>
+        </CardContent>
+      )}
     </Card>
   )
 }
@@ -754,9 +995,316 @@ function PerformanceSection() {
             </div>
           </div>
         ) : (
-          <p className="text-sm text-muted-foreground text-center py-4">{td(t, 'predictions.noPerformanceData')}</p>
+          <div className="text-center py-4 space-y-1">
+            <p className="text-sm text-muted-foreground">{td(t, 'predictions.noPerformanceData')}</p>
+            <p className="text-xs text-muted-foreground">{td(t, 'predictions.needsReturnBackfill')}</p>
+          </div>
         )}
       </CardContent>
+    </Card>
+  )
+}
+
+// ── Holdings Change ────────────────────────────
+
+function HoldingsChangeTable() {
+  const { t } = useTranslation('admin')
+  const [selectedMarket, setSelectedMarket] = useState<MarketKey>('us')
+
+  const { data, isLoading } = useQuery({
+    queryKey: ['admin', 'predictions', 'prediction-dates', selectedMarket],
+    queryFn: () => predictionsApi.getPredictionDates(selectedMarket, 2),
+    staleTime: 5 * 60_000,
+  })
+
+  const changes = useMemo(() => {
+    if (!data || data.dates.length < 2) return null
+    const today = data.dates[0]
+    const yesterday = data.dates[1]
+    if (!today || !yesterday) return null
+    const todayPreds = data.predictions[today] ?? []
+    const yesterdayPreds = data.predictions[yesterday] ?? []
+    const todayTop20 = todayPreds.slice(0, 20)
+    const yesterdayTop20 = yesterdayPreds.slice(0, 20)
+    const todaySyms = new Set(todayTop20.map((p: PredictionResult) => p.symbol))
+    const yestSyms = new Set(yesterdayTop20.map((p: PredictionResult) => p.symbol))
+
+    const entered = todayTop20.filter((p: PredictionResult) => !yestSyms.has(p.symbol))
+    const exited = yesterdayTop20.filter((p: PredictionResult) => !todaySyms.has(p.symbol))
+    const retained = todayTop20.filter((p: PredictionResult) => yestSyms.has(p.symbol))
+
+    return { entered, exited, retained, todayDate: today, yesterdayDate: yesterday }
+  }, [data])
+
+  return (
+    <div>
+      <div className="flex items-center justify-between mb-3">
+        <p className="text-sm font-medium">{td(t, 'predictions.holdingsChange')}</p>
+        <div className="flex gap-1">
+          {MARKETS.map(mkt => (
+            <Button key={mkt} variant={selectedMarket === mkt ? 'default' : 'outline'} size="sm"
+              className="h-6 text-xs px-2" onClick={() => setSelectedMarket(mkt)}>
+              {mkt.toUpperCase()}
+            </Button>
+          ))}
+        </div>
+      </div>
+      {isLoading ? <Skeleton className="h-24 w-full" /> : !changes ? (
+        <p className="text-xs text-muted-foreground">{td(t, 'predictions.noHistoryData')}</p>
+      ) : (
+        <div className="grid grid-cols-3 gap-3">
+          {/* New Entries */}
+          <div>
+            <p className="text-xs font-medium text-green-600 dark:text-green-400 mb-1 flex items-center gap-1">
+              <ArrowUpRight className="h-3 w-3" /> {td(t, 'predictions.newEntries')} ({changes.entered.length})
+            </p>
+            <div className="space-y-0.5">
+              {changes.entered.map((p: PredictionResult) => (
+                <div key={p.symbol} className="text-xs flex justify-between">
+                  <span className="font-mono">{p.symbol}</span>
+                  <span className="text-muted-foreground">{formatPercent(p.percentileRank)}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+          {/* Retained */}
+          <div>
+            <p className="text-xs font-medium text-muted-foreground mb-1 flex items-center gap-1">
+              <Minus className="h-3 w-3" /> {td(t, 'predictions.retained')} ({changes.retained.length})
+            </p>
+            <div className="space-y-0.5">
+              {changes.retained.map((p: PredictionResult) => (
+                <div key={p.symbol} className="text-xs flex justify-between">
+                  <span className="font-mono">{p.symbol}</span>
+                  <span className="text-muted-foreground">{formatPercent(p.percentileRank)}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+          {/* Exits */}
+          <div>
+            <p className="text-xs font-medium text-red-600 dark:text-red-400 mb-1 flex items-center gap-1">
+              <ArrowDownRight className="h-3 w-3" /> {td(t, 'predictions.exits')} ({changes.exited.length})
+            </p>
+            <div className="space-y-0.5">
+              {changes.exited.map((p: PredictionResult) => (
+                <div key={p.symbol} className="text-xs flex justify-between">
+                  <span className="font-mono">{p.symbol}</span>
+                  <span className="text-muted-foreground">{formatPercent(p.percentileRank)}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
+// ── Sector Allocation ─────────────────────────
+
+function SectorAllocationCard() {
+  const { t } = useTranslation('admin')
+  const [selectedMarket, setSelectedMarket] = useState<MarketKey>('us')
+
+  const { data: sectors } = useQuery({
+    queryKey: ['admin', 'predictions', 'sectors', selectedMarket],
+    queryFn: () => predictionsApi.getSectors(selectedMarket),
+    staleTime: 30 * 60_000,
+  })
+
+  const { data: predData } = useQuery({
+    queryKey: ['admin', 'predictions', 'latest', selectedMarket],
+    queryFn: () => predictionsApi.getLatestPredictions(selectedMarket, 100),
+    staleTime: 5 * 60_000,
+  })
+
+  const allocation = useMemo(() => {
+    if (!sectors || !predData || !sectors.sectorCounts) return null
+    const predList = Array.isArray(predData) ? predData : []
+    if (predList.length === 0) return null
+
+    // Universe sector weights
+    const univTotal = sectors.totalSymbols || 1
+    const univWeights: Record<string, number> = {}
+    for (const [s, cnt] of Object.entries(sectors.sectorCounts)) {
+      univWeights[s] = cnt / univTotal
+    }
+
+    // Portfolio: top 20 — we need sector data per symbol
+    // Since we don't have per-symbol sector from this endpoint,
+    // show universe distribution only
+    return {
+      sectors: Object.entries(sectors.sectorCounts)
+        .sort(([, a], [, b]) => b - a)
+        .slice(0, 10)
+        .map(([name, count]) => ({
+          name,
+          count,
+          pct: count / univTotal * 100,
+        })),
+      total: sectors.totalSymbols,
+      unique: sectors.uniqueSectors,
+    }
+  }, [sectors, predData])
+
+  return (
+    <div>
+      <div className="flex items-center justify-between mb-3">
+        <p className="text-sm font-medium">{td(t, 'predictions.sectorAllocation')}</p>
+        <div className="flex gap-1">
+          {MARKETS.map(mkt => (
+            <Button key={mkt} variant={selectedMarket === mkt ? 'default' : 'outline'} size="sm"
+              className="h-6 text-xs px-2" onClick={() => setSelectedMarket(mkt)}>
+              {mkt.toUpperCase()}
+            </Button>
+          ))}
+        </div>
+      </div>
+      {!allocation ? (
+        <p className="text-xs text-muted-foreground">{td(t, 'predictions.noSectorData')}</p>
+      ) : (
+        <div className="space-y-1.5">
+          {allocation.sectors.map(s => (
+            <div key={s.name} className="flex items-center gap-2 text-xs">
+              <span className="w-28 truncate">{s.name}</span>
+              <div className="flex-1 bg-muted rounded-full h-3 overflow-hidden">
+                <div
+                  className="bg-primary/60 h-full rounded-full transition-all"
+                  style={{ width: `${Math.min(s.pct * 2, 100)}%` }}
+                />
+              </div>
+              <span className="w-12 text-right text-muted-foreground">{s.pct.toFixed(1)}%</span>
+              <span className="w-8 text-right text-muted-foreground">{s.count}</span>
+            </div>
+          ))}
+          <p className="text-[10px] text-muted-foreground mt-1">
+            {allocation.unique} {td(t, 'predictions.sectorCount')} · {allocation.total} {td(t, 'predictions.symbol')}s
+          </p>
+        </div>
+      )}
+    </div>
+  )
+}
+
+// ── Return Attribution ────────────────────────
+
+function AttributionSummaryCard() {
+  const { t } = useTranslation('admin')
+  const [selectedMarket, setSelectedMarket] = useState<MarketKey>('us')
+
+  const { data: attribution, isLoading } = useQuery({
+    queryKey: ['admin', 'predictions', 'attribution', selectedMarket],
+    queryFn: () => predictionsApi.getAttribution(selectedMarket),
+    staleTime: 10 * 60_000,
+  })
+
+  return (
+    <div>
+      <div className="flex items-center justify-between mb-3">
+        <p className="text-sm font-medium">{td(t, 'predictions.attribution')}</p>
+        <div className="flex gap-1">
+          {MARKETS.map(mkt => (
+            <Button key={mkt} variant={selectedMarket === mkt ? 'default' : 'outline'} size="sm"
+              className="h-6 text-xs px-2" onClick={() => setSelectedMarket(mkt)}>
+              {mkt.toUpperCase()}
+            </Button>
+          ))}
+        </div>
+      </div>
+      {isLoading ? <Skeleton className="h-24 w-full" /> : !attribution || attribution.dataPoints === 0 ? (
+        <p className="text-xs text-muted-foreground">{td(t, 'predictions.noAttributionData')}</p>
+      ) : (
+        <div className="space-y-3">
+          {/* Summary cards */}
+          <div className="grid grid-cols-3 gap-3">
+            <div className="rounded-lg border p-2.5 text-center">
+              <p className="text-[10px] text-muted-foreground">{td(t, 'predictions.sectorReturn')}</p>
+              <p className={cn('text-lg font-bold',
+                attribution.summary.sectorPct > 40 && 'text-amber-600 dark:text-amber-400'
+              )}>
+                {attribution.summary.sectorPct.toFixed(1)}%
+              </p>
+            </div>
+            <div className="rounded-lg border p-2.5 text-center">
+              <p className="text-[10px] text-muted-foreground">{td(t, 'predictions.sizeReturn')}</p>
+              <p className="text-lg font-bold">
+                {attribution.summary.sizePct.toFixed(1)}%
+              </p>
+            </div>
+            <div className="rounded-lg border p-2.5 text-center">
+              <p className="text-[10px] text-muted-foreground">{td(t, 'predictions.alphaReturn')}</p>
+              <p className={cn('text-lg font-bold',
+                attribution.summary.alphaPct > 50 && 'text-green-600 dark:text-green-400',
+                attribution.summary.alphaPct < 20 && 'text-red-600 dark:text-red-400',
+              )}>
+                {attribution.summary.alphaPct.toFixed(1)}%
+              </p>
+            </div>
+          </div>
+          {/* Sector breakdown */}
+          {Object.keys(attribution.summary.sectorBreakdown).length > 0 && (
+            <div>
+              <p className="text-xs text-muted-foreground mb-1">{td(t, 'predictions.sectorBreakdown')}</p>
+              <div className="space-y-1">
+                {Object.entries(attribution.summary.sectorBreakdown).slice(0, 6).map(([sector, contrib]) => (
+                  <div key={sector} className="flex items-center gap-2 text-xs">
+                    <span className="w-28 truncate">{sector}</span>
+                    <div className="flex-1 bg-muted rounded-full h-2.5 overflow-hidden">
+                      <div
+                        className={cn(
+                          'h-full rounded-full transition-all',
+                          contrib >= 0 ? 'bg-green-500/60' : 'bg-red-500/60',
+                        )}
+                        style={{ width: `${Math.min(Math.abs(contrib) * 5000, 100)}%` }}
+                      />
+                    </div>
+                    <span className={cn('w-16 text-right',
+                      contrib >= 0 ? 'text-green-600 dark:text-green-400' : 'text-red-600 dark:text-red-400',
+                    )}>
+                      {(contrib * 100).toFixed(2)}%
+                    </span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+          <p className="text-[10px] text-muted-foreground">
+            {td(t, 'predictions.attributionPeriod', { days: attribution.days, count: attribution.dataPoints })}
+          </p>
+        </div>
+      )}
+    </div>
+  )
+}
+
+// ── Signal Dashboard (container) ──────────────
+
+function SignalDashboardSection() {
+  const { t } = useTranslation('admin')
+  const [expanded, setExpanded] = useState(false)
+
+  return (
+    <Card>
+      <CardHeader className="pb-2 cursor-pointer" onClick={() => setExpanded(prev => !prev)}>
+        <CardTitle className="flex items-center gap-2 text-base">
+          {expanded ? <ChevronDown className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />}
+          <PieChart className="h-4 w-4" />
+          {td(t, 'predictions.signalDashboard')}
+        </CardTitle>
+        <CardDescription className="text-xs">{td(t, 'predictions.signalDashboardDesc')}</CardDescription>
+      </CardHeader>
+      {expanded && (
+        <CardContent className="space-y-6">
+          <HoldingsChangeTable />
+          <div className="border-t pt-4">
+            <SectorAllocationCard />
+          </div>
+          <div className="border-t pt-4">
+            <AttributionSummaryCard />
+          </div>
+        </CardContent>
+      )}
     </Card>
   )
 }
@@ -808,6 +1356,12 @@ export default function Predictions() {
 
       {/* Performance Tracking */}
       <PerformanceSection />
+
+      {/* Signal Quality (IC Decay, Turnover, Sectors) — collapsible */}
+      <SignalQualitySection />
+
+      {/* Signal Dashboard (Holdings Change, Sector Allocation, Attribution) — collapsible */}
+      <SignalDashboardSection />
 
       {/* Model History (collapsible) */}
       <ModelHistorySection />

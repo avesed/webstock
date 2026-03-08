@@ -23,6 +23,7 @@ import pandas as pd
 import redis.asyncio as aioredis
 
 from app.config import get_settings
+from app.services.market_config import get_market_config
 
 logger = logging.getLogger(__name__)
 
@@ -705,14 +706,22 @@ class FundamentalService:
     async def _collect_us_hk_batch(
         self, symbols: list[str], market: str
     ) -> list[tuple]:
-        """Collect US/HK fundamentals via yfinance in batches of 50."""
+        """Collect US/HK fundamentals via yfinance in batches of 50.
+
+        Also piggybacks sector/industry extraction from the same yfinance
+        .info call and upserts stale entries into stock_sectors.
+        """
         import yfinance as yf
 
         today = date.today()
         rows: list[tuple] = []
+        sector_rows: list[tuple[str, str, str | None, str | None]] = []
         batch_size = 50
         completed = 0
         total = len(symbols)
+
+        # Pre-fetch symbols with fresh sector data to skip re-writing
+        fresh_symbols = await self._get_fresh_sector_symbols(market)
 
         for i in range(0, len(symbols), batch_size):
             batch = symbols[i : i + batch_size]
@@ -746,6 +755,13 @@ class FundamentalService:
                     )
                     rows.append(row)
 
+                    # Piggyback sector extraction (skip if already fresh)
+                    if symbol not in fresh_symbols:
+                        sector = ticker.get("sector")
+                        industry = ticker.get("industry")
+                        if sector or industry:
+                            sector_rows.append((symbol, market, sector, industry))
+
                 except Exception as e:
                     logger.warning(
                         "Failed to collect %s fundamental for %s: %s",
@@ -759,6 +775,14 @@ class FundamentalService:
             if i + batch_size < len(symbols):
                 logger.debug("Batch %d-%d done, waiting 2s before next batch", i, i + batch_size)
                 await asyncio.sleep(2.0)
+
+        # Write piggybacked sector data
+        if sector_rows:
+            wrote = await self._write_sectors(sector_rows)
+            logger.info(
+                "%s sector piggyback: %d/%d upserted",
+                market.upper(), wrote, len(sector_rows),
+            )
 
         logger.info(
             "%s batch collection: %d/%d succeeded",
@@ -775,16 +799,20 @@ class FundamentalService:
         symbols: list[str],
         start_date: str,
         end_date: str,
+        market: str = "us",
     ) -> pd.DataFrame:
         """Retrieve fundamental data from DB as a DataFrame.
 
         Applies forward-fill per symbol: the most recent available value
-        fills forward to subsequent dates until a new value appears.
+        fills forward to subsequent dates, up to MarketConfig.ffill_limit days.
+        This prevents stale quarterly data from silently contaminating training:
+        CN (90-day limit): quarterly reporting cycle; US/HK (45-day limit): more frequent.
 
         Args:
             symbols: List of stock symbols.
             start_date: Start date (YYYY-MM-DD).
             end_date: End date (YYYY-MM-DD).
+            market: Market code — used to look up ffill_limit from MarketConfig.
 
         Returns:
             DataFrame with columns: symbol, date, pe_ratio, pb_ratio, ...
@@ -822,7 +850,16 @@ class FundamentalService:
         df = pd.DataFrame([dict(r) for r in rows])
         df["date"] = pd.to_datetime(df["date"])
 
-        # 逐股票前向填充: 最近可用值延续到后续日期
+        # 逐股票前向填充: 最近可用值延续到后续日期，上限由 MarketConfig 控制
+        # ffill(limit=N) caps how many calendar days stale data can propagate.
+        # Dates beyond the limit remain NaN → caught by sparse feature filter.
+        # This prevents outdated quarterly data from silently contaminating training.
+        ffill_limit = get_market_config(market).ffill_limit
+        logger.info(
+            "Fundamental ffill: market=%s, limit=%d calendar days, "
+            "symbols=%d, range=%s~%s",
+            market, ffill_limit, len(symbols), start_date, end_date,
+        )
         numeric_cols = [
             c for c in df.columns if c not in ("symbol", "date")
         ]
@@ -834,7 +871,7 @@ class FundamentalService:
             full_dates = pd.date_range(start=start_date, end=end_date, freq="D")
             symbol_df = symbol_df.set_index("date").reindex(full_dates)
             symbol_df["symbol"] = symbol
-            symbol_df[numeric_cols] = symbol_df[numeric_cols].ffill()
+            symbol_df[numeric_cols] = symbol_df[numeric_cols].ffill(limit=ffill_limit)
             symbol_df = symbol_df.reset_index().rename(columns={"index": "date"})
             filled_parts.append(symbol_df)
 
@@ -1596,6 +1633,228 @@ class FundamentalService:
             ))
 
         return rows
+
+    # ------------------------------------------------------------------
+    # Sector / industry classification
+    # ------------------------------------------------------------------
+
+    _SECTOR_FRESHNESS_DAYS = 7  # Re-fetch if older than this
+
+    async def _get_fresh_sector_symbols(self, market: str) -> set[str]:
+        """Return symbols whose sector data is still fresh (< 7 days old)."""
+        from app.core.settings_cache import settings_cache
+
+        pool = settings_cache.pool
+        if not pool:
+            return set()
+        try:
+            cutoff = datetime.now(timezone.utc) - timedelta(days=self._SECTOR_FRESHNESS_DAYS)
+            async with pool.acquire(timeout=10) as conn:
+                rows = await conn.fetch(
+                    "SELECT symbol FROM stock_sectors "
+                    "WHERE market = $1 AND updated_at >= $2",
+                    market, cutoff,
+                )
+            return {r["symbol"] for r in rows}
+        except Exception as e:
+            logger.debug("Failed to query fresh sector symbols: %s", e)
+            return set()
+
+    async def _write_sectors(
+        self, rows: list[tuple[str, str, str | None, str | None]],
+    ) -> int:
+        """Upsert sector/industry rows into stock_sectors.
+
+        Args:
+            rows: List of (symbol, market, sector, industry) tuples.
+
+        Returns:
+            Number of rows written.
+        """
+        from app.core.settings_cache import settings_cache
+
+        pool = settings_cache.pool
+        if not pool or not rows:
+            return 0
+        try:
+            async with pool.acquire(timeout=10) as conn:
+                await conn.executemany(
+                    "INSERT INTO stock_sectors (symbol, market, sector, industry, updated_at) "
+                    "VALUES ($1, $2, $3, $4, NOW()) "
+                    "ON CONFLICT (symbol, market) DO UPDATE SET "
+                    "  sector = COALESCE(EXCLUDED.sector, stock_sectors.sector), "
+                    "  industry = COALESCE(EXCLUDED.industry, stock_sectors.industry), "
+                    "  updated_at = NOW()",
+                    rows,
+                )
+            return len(rows)
+        except Exception as e:
+            logger.error("Failed to write sectors: %s", e)
+            return 0
+
+    async def collect_sector_data(
+        self, market: str, symbols: list[str] | None = None,
+    ) -> dict[str, Any]:
+        """Collect sector/industry classification for a market.
+
+        US/HK: piggybacked from yfinance during daily fundamental collection.
+        CN: fetched from data-service ``/v1/analysis/sector/{symbol}`` (akshare).
+
+        This method handles CN explicitly. US/HK sectors are collected
+        automatically during ``_collect_us_hk_batch`` piggyback.
+        Only stale symbols (>7 days) are re-fetched.
+        """
+        if symbols is None:
+            symbols = await self._resolve_symbols(market)
+        if not symbols:
+            return {"market": market, "total": 0, "success": 0, "skipped": 0}
+
+        # Filter to stale-only
+        fresh = await self._get_fresh_sector_symbols(market)
+        stale_symbols = [s for s in symbols if s not in fresh]
+        skipped = len(symbols) - len(stale_symbols)
+
+        if not stale_symbols:
+            logger.info("All %d %s sectors are fresh, skipping collection", len(symbols), market)
+            return {"market": market, "total": len(symbols), "success": 0, "skipped": skipped}
+
+        logger.info(
+            "Collecting sectors: market=%s, stale=%d, fresh=%d",
+            market, len(stale_symbols), skipped,
+        )
+
+        if market in ("cn", "sh", "sz"):
+            sector_rows = await self._collect_cn_sectors(stale_symbols, market)
+        elif market in ("us", "hk"):
+            # US/HK sectors are piggybacked in _collect_us_hk_batch.
+            # This path handles explicit sector-only collection (e.g. initial seed).
+            sector_rows = await self._collect_us_hk_sectors(stale_symbols, market)
+        else:
+            logger.warning("Unsupported market for sector collection: %s", market)
+            return {"market": market, "total": len(symbols), "success": 0, "skipped": skipped}
+
+        wrote = 0
+        if sector_rows:
+            wrote = await self._write_sectors(sector_rows)
+
+        logger.info(
+            "Sector collection complete: market=%s, wrote=%d, skipped=%d",
+            market, wrote, skipped,
+        )
+        return {"market": market, "total": len(symbols), "success": wrote, "skipped": skipped}
+
+    async def _collect_cn_sectors(
+        self, symbols: list[str], market: str,
+    ) -> list[tuple[str, str, str | None, str | None]]:
+        """Fetch CN sector data from data-service API.
+
+        Calls GET /v1/analysis/sector/{symbol}?market=sh|sz per symbol
+        with concurrency limit to avoid overwhelming data-service.
+        """
+        import httpx
+
+        settings = get_settings()
+        base_url = settings.DATA_SERVICE_URL.rstrip("/")
+        token = settings.INTERNAL_API_TOKEN
+        rows: list[tuple[str, str, str | None, str | None]] = []
+        semaphore = asyncio.Semaphore(5)
+
+        async def _fetch_one(client: httpx.AsyncClient, symbol: str) -> None:
+            async with semaphore:
+                try:
+                    # Determine sh/sz market hint for data-service
+                    upper = symbol.upper()
+                    if upper.endswith(".SS") or upper.startswith("SH"):
+                        ds_market = "sh"
+                    else:
+                        ds_market = "sz"
+
+                    bare = self._to_bare_code(symbol)
+                    resp = await client.get(
+                        f"{base_url}/v1/analysis/sector/{bare}",
+                        params={"market": ds_market},
+                        headers={"X-Internal-Token": token} if token else {},
+                        timeout=15.0,
+                    )
+                    if resp.status_code != 200:
+                        return
+                    data = resp.json()
+                    if not data.get("success") or not data.get("data"):
+                        return
+                    d = data["data"]
+                    industry = d.get("industry")
+                    if industry:
+                        # CN akshare only returns industry, no GICS sector
+                        rows.append((symbol, "cn", industry, industry))
+                except Exception as e:
+                    logger.debug("Failed to fetch CN sector for %s: %s", symbol, e)
+
+        async with httpx.AsyncClient() as client:
+            tasks = [_fetch_one(client, s) for s in symbols]
+            await asyncio.gather(*tasks)
+
+        return rows
+
+    async def _collect_us_hk_sectors(
+        self, symbols: list[str], market: str,
+    ) -> list[tuple[str, str, str | None, str | None]]:
+        """Fetch US/HK sector data via yfinance (standalone, non-piggyback).
+
+        Used for initial seeding or explicit sector-only collection.
+        """
+        import yfinance as yf
+
+        rows: list[tuple[str, str, str | None, str | None]] = []
+        for symbol in symbols:
+            try:
+                yf_symbol = self._normalize_us_symbol(symbol, market)
+                info = await asyncio.wait_for(
+                    asyncio.to_thread(lambda s=yf_symbol: yf.Ticker(s).info),
+                    timeout=15.0,
+                )
+                if not info or not isinstance(info, dict):
+                    continue
+                sector = info.get("sector")
+                industry = info.get("industry")
+                if sector or industry:
+                    rows.append((symbol, market, sector, industry))
+            except Exception as e:
+                logger.debug("Failed to fetch %s sector for %s: %s", market, symbol, e)
+        return rows
+
+    async def get_sector_map(
+        self, market: str, symbols: list[str] | None = None,
+    ) -> dict[str, str]:
+        """Return {symbol: sector} mapping from stock_sectors table.
+
+        Used by prediction_service for sector-neutral label construction
+        and by feature_service for sector-adjusted ranking.
+        """
+        from app.core.settings_cache import settings_cache
+
+        pool = settings_cache.pool
+        if not pool:
+            return {}
+
+        try:
+            async with pool.acquire(timeout=10) as conn:
+                if symbols:
+                    rows = await conn.fetch(
+                        "SELECT symbol, sector FROM stock_sectors "
+                        "WHERE market = $1 AND symbol = ANY($2::text[]) "
+                        "AND sector IS NOT NULL",
+                        market, symbols,
+                    )
+                else:
+                    rows = await conn.fetch(
+                        "SELECT symbol, sector FROM stock_sectors "
+                        "WHERE market = $1 AND sector IS NOT NULL",
+                        market,
+                    )
+            return {r["symbol"]: r["sector"] for r in rows}
+        except Exception as e:
+            logger.error("Failed to query sector map for %s: %s", market, e)
+            return {}
 
 
 # -----------------------------------------------------------------------

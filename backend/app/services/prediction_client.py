@@ -161,9 +161,20 @@ class PredictionClient:
         market: str,
         days: int = 30,
     ) -> Dict[str, Any]:
-        """Get prediction accuracy history for a market."""
+        """Get raw prediction history for a market."""
         return await self._request(
             "GET", f"/predictions/{market}/history",
+            params={"days": str(days)},
+        )
+
+    async def get_accuracy(
+        self,
+        market: str,
+        days: int = 30,
+    ) -> Dict[str, Any]:
+        """Get computed accuracy stats for a market."""
+        return await self._request(
+            "GET", f"/predictions/{market}/accuracy",
             params={"days": str(days)},
         )
 
@@ -179,6 +190,52 @@ class PredictionClient:
     async def backfill_returns(self) -> Dict[str, Any]:
         """Trigger backfill of actual returns for past predictions."""
         return await self._request("POST", "/predictions/backfill-returns")
+
+    # === Signal Quality (IC decay, turnover, sectors) ===
+
+    async def get_ic_decay(
+        self, market: str, days: int = 60
+    ) -> Dict[str, Any]:
+        """Get IC decay across horizons for a market."""
+        return await self._request(
+            "GET", f"/predictions/{market}/ic-decay",
+            params={"days": str(days)},
+        )
+
+    async def get_turnover(
+        self, market: str, days: int = 60, top_n: int = 20
+    ) -> Dict[str, Any]:
+        """Get prediction turnover metrics (rank autocorrelation + top-N retention)."""
+        return await self._request(
+            "GET", f"/predictions/{market}/turnover",
+            params={"days": str(days), "top_n": str(top_n)},
+        )
+
+    async def get_sectors(self, market: str) -> Dict[str, Any]:
+        """Get sector data summary for a market."""
+        return await self._request("GET", f"/predictions/sectors/{market}")
+
+    async def collect_sectors(self, market: str) -> Dict[str, Any]:
+        """Trigger sector data collection for a market."""
+        return await self._request("POST", f"/predictions/sectors/{market}/collect")
+
+    async def get_attribution(
+        self, market: str, days: int = 90, top_n: int = 20,
+    ) -> Dict[str, Any]:
+        """Get return attribution (sector, size, alpha decomposition)."""
+        return await self._request(
+            "GET", f"/predictions/{market}/attribution",
+            params={"days": str(days), "top_n": str(top_n)},
+        )
+
+    async def get_prediction_dates(
+        self, market: str, n_dates: int = 2, forward_days: int = 5,
+    ) -> Dict[str, Any]:
+        """Get predictions for the last N prediction dates."""
+        return await self._request(
+            "GET", f"/predictions/{market}/prediction-dates",
+            params={"n_dates": str(n_dates), "forward_days": str(forward_days)},
+        )
 
     # === RD-Agent ===
 

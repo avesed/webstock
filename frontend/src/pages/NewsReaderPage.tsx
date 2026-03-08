@@ -167,10 +167,12 @@ export default function NewsReaderPage() {
     abortRef.current = controller
   }, [newsId, queryClient])
 
-  // Reset analysis state and cleanup on article change
+  // Reset analysis state, scroll to top, and cleanup on article change
   useEffect(() => {
     setAnalysisContent('')
     setAnalysisStatus('idle')
+    // Scroll main container to top when entering or switching articles
+    document.querySelector('main')?.scrollTo(0, 0)
     return () => {
       abortRef.current?.abort()
     }
@@ -276,8 +278,8 @@ export default function NewsReaderPage() {
         touchAction: 'pan-y',
       }}
     >
-      {/* Top bar: back + original link */}
-      <div className="flex items-center justify-between mb-8">
+      {/* Top bar: back + original link (sticky so it's always accessible in long articles) */}
+      <div className="flex items-center justify-between mb-6 sticky top-0 z-10 bg-background/95 backdrop-blur-sm -mx-4 px-4 py-3">
         <Button
           variant="ghost"
           size="sm"

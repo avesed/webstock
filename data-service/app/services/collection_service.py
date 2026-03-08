@@ -41,7 +41,7 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 _LOCK_KEY_TEMPLATE = "kb:daily_bars:{market}:lock"
-_LOCK_TTL = 28800  # 8 hours — auto-releases if process crashes
+_LOCK_TTL = 3600  # 1 hour — auto-releases if process crashes (collection takes ~15min)
 
 _PROGRESS_KEY_TEMPLATE = "kb:daily_bars:{market}:progress"
 _PROGRESS_TTL = 3600  # 1 hour
