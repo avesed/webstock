@@ -22,6 +22,7 @@ import { useToast } from '@/hooks/useToast'
 import { cn } from '@/lib/utils'
 
 import RDAgent from './RDAgent'
+import BacktestPanel from './predictions/BacktestPanel'
 
 // Dynamic i18n key helper
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -1365,6 +1366,9 @@ export default function Predictions() {
 
       {/* Model History (collapsible) */}
       <ModelHistorySection />
+
+      {/* Backtest */}
+      <BacktestPanel />
 
       {/* RD-Agent Section (collapsible) */}
       <Card>

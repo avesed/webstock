@@ -49,7 +49,7 @@ from app.services.feature_service import (
     feature_service,
 )
 from app.services.fundamental_service import fundamental_service
-from app.services.market_config import get_market_config
+from app.services.market_config import MarketConfig, get_market_config
 
 logger = logging.getLogger(__name__)
 
@@ -96,19 +96,19 @@ _BASE_LGB_PARAMS: dict[str, Any] = {
 }
 
 
-def _get_lgb_params(market: str) -> dict[str, Any]:
+def _get_lgb_params(market: str, cfg: MarketConfig | None = None) -> dict[str, Any]:
     """Return merged LightGBM params for the given market."""
     params = dict(_BASE_LGB_PARAMS)
-    params.update(get_market_config(market).lgb_overrides)
+    params.update((cfg or get_market_config(market)).lgb_overrides)
     return params
 
 
-def _get_boost_round(market: str) -> int:
-    return get_market_config(market).num_boost_round
+def _get_boost_round(market: str, cfg: MarketConfig | None = None) -> int:
+    return (cfg or get_market_config(market)).num_boost_round
 
 
-def _get_early_stopping(market: str) -> int:
-    return get_market_config(market).early_stopping_rounds
+def _get_early_stopping(market: str, cfg: MarketConfig | None = None) -> int:
+    return (cfg or get_market_config(market)).early_stopping_rounds
 
 
 def _get_prediction_horizons() -> list[int]:
@@ -1325,7 +1325,17 @@ class PredictionService:
         # Stocks without sector data keep raw forward_return (graceful fallback).
         # CN/HK: sector groups have only 3-10 stocks → sector mean is noise,
         # not a meaningful benchmark. Disabled via MarketConfig.
-        cfg = get_market_config(market)
+
+        # Get training config — LLM-guided if available, else MarketConfig defaults
+        try:
+            from app.services.ml_agents import get_training_config
+            cfg = await get_training_config(
+                market, feature_df, symbols,
+            )
+            logger.info("Using ML agent-generated config for market=%s", market)
+        except Exception as e:
+            logger.warning("ML agent config failed, using defaults: %s", e)
+            cfg = get_market_config(market)
         if cfg.use_sector_neutral_labels:
             sector_map = await fundamental_service.get_sector_map(market, symbols)
             if sector_map:
@@ -1483,7 +1493,7 @@ class PredictionService:
             )
 
             models = await asyncio.to_thread(
-                self._train_ensemble_sync, tr_set, va_set, market, ensemble_size,
+                self._train_ensemble_sync, tr_set, va_set, market, ensemble_size, cfg,
             )
 
             # Evaluate ensemble on this fold's validation set
@@ -1666,6 +1676,225 @@ class PredictionService:
 
         return model_id, model_path, quality_passed
 
+    async def train_for_backtest(
+        self,
+        market: str,
+        symbols: list[str],
+        forward_days: int,
+        cutoff_date: date,
+        config: MarketConfig,
+        feature_df: pd.DataFrame | None = None,
+    ) -> dict[str, Any]:
+        """Train models for backtest -- returns results in memory, no DB/disk writes.
+
+        This is a lighter variant of _train_model() designed for backtest iteration.
+        It reuses the same walk-forward + ensemble logic but:
+        - Skips _save_model() and _record_model() (no disk/DB side effects)
+        - Accepts a pre-built feature_df (avoids rebuilding per iteration)
+        - Returns models + metrics in a dict for the backtest orchestrator
+
+        Args:
+            market: Market code.
+            symbols: Symbol list.
+            forward_days: Prediction horizon.
+            cutoff_date: Training data cutoff date.
+            config: MarketConfig to use (from LLM agent or static).
+            feature_df: Pre-built feature matrix (optional, builds if None).
+
+        Returns:
+            Dict with keys: models, feature_cols, ic, icir, ndcg,
+            fold_ics, fold_icirs, best_iters, feature_importance,
+            quality_passed, ensemble_size, symbol_count.
+        """
+        settings = get_settings()
+
+        # Build feature matrix if not provided
+        if feature_df is None:
+            train_end_date = cutoff_date - timedelta(days=forward_days)
+            train_start_date = cutoff_date - timedelta(days=_TRAIN_LOOKBACK_DAYS)
+            feature_df = await feature_service.build_feature_matrix(
+                market=market,
+                symbols=symbols,
+                start_date=train_start_date.isoformat(),
+                end_date=cutoff_date.isoformat(),
+                config_override=config,
+            )
+
+        if feature_df.empty:
+            raise RuntimeError("Feature matrix is empty for backtest training")
+
+        # Fetch close prices for labels
+        train_start_str = (cutoff_date - timedelta(days=_TRAIN_LOOKBACK_DAYS)).isoformat()
+        close_df = await self._fetch_close_prices(
+            market, symbols, train_start_str, cutoff_date.isoformat()
+        )
+        if close_df.empty:
+            raise RuntimeError("Close price data is empty for backtest")
+
+        # Merge + compute forward returns
+        feature_df["date"] = pd.to_datetime(feature_df["date"])
+        close_df["date"] = pd.to_datetime(close_df["date"])
+        df = feature_df.merge(
+            close_df[["symbol", "date", "close"]],
+            on=["symbol", "date"],
+            how="left",
+        )
+
+        df = df.sort_values(["symbol", "date"])
+        df["forward_return"] = df.groupby("symbol")["close"].transform(
+            lambda x: x.shift(-forward_days) / x - 1
+        )
+
+        # Winsorize
+        df["forward_return"] = df.groupby("date")["forward_return"].transform(
+            lambda x: x.clip(x.quantile(0.01), x.quantile(0.99))
+        )
+
+        # Sector-neutral labels (if configured)
+        if config.use_sector_neutral_labels:
+            sector_map = await fundamental_service.get_sector_map(market, symbols)
+            if sector_map:
+                df["_sector"] = df["symbol"].map(sector_map)
+                sector_coverage = df["_sector"].notna().mean()
+                if sector_coverage >= 0.3:
+                    sector_mean = df.groupby(["date", "_sector"])["forward_return"].transform("mean")
+                    has_sector = df["_sector"].notna()
+                    df.loc[has_sector, "forward_return"] = (
+                        df.loc[has_sector, "forward_return"] - sector_mean[has_sector]
+                    )
+                df = df.drop(columns=["_sector"])
+
+        # Drop rows without labels
+        df = df.dropna(subset=["forward_return"])
+        if len(df) < _MIN_TRAIN_DATES * _MIN_SYMBOLS_PER_DATE:
+            raise RuntimeError(f"Insufficient labeled data for backtest: {len(df)} rows")
+
+        # Per-date percentile labels
+        use_legacy = not config.use_balanced_quintiles
+
+        def _label_fn(x: "pd.Series") -> "pd.Series":
+            if len(x) < _MIN_SYMBOLS_PER_DATE:
+                return pd.Series([2] * len(x), index=x.index)
+            if use_legacy:
+                return pd.qcut(x, q=5, labels=False, duplicates="drop")
+            ranked = x.rank(method="first")
+            return pd.qcut(ranked, q=5, labels=False).astype(float)
+
+        df["label"] = df.groupby("date")["forward_return"].transform(_label_fn)
+        df["label"] = df["label"].fillna(2).astype(float)
+
+        # Only use data up to cutoff_date for training
+        cutoff_ts = pd.Timestamp(cutoff_date)
+        df = df[df["date"] <= cutoff_ts]
+
+        unique_dates = sorted(df["date"].unique())
+        sort_cols = ["symbol", "date"] if config.use_temporal_sort else ["date", "symbol"]
+
+        meta_cols = {"symbol", "date", "close", "forward_return", "label"}
+        feature_cols = [c for c in df.columns if c not in meta_cols]
+        if not feature_cols:
+            raise RuntimeError("No feature columns found for backtest")
+
+        ensemble_size = settings.ENSEMBLE_SIZE
+        n_folds = settings.WALKFORWARD_FOLDS
+
+        # Walk-forward splits
+        splits = self._walk_forward_splits(
+            unique_dates, n_folds=n_folds, forward_days=forward_days,
+        )
+        if not splits:
+            raise RuntimeError("Could not generate walk-forward splits for backtest")
+
+        fold_ics: list[float] = []
+        fold_icirs: list[float] = []
+        final_models: list[lgb.Booster] = []
+
+        for fold_idx, (tr_dates, va_dates) in enumerate(splits):
+            is_final_fold = fold_idx == len(splits) - 1
+
+            tr_mask = df["date"].isin(tr_dates)
+            va_mask = df["date"].isin(va_dates)
+            tr_df = df[tr_mask].copy().sort_values(sort_cols).reset_index(drop=True)
+            va_df = df[va_mask].copy().sort_values(sort_cols).reset_index(drop=True)
+
+            X_tr = tr_df[feature_cols].values
+            y_tr = tr_df["label"].values
+            X_va = va_df[feature_cols].values
+            y_va = va_df["label"].values
+            tr_group = tr_df.groupby("date", sort=True).size().values
+            va_group = va_df.groupby("date", sort=True).size().values
+
+            tr_set = lgb.Dataset(X_tr, label=y_tr, group=tr_group, feature_name=feature_cols)
+            va_set = lgb.Dataset(X_va, label=y_va, group=va_group, feature_name=feature_cols, reference=tr_set)
+
+            models = await asyncio.to_thread(
+                self._train_ensemble_sync, tr_set, va_set, market, ensemble_size, config,
+            )
+
+            va_scores = np.mean([m.predict(X_va) for m in models], axis=0)
+            _, fold_ic, fold_icir = self._compute_ic_metrics(va_df, va_scores, va_df["forward_return"].values)
+            fold_ics.append(fold_ic)
+            fold_icirs.append(fold_icir)
+
+            logger.info("Backtest fold %d/%d: IC=%.4f, ICIR=%.4f", fold_idx + 1, len(splits), fold_ic, fold_icir)
+
+            if is_final_fold:
+                final_models = models
+
+        ic_mean = float(np.mean(fold_ics))
+        icir = float(np.mean(fold_icirs)) if fold_icirs else 0.0
+
+        # Best iters
+        best_iters = [
+            m.best_iteration if m.best_iteration >= 0
+            else config.num_boost_round
+            for m in final_models
+        ]
+
+        # NDCG
+        ndcg_values = []
+        for m in final_models:
+            if m.best_score and "valid_0" in m.best_score:
+                v = m.best_score["valid_0"]
+                ndcg = v.get("ndcg@10", v.get("ndcg@5"))
+                if ndcg is not None:
+                    ndcg_values.append(ndcg)
+        best_ndcg = float(np.mean(ndcg_values)) if ndcg_values else None
+
+        # Feature importance
+        feature_importance: dict[str, float] = {}
+        try:
+            importance_arrays = [m.feature_importance(importance_type='gain') for m in final_models]
+            importance_values = np.mean(importance_arrays, axis=0)
+            feature_importance = dict(
+                sorted(
+                    zip(feature_cols, (float(v) for v in importance_values)),
+                    key=lambda x: x[1],
+                    reverse=True,
+                )
+            )
+        except Exception as e:
+            logger.warning("Failed to extract feature importance in backtest: %s", e)
+
+        # Quality gate
+        quality_passed = (ic_mean > config.min_ic_threshold and icir > config.min_icir_threshold)
+
+        return {
+            "models": final_models,
+            "feature_cols": feature_cols,
+            "ic": ic_mean,
+            "icir": icir,
+            "ndcg": best_ndcg,
+            "fold_ics": fold_ics,
+            "fold_icirs": fold_icirs,
+            "best_iters": best_iters,
+            "feature_importance": feature_importance,
+            "quality_passed": quality_passed,
+            "ensemble_size": ensemble_size,
+            "symbol_count": df["symbol"].nunique(),
+            "feature_count": len(feature_cols),
+        }
+
     @staticmethod
     def _walk_forward_splits(
         unique_dates: list,
@@ -1757,6 +1986,7 @@ class PredictionService:
         val_set: lgb.Dataset,
         market: str = "us",
         ensemble_size: int = 5,
+        cfg: MarketConfig | None = None,
     ) -> list[lgb.Booster]:
         """Train an ensemble of LightGBM models with different seeds.
 
@@ -1775,13 +2005,13 @@ class PredictionService:
                 "Training ensemble member %d/%d (seed=%d) for %s",
                 i + 1, ensemble_size, seed, market,
             )
-            params = _get_lgb_params(market)
+            params = _get_lgb_params(market, cfg)
             params["seed"] = seed
             params["feature_fraction_seed"] = seed
             params["bagging_seed"] = seed
 
-            num_boost_round = _get_boost_round(market)
-            early_stopping = _get_early_stopping(market)
+            num_boost_round = _get_boost_round(market, cfg)
+            early_stopping = _get_early_stopping(market, cfg)
             callbacks = [
                 lgb.early_stopping(early_stopping),
                 lgb.log_evaluation(period=50),

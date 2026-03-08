@@ -134,6 +134,108 @@ export interface PredictionUniverse {
   isActive: boolean
 }
 
+export interface BacktestConfig {
+  cutoffDate: string
+  validationDays: number
+  forwardDays: number
+  configOverride?: Record<string, unknown> | null
+  useLlmAgents: boolean
+  maxIterations: number
+}
+
+export interface BacktestStartResponse {
+  taskId: string
+  backtestId: string
+  market: string
+  status: string
+}
+
+export interface BacktestTaskStatus {
+  taskId: string
+  backtestId: string
+  market: string
+  status: 'pending' | 'running' | 'completed' | 'failed'
+  progress: number
+  message: string
+  currentPhase: string
+  currentIteration: number
+  maxIterations: number
+  iterations: BacktestIteration[]
+  elapsedSeconds: number
+  createdAt: string | null
+  completedAt: string | null
+  error?: string | null
+}
+
+export interface BacktestIteration {
+  iteration: number
+  startedAt: string
+  completedAt: string
+  durationSeconds: number
+  phases: Record<string, BacktestPhaseResult>
+}
+
+export interface BacktestPhaseResult {
+  status: 'completed' | 'failed'
+  durationMs?: number
+  durationSeconds?: number
+  summary?: string
+  error?: string
+  // Strategist-specific
+  configChanges?: string[]
+  reasoning?: string
+  // Training-specific
+  foldIcs?: number[]
+  meanIc?: number
+  featureCount?: number
+  // Inference-specific
+  predictionDates?: number
+  totalPredictions?: number
+  avgSymbolsPerDate?: number
+  // Evaluator-specific
+  decision?: 'deploy' | 'retry' | 'reject'
+  suggestedAdjustments?: Record<string, unknown>
+  confidence?: number
+  valIc?: number
+  valSpread?: number
+}
+
+export interface BacktestSummary {
+  id: string
+  market: string
+  cutoffDate: string
+  validationDays: number
+  forwardDays: number
+  status: string
+  trainIc: number | null
+  trainIcir: number | null
+  valIc: number | null
+  valIcir: number | null
+  valDirectionAccuracy: number | null
+  valSpread: number | null
+  agentIteration: number | null
+  durationSeconds: number | null
+  createdAt: string | null
+  completedAt: string | null
+}
+
+export interface BacktestDetail extends BacktestSummary {
+  configOverride: Record<string, unknown> | null
+  effectiveConfig: Record<string, unknown>
+  trainNdcg: number | null
+  foldIcs: number[] | null
+  ensembleSize: number | null
+  featureCount: number | null
+  symbolCount: number | null
+  valQ1Return: number | null
+  valQ5Return: number | null
+  valHitRate: number | null
+  valMaxDrawdown: number | null
+  results: Record<string, unknown>
+  error: string | null
+  agentRunId: string | null
+}
+
 export interface PredictionAccuracy {
   days: number
   market: string
@@ -309,6 +411,99 @@ function toCamelPerformance(raw: Record<string, any>): PerformanceResponse {
       totalDates: (summary?.total_dates ?? summary?.totalDates ?? 0) as number,
       totalPredictions: (summary?.total_predictions ?? summary?.totalPredictions ?? 0) as number,
     },
+  }
+}
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function toCamelBacktestTask(t: Record<string, any>): BacktestTaskStatus {
+  return {
+    taskId: (t.task_id ?? t.taskId) as string,
+    backtestId: (t.backtest_id ?? t.backtestId) as string,
+    market: t.market as string,
+    status: t.status as BacktestTaskStatus['status'],
+    progress: (t.progress ?? 0) as number,
+    message: (t.message ?? '') as string,
+    currentPhase: (t.current_phase ?? t.currentPhase ?? '') as string,
+    currentIteration: (t.current_iteration ?? t.currentIteration ?? 0) as number,
+    maxIterations: (t.max_iterations ?? t.maxIterations ?? 1) as number,
+    iterations: Array.isArray(t.iterations) ? t.iterations.map(toCamelIteration) : [],
+    elapsedSeconds: (t.elapsed_seconds ?? t.elapsedSeconds ?? 0) as number,
+    createdAt: (t.created_at ?? t.createdAt ?? null) as string | null,
+    completedAt: (t.completed_at ?? t.completedAt ?? null) as string | null,
+    error: (t.error ?? null) as string | null,
+  }
+}
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function toCamelIteration(it: Record<string, any>): BacktestIteration {
+  const phases: Record<string, BacktestPhaseResult> = {}
+  if (it.phases) {
+    for (const [key, val] of Object.entries(it.phases)) {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const p = val as Record<string, any>
+      const phase: BacktestPhaseResult = {
+        status: p.status as 'completed' | 'failed',
+      }
+      const durationMs = (p.duration_ms ?? p.durationMs) as number | undefined
+      if (durationMs !== undefined) phase.durationMs = durationMs
+      const durationSeconds = (p.duration_seconds ?? p.durationSeconds) as number | undefined
+      if (durationSeconds !== undefined) phase.durationSeconds = durationSeconds
+      if (p.summary !== undefined) phase.summary = p.summary as string
+      if (p.error !== undefined) phase.error = p.error as string
+      const configChanges = (p.config_changes ?? p.configChanges) as string[] | undefined
+      if (configChanges !== undefined) phase.configChanges = configChanges
+      if (p.reasoning !== undefined) phase.reasoning = p.reasoning as string
+      const foldIcs = (p.fold_ics ?? p.foldIcs) as number[] | undefined
+      if (foldIcs !== undefined) phase.foldIcs = foldIcs
+      const meanIc = (p.mean_ic ?? p.meanIc) as number | undefined
+      if (meanIc !== undefined) phase.meanIc = meanIc
+      const featureCount = (p.feature_count ?? p.featureCount) as number | undefined
+      if (featureCount !== undefined) phase.featureCount = featureCount
+      const predictionDates = (p.prediction_dates ?? p.predictionDates) as number | undefined
+      if (predictionDates !== undefined) phase.predictionDates = predictionDates
+      const totalPredictions = (p.total_predictions ?? p.totalPredictions) as number | undefined
+      if (totalPredictions !== undefined) phase.totalPredictions = totalPredictions
+      const avgSymbolsPerDate = (p.avg_symbols_per_date ?? p.avgSymbolsPerDate) as number | undefined
+      if (avgSymbolsPerDate !== undefined) phase.avgSymbolsPerDate = avgSymbolsPerDate
+      if (p.decision !== undefined) phase.decision = p.decision as 'deploy' | 'retry' | 'reject'
+      const suggestedAdjustments = (p.suggested_adjustments ?? p.suggestedAdjustments) as Record<string, unknown> | undefined
+      if (suggestedAdjustments !== undefined) phase.suggestedAdjustments = suggestedAdjustments
+      if (p.confidence !== undefined) phase.confidence = p.confidence as number
+      const valIc = (p.val_ic ?? p.valIc) as number | undefined
+      if (valIc !== undefined) phase.valIc = valIc
+      const valSpread = (p.val_spread ?? p.valSpread) as number | undefined
+      if (valSpread !== undefined) phase.valSpread = valSpread
+      phases[key] = phase
+    }
+  }
+  return {
+    iteration: it.iteration as number,
+    startedAt: (it.started_at ?? it.startedAt) as string,
+    completedAt: (it.completed_at ?? it.completedAt) as string,
+    durationSeconds: (it.duration_seconds ?? it.durationSeconds) as number,
+    phases,
+  }
+}
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function toCamelBacktestSummary(b: Record<string, any>): BacktestSummary {
+  return {
+    id: String(b.id),
+    market: b.market as string,
+    cutoffDate: (b.cutoff_date ?? b.cutoffDate) as string,
+    validationDays: (b.validation_days ?? b.validationDays) as number,
+    forwardDays: (b.forward_days ?? b.forwardDays) as number,
+    status: b.status as string,
+    trainIc: (b.train_ic ?? b.trainIc ?? null) as number | null,
+    trainIcir: (b.train_icir ?? b.trainIcir ?? null) as number | null,
+    valIc: (b.val_ic ?? b.valIc ?? null) as number | null,
+    valIcir: (b.val_icir ?? b.valIcir ?? null) as number | null,
+    valDirectionAccuracy: (b.val_direction_accuracy ?? b.valDirectionAccuracy ?? null) as number | null,
+    valSpread: (b.val_spread ?? b.valSpread ?? null) as number | null,
+    agentIteration: (b.agent_iteration ?? b.agentIteration ?? null) as number | null,
+    durationSeconds: (b.duration_seconds ?? b.durationSeconds ?? null) as number | null,
+    createdAt: (b.created_at ?? b.createdAt ?? null) as string | null,
+    completedAt: (b.completed_at ?? b.completedAt ?? null) as string | null,
   }
 }
 
@@ -576,4 +771,62 @@ export const predictionsApi = {
         predictions,
       } satisfies PredictionDatesResponse
     }),
+
+  // Backtests
+  startBacktest: (market: string, config: BacktestConfig) =>
+    apiClient.post<Record<string, unknown>>(`/admin/predictions/${market}/backtest`, {
+      cutoff_date: config.cutoffDate,
+      validation_days: config.validationDays,
+      forward_days: config.forwardDays,
+      config_override: config.configOverride ?? null,
+      use_llm_agents: config.useLlmAgents,
+      max_iterations: config.maxIterations,
+    }).then(r => ({
+      taskId: (r.data.task_id ?? r.data.taskId) as string,
+      backtestId: (r.data.backtest_id ?? r.data.backtestId) as string,
+      market: r.data.market as string,
+      status: (r.data.status ?? 'pending') as string,
+    } satisfies BacktestStartResponse)),
+
+  getBacktestTaskStatus: (taskId: string) =>
+    apiClient.get<Record<string, unknown>>(`/admin/predictions/backtests/tasks/${taskId}`)
+      .then(r => toCamelBacktestTask(r.data)),
+
+  listBacktests: (market: string, limit = 50) =>
+    apiClient.get<Record<string, unknown>>(`/admin/predictions/${market}/backtests`, {
+      params: { limit },
+    }).then(r => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const d = r.data as Record<string, any>
+      const backtests = Array.isArray(d.backtests) ? d.backtests.map(toCamelBacktestSummary) : []
+      return { backtests, total: (d.total ?? backtests.length) as number }
+    }),
+
+  getBacktestDetail: (backtestId: string) =>
+    apiClient.get<Record<string, unknown>>(`/admin/predictions/backtests/${backtestId}`)
+      .then(r => {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const d = r.data as Record<string, any>
+        return {
+          ...toCamelBacktestSummary(d),
+          configOverride: (d.config_override ?? d.configOverride ?? null) as Record<string, unknown> | null,
+          effectiveConfig: (d.effective_config ?? d.effectiveConfig ?? {}) as Record<string, unknown>,
+          trainNdcg: (d.train_ndcg ?? d.trainNdcg ?? null) as number | null,
+          foldIcs: (d.fold_ics ?? d.foldIcs ?? null) as number[] | null,
+          ensembleSize: (d.ensemble_size ?? d.ensembleSize ?? null) as number | null,
+          featureCount: (d.feature_count ?? d.featureCount ?? null) as number | null,
+          symbolCount: (d.symbol_count ?? d.symbolCount ?? null) as number | null,
+          valQ1Return: (d.val_q1_return ?? d.valQ1Return ?? null) as number | null,
+          valQ5Return: (d.val_q5_return ?? d.valQ5Return ?? null) as number | null,
+          valHitRate: (d.val_hit_rate ?? d.valHitRate ?? null) as number | null,
+          valMaxDrawdown: (d.val_max_drawdown ?? d.valMaxDrawdown ?? null) as number | null,
+          results: (d.results ?? {}) as Record<string, unknown>,
+          error: (d.error ?? null) as string | null,
+          agentRunId: (d.agent_run_id ?? d.agentRunId ?? null) as string | null,
+        } satisfies BacktestDetail
+      }),
+
+  deleteBacktest: (backtestId: string) =>
+    apiClient.delete<{ deleted: boolean }>(`/admin/predictions/backtests/${backtestId}`)
+      .then(r => r.data),
 }

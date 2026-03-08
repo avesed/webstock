@@ -11,6 +11,7 @@ Design principles:
 - ``ffill_limit`` passed to fundamental_service to cap forward-fill age.
 """
 
+import dataclasses
 import logging
 from dataclasses import dataclass, field
 from typing import Any
@@ -173,3 +174,35 @@ def get_market_config(market: str) -> MarketConfig:
         )
         cfg = MARKET_CONFIGS["us"]
     return cfg
+
+
+def apply_override(market: str, overrides: dict[str, Any] | None = None) -> MarketConfig:
+    """Return MarketConfig for market with optional field overrides.
+
+    Uses dataclasses.replace() on the base config. Only fields present
+    in MarketConfig are applied; unknown keys are logged and ignored.
+
+    This is the primary entry point when callers want to tweak specific
+    parameters (e.g. from a backtest config_override or LLM suggestion)
+    without replacing the entire config.
+    """
+    cfg = get_market_config(market)
+    if not overrides:
+        return cfg
+
+    valid_fields = {f.name for f in dataclasses.fields(MarketConfig)}
+    filtered = {}
+    unknown = []
+    for k, v in overrides.items():
+        if k in valid_fields:
+            filtered[k] = v
+        else:
+            unknown.append(k)
+
+    if unknown:
+        logger.warning("Ignoring unknown MarketConfig fields: %s", unknown)
+
+    if not filtered:
+        return cfg
+
+    return dataclasses.replace(cfg, **filtered)

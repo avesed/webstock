@@ -978,3 +978,76 @@ async def trigger_options_collection(
         return resp
     except PredictionServiceError as e:
         raise HTTPException(status_code=e.status_code or 502, detail=_sanitize_service_error(e))
+
+
+# ---------------------------------------------------------------------------
+# Backtest endpoints — proxy to data-processor
+# ---------------------------------------------------------------------------
+
+
+@router.post("/predictions/{market}/backtest", summary="Start historical cutoff backtest")
+async def start_backtest(
+    market: str,
+    body: Dict[str, Any] = Body(...),
+    current_user: User = Depends(require_admin),
+) -> Dict[str, Any]:
+    m = _validate_market(market)
+    client = await get_prediction_client()
+    try:
+        resp = await client.start_backtest(m, body)
+        logger.info("Admin %s started backtest for market=%s", current_user.email, m)
+        return resp
+    except PredictionServiceError as e:
+        raise HTTPException(status_code=e.status_code or 502, detail=_sanitize_service_error(e))
+
+
+@router.get("/predictions/backtests/tasks/{task_id}", summary="Poll backtest task status")
+async def get_backtest_task(
+    task_id: str,
+    current_user: User = Depends(require_admin),
+) -> Dict[str, Any]:
+    client = await get_prediction_client()
+    try:
+        return await client.get_backtest_task(task_id)
+    except PredictionServiceError as e:
+        raise HTTPException(status_code=e.status_code or 502, detail=_sanitize_service_error(e))
+
+
+@router.get("/predictions/{market}/backtests", summary="List backtests for market")
+async def list_backtests(
+    market: str,
+    limit: int = Query(50, ge=1, le=200),
+    current_user: User = Depends(require_admin),
+) -> Dict[str, Any]:
+    m = _validate_market(market)
+    client = await get_prediction_client()
+    try:
+        return await client.list_backtests(m, limit=limit)
+    except PredictionServiceError as e:
+        raise HTTPException(status_code=e.status_code or 502, detail=_sanitize_service_error(e))
+
+
+@router.get("/predictions/backtests/{backtest_id}", summary="Get backtest detail")
+async def get_backtest_detail(
+    backtest_id: str,
+    current_user: User = Depends(require_admin),
+) -> Dict[str, Any]:
+    client = await get_prediction_client()
+    try:
+        return await client.get_backtest(backtest_id)
+    except PredictionServiceError as e:
+        raise HTTPException(status_code=e.status_code or 502, detail=_sanitize_service_error(e))
+
+
+@router.delete("/predictions/backtests/{backtest_id}", summary="Delete backtest")
+async def delete_backtest(
+    backtest_id: str,
+    current_user: User = Depends(require_admin),
+) -> Dict[str, Any]:
+    client = await get_prediction_client()
+    try:
+        resp = await client.delete_backtest(backtest_id)
+        logger.info("Admin %s deleted backtest %s", current_user.email, backtest_id)
+        return resp
+    except PredictionServiceError as e:
+        raise HTTPException(status_code=e.status_code or 502, detail=_sanitize_service_error(e))

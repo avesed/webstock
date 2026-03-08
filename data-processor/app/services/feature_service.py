@@ -17,7 +17,7 @@ from typing import Optional
 import pandas as pd
 
 from app.config import get_settings
-from app.services.market_config import get_market_config
+from app.services.market_config import MarketConfig, get_market_config
 from app.services.factor_service import FEATURE_NAMES
 from app.services.factor_registry import factor_registry
 from app.services.fundamental_service import fundamental_service
@@ -113,6 +113,7 @@ class FeatureService:
         end_date: str,
         include_fundamental: bool = True,
         include_sentiment: bool = True,
+        config_override: MarketConfig | None = None,
     ) -> pd.DataFrame:
         """Build a merged, rank-normalized feature matrix.
 
@@ -354,7 +355,7 @@ class FeatureService:
         # automatically drop any interaction columns that end up too NaN-heavy.
         # CN/HK: legacy training mode + small universes make interactions harmful.
         # Controlled by MarketConfig.use_interactions.
-        cfg = get_market_config(market)
+        cfg = config_override or get_market_config(market)
         if cfg.use_interactions:
             merged = self._compute_interaction_features(merged)
         else:

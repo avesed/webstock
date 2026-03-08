@@ -321,6 +321,37 @@ class PredictionClient:
             timeout=httpx.Timeout(30.0, connect=10.0),
         )
 
+    # === Backtesting ===
+
+    async def start_backtest(
+        self, market: str, body: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """Start a historical cutoff backtest."""
+        return await self._request(
+            "POST", f"/predictions/{market}/backtest", json=body,
+        )
+
+    async def get_backtest_task(self, task_id: str) -> Dict[str, Any]:
+        """Poll a backtest task by ID."""
+        return await self._request("GET", f"/predictions/backtests/tasks/{task_id}")
+
+    async def list_backtests(
+        self, market: str, limit: int = 50
+    ) -> Dict[str, Any]:
+        """List backtests for a market."""
+        return await self._request(
+            "GET", f"/predictions/{market}/backtests",
+            params={"limit": str(limit)},
+        )
+
+    async def get_backtest(self, backtest_id: str) -> Dict[str, Any]:
+        """Get backtest detail by ID."""
+        return await self._request("GET", f"/predictions/backtests/{backtest_id}")
+
+    async def delete_backtest(self, backtest_id: str) -> Dict[str, Any]:
+        """Delete a backtest by ID."""
+        return await self._request("DELETE", f"/predictions/backtests/{backtest_id}")
+
 
 async def get_prediction_client() -> "PredictionClient":
     """Get the singleton PredictionClient instance (async-safe)."""
