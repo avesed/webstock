@@ -1364,9 +1364,11 @@ async def _analyze_news_async(news_id: str) -> Dict[str, Any]:
                     max_tokens=1000,
                     temperature=0.3,
                 ),
+                purpose="news_analysis",
                 system_api_key=sys_config.api_key,
                 system_base_url=sys_config.base_url,
                 use_user_config=False,
+                usage_metadata={"news_id": news_id},
             )
 
             content = response.content

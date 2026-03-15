@@ -31,6 +31,7 @@ from app.models.prediction import (
     StockPrediction,
     StockFundamental,
     DiscoveredFactor,
+    MLBacktest,
 )
 
 __all__ = [
@@ -76,4 +77,5 @@ __all__ = [
     "StockPrediction",
     "StockFundamental",
     "DiscoveredFactor",
+    "MLBacktest",
 ]

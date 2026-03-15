@@ -1,14 +1,13 @@
-"""ML Agent system — LLM-guided training configuration.
+"""ML Agent system — data profiling and configuration.
 
-Three agents form the pipeline:
-1. Profiler  — analyzes data statistics (Python + 1 LLM call)
-2. Strategist — generates training config (1 LLM call)
-3. Evaluator  — decides deploy/retry/reject (1 LLM call)
+The Profiler agent analyzes data statistics (Python + optional LLM call).
+Config optimization is now handled by the ML Agent Service in the backend
+container (see backend/app/services/ml_agent_service.py).
 
 Usage:
     from app.services.ml_agents import get_training_config
     cfg = await get_training_config(market, feature_df, symbols)
-    # cfg is a MarketConfig — drop-in replacement
+    # cfg is a MarketConfig — always returns default for the market
 """
 
 import logging
@@ -26,10 +25,11 @@ async def get_training_config(
     symbols: list[str],
     recent_model_ics: list[float] | None = None,
 ) -> MarketConfig:
-    """LLM-guided config generation with fallback to defaults.
+    """Return MarketConfig defaults for production daily training.
 
-    This is the primary entry point. On any LLM failure,
-    falls back to the static MarketConfig defaults.
+    Previously used LLM-guided config generation (profiler → strategist).
+    Config optimization is now handled by the backend ML Agent Service
+    during backtests. Production daily training uses static defaults.
 
     Args:
         market: Market code (us, cn, hk).
@@ -38,32 +38,14 @@ async def get_training_config(
         recent_model_ics: Recent model IC values for trend detection.
 
     Returns:
-        MarketConfig instance (either LLM-generated or default fallback).
+        MarketConfig instance (static defaults for the market).
     """
-    try:
-        from app.services.ml_agents.llm_client import MLAgentClient
-        from app.services.ml_agents.profiler import profiler
-        from app.services.ml_agents.strategist import strategist
-
-        client = MLAgentClient()
-        if not await client.is_available():
-            logger.info("LLM not available, using default MarketConfig for %s", market)
-            return get_market_config(market)
-
-        profile = await profiler.analyze(feature_df, market, symbols, recent_model_ics)
-        config = await strategist.generate(profile, market)
-
-        logger.info(
-            "LLM-generated config for %s: reasoning=%s",
-            market,
-            config.reasoning[:150],
-        )
-        return config.to_market_config()
-
-    except Exception as e:
-        logger.warning(
-            "ML agents unavailable for %s, falling back to MarketConfig: %s",
-            market,
-            e,
-        )
-        return get_market_config(market)
+    cfg = get_market_config(market)
+    logger.info(
+        "Using default MarketConfig for %s: lr=%.3f, leaves=%d, rounds=%d",
+        market,
+        cfg.learning_rate,
+        cfg.num_leaves,
+        cfg.num_boost_round,
+    )
+    return cfg

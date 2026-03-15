@@ -197,6 +197,23 @@ http {
             chunked_transfer_encoding on;
         }
 
+        # Admin prediction endpoints (agent-backtest can take 2-4 min for profile + LLM)
+        location /api/v1/admin/predictions/ {
+            limit_req zone=api_limit burst=20 nodelay;
+
+            proxy_pass http://backend;
+            proxy_http_version 1.1;
+            proxy_set_header Host $host;
+            proxy_set_header X-Real-IP $remote_addr;
+            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+            proxy_set_header X-Forwarded-Proto $scheme;
+            proxy_set_header X-Request-ID $request_id;
+            proxy_set_header Connection "";
+            proxy_connect_timeout 30s;
+            proxy_send_timeout 300s;
+            proxy_read_timeout 300s;
+        }
+
         # API endpoints
         location /api/ {
             limit_req zone=api_limit burst=20 nodelay;

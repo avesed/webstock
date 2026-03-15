@@ -117,6 +117,18 @@ async def get_accuracy(
     return await prediction_service.get_accuracy(market=market, days=days)
 
 
+@router.get("/{market}/direction/accuracy")
+async def get_direction_accuracy(
+    market: str,
+    days: int = Query(30, ge=1, le=365),
+):
+    """Get direction model accuracy: real AUC, Brier, calibration, hit rate."""
+    market = market.lower()
+    if market not in ("us", "hk", "cn"):
+        raise HTTPException(400, f"Unsupported market: {market}")
+    return await prediction_service.get_direction_accuracy(market=market, days=days)
+
+
 @router.get("/models/{model_id}/feature-importance")
 async def get_feature_importance(model_id: str):
     """Get feature importance for a specific model."""
@@ -510,6 +522,8 @@ async def start_backtest(market: str, request: BacktestRequest):
             config_override=request.config_override,
             use_llm_agents=request.use_llm_agents,
             max_iterations=request.max_iterations,
+            backtest_type=request.backtest_type,
+            retrain_interval=request.retrain_interval,
         )
     except RuntimeError as e:
         raise HTTPException(429, str(e))

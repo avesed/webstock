@@ -9,6 +9,7 @@ export interface PredictionResult {
   predictedDirection: 'up' | 'down' | 'sideways'
   predictionDate?: string
   actualReturn?: number | null
+  upProbability?: number | null
 }
 
 export interface PredictionModel {
@@ -24,6 +25,9 @@ export interface PredictionModel {
   featureImportanceTop30: Record<string, number> | null
   ensembleSize?: number | undefined
   foldIcs?: number[] | undefined
+  modelType?: 'ranking' | 'direction' | undefined
+  auc?: number | null
+  brierScore?: number | null
   createdAt: string
 }
 
@@ -141,6 +145,8 @@ export interface BacktestConfig {
   configOverride?: Record<string, unknown> | null
   useLlmAgents: boolean
   maxIterations: number
+  backtestType: 'static' | 'rolling'
+  retrainInterval: number
 }
 
 export interface BacktestStartResponse {
@@ -157,10 +163,13 @@ export interface BacktestTaskStatus {
   status: 'pending' | 'running' | 'completed' | 'failed'
   progress: number
   message: string
+  statusDetail: string
   currentPhase: string
   currentIteration: number
   maxIterations: number
   iterations: BacktestIteration[]
+  currentRetrain: number | null
+  totalRetrains: number | null
   elapsedSeconds: number
   createdAt: string | null
   completedAt: string | null
@@ -219,6 +228,31 @@ export interface BacktestSummary {
   completedAt: string | null
 }
 
+export interface AgentToolHistoryItem {
+  tool: string
+  summary: string
+}
+
+export interface AgentBacktestStatus {
+  backtestId: string
+  market: string
+  status: 'pending' | 'running' | 'suspended' | 'completed' | 'failed'
+  cutoffDate: string | null
+  agentIteration: number | null
+  agentRunId: string | null
+  trainIc: number | null
+  valIc: number | null
+  error: string | null
+  createdAt: string | null
+  completedAt: string | null
+  pendingTaskId: string | null
+  iteration: number
+  maxIterations: number
+  phase: string
+  phaseDetail: string
+  toolHistory: AgentToolHistoryItem[]
+}
+
 export interface BacktestDetail extends BacktestSummary {
   configOverride: Record<string, unknown> | null
   effectiveConfig: Record<string, unknown>
@@ -234,6 +268,25 @@ export interface BacktestDetail extends BacktestSummary {
   results: Record<string, unknown>
   error: string | null
   agentRunId: string | null
+}
+
+export interface RollingResults {
+  backtest_type: 'rolling'
+  retrain_interval: number
+  retrain_count: number
+  ic_curve: Array<{ date: string; ic: number }>
+  cumulative_returns: {
+    q5: Array<{ date: string; cumret: number }>
+    q1: Array<{ date: string; cumret: number }>
+    spread: Array<{ date: string; cumret: number }>
+  }
+  per_retrain_metrics: Array<{
+    retrain_date: string
+    train_ic: number | null
+    window_ic: number | null
+    n_dates: number
+    status: string
+  }>
 }
 
 export interface PredictionAccuracy {
@@ -289,9 +342,10 @@ export interface PredictionStatusItem {
 // ── snake_case → camelCase transforms ─────────
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-function toCamelPrediction(p: Record<string, any>): PredictionResult {
+export function toCamelPrediction(p: Record<string, any>): PredictionResult {
   const predictionDate = (p.prediction_date ?? p.predictionDate) as string | undefined
   const actualReturn = (p.actual_return ?? p.actualReturn) as number | null | undefined
+  const upProbability = (p.up_probability ?? p.upProbability) as number | null | undefined
   const result: PredictionResult = {
     symbol: p.symbol as string,
     predictedScore: (p.predicted_score ?? p.predictedScore) as number,
@@ -300,6 +354,7 @@ function toCamelPrediction(p: Record<string, any>): PredictionResult {
   }
   if (predictionDate !== undefined) result.predictionDate = predictionDate
   if (actualReturn !== undefined) result.actualReturn = actualReturn
+  if (upProbability !== undefined) result.upProbability = upProbability
   return result
 }
 
@@ -316,6 +371,9 @@ function toCamelModel(m: Record<string, any>): PredictionModel {
 
   const ensembleSize = (metadata?.ensemble_size ?? m.ensemble_size ?? m.ensembleSize) as number | undefined
   const foldIcs = (metadata?.fold_ics ?? m.fold_ics ?? m.foldIcs) as number[] | undefined
+  const modelType = (m.model_type ?? m.modelType) as 'ranking' | 'direction' | undefined
+  const auc = (m.auc ?? null) as number | null
+  const brierScore = (m.brier_score ?? m.brierScore ?? null) as number | null
 
   return {
     id: String(m.id),
@@ -330,6 +388,9 @@ function toCamelModel(m: Record<string, any>): PredictionModel {
     featureImportanceTop30,
     ensembleSize,
     foldIcs,
+    modelType,
+    auc,
+    brierScore,
     createdAt: (m.created_at ?? m.createdAt) as string,
   }
 }
@@ -389,7 +450,7 @@ function toCamelAccuracy(a: Record<string, any>): PredictionAccuracy {
 }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-function toCamelPerformance(raw: Record<string, any>): PerformanceResponse {
+export function toCamelPerformance(raw: Record<string, any>): PerformanceResponse {
   const summary = raw.summary as Record<string, any> | undefined
   return {
     market: raw.market as string,
@@ -423,10 +484,13 @@ function toCamelBacktestTask(t: Record<string, any>): BacktestTaskStatus {
     status: t.status as BacktestTaskStatus['status'],
     progress: (t.progress ?? 0) as number,
     message: (t.message ?? '') as string,
+    statusDetail: (t.status_detail ?? t.statusDetail ?? '') as string,
     currentPhase: (t.current_phase ?? t.currentPhase ?? '') as string,
     currentIteration: (t.current_iteration ?? t.currentIteration ?? 0) as number,
     maxIterations: (t.max_iterations ?? t.maxIterations ?? 1) as number,
     iterations: Array.isArray(t.iterations) ? t.iterations.map(toCamelIteration) : [],
+    currentRetrain: (t.current_retrain ?? t.currentRetrain ?? null) as number | null,
+    totalRetrains: (t.total_retrains ?? t.totalRetrains ?? null) as number | null,
     elapsedSeconds: (t.elapsed_seconds ?? t.elapsedSeconds ?? 0) as number,
     createdAt: (t.created_at ?? t.createdAt ?? null) as string | null,
     completedAt: (t.completed_at ?? t.completedAt ?? null) as string | null,
@@ -781,6 +845,8 @@ export const predictionsApi = {
       config_override: config.configOverride ?? null,
       use_llm_agents: config.useLlmAgents,
       max_iterations: config.maxIterations,
+      backtest_type: config.backtestType,
+      retrain_interval: config.retrainInterval,
     }).then(r => ({
       taskId: (r.data.task_id ?? r.data.taskId) as string,
       backtestId: (r.data.backtest_id ?? r.data.backtestId) as string,
@@ -829,4 +895,62 @@ export const predictionsApi = {
   deleteBacktest: (backtestId: string) =>
     apiClient.delete<{ deleted: boolean }>(`/admin/predictions/backtests/${backtestId}`)
       .then(r => r.data),
+
+  // Agent-driven backtests
+  startAgentBacktest: (market: string, params: {
+    cutoffDate: string
+    validationDays: number
+    forwardDays: number
+    maxIterations: number
+  }) =>
+    apiClient.post<Record<string, unknown>>(`/admin/predictions/${market}/agent-backtest`, {
+      cutoff_date: params.cutoffDate,
+      validation_days: params.validationDays,
+      forward_days: params.forwardDays,
+      max_iterations: params.maxIterations,
+    }).then(r => ({
+      backtestId: (r.data.backtest_id ?? r.data.backtestId) as string,
+      status: (r.data.status ?? 'running') as string,
+    })),
+
+  getAgentTaskStatus: (backtestId: string) =>
+    apiClient.get<Record<string, unknown>>(`/admin/predictions/agent-tasks/${backtestId}`)
+      .then(r => {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const d = r.data as Record<string, any>
+        return {
+          backtestId: (d.backtest_id ?? d.backtestId) as string,
+          market: d.market as string,
+          status: d.status as AgentBacktestStatus['status'],
+          cutoffDate: (d.cutoff_date ?? d.cutoffDate ?? null) as string | null,
+          agentIteration: (d.agent_iteration ?? d.agentIteration ?? null) as number | null,
+          agentRunId: (d.agent_run_id ?? d.agentRunId ?? null) as string | null,
+          trainIc: (d.train_ic ?? d.trainIc ?? null) as number | null,
+          valIc: (d.val_ic ?? d.valIc ?? null) as number | null,
+          error: (d.error ?? null) as string | null,
+          createdAt: (d.created_at ?? d.createdAt ?? null) as string | null,
+          completedAt: (d.completed_at ?? d.completedAt ?? null) as string | null,
+          pendingTaskId: (d.pending_task_id ?? d.pendingTaskId ?? null) as string | null,
+          iteration: (d.iteration ?? 0) as number,
+          maxIterations: (d.max_iterations ?? d.maxIterations ?? 3) as number,
+          phase: (d.phase ?? '') as string,
+          phaseDetail: (d.phase_detail ?? d.phaseDetail ?? '') as string,
+          toolHistory: (d.tool_history ?? d.toolHistory ?? []) as AgentToolHistoryItem[],
+        } satisfies AgentBacktestStatus
+      }),
+
+  /** Poll a data-processor ml-tools sub-task (training/rolling backtest) for progress. */
+  getMlToolsTaskStatus: (taskId: string) =>
+    apiClient.get<Record<string, unknown>>(`/admin/predictions/ml-tools/tasks/${taskId}`)
+      .then(r => {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const d = r.data as Record<string, any>
+        return {
+          taskId: (d.task_id ?? d.taskId) as string,
+          status: (d.status ?? 'submitted') as string,
+          progress: (d.progress ?? 0) as number,
+          statusDetail: (d.status_detail ?? d.statusDetail ?? '') as string,
+          error: (d.error ?? null) as string | null,
+        }
+      }),
 }

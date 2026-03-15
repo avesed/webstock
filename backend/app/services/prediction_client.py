@@ -178,6 +178,17 @@ class PredictionClient:
             params={"days": str(days)},
         )
 
+    async def get_direction_accuracy(
+        self,
+        market: str,
+        days: int = 30,
+    ) -> Dict[str, Any]:
+        """Get direction model accuracy stats for a market."""
+        return await self._request(
+            "GET", f"/predictions/{market}/direction/accuracy",
+            params={"days": str(days)},
+        )
+
     async def get_performance_metrics(
         self, market: str, days: int = 90
     ) -> Dict[str, Any]:
@@ -320,6 +331,119 @@ class PredictionClient:
             "POST", f"/predictions/options/collect/{market}",
             timeout=httpx.Timeout(30.0, connect=10.0),
         )
+
+    # === ML Tools (agent-driven training) ===
+
+    async def ml_profile_data(
+        self,
+        market: str,
+        cutoff_date: str,
+        validation_days: int = 60,
+        forward_days: int = 5,
+    ) -> Dict[str, Any]:
+        """Call POST /ml-tools/profile on data-processor."""
+        return await self._request(
+            "POST", "/ml-tools/profile",
+            json={
+                "market": market,
+                "cutoff_date": cutoff_date,
+                "validation_days": validation_days,
+                "forward_days": forward_days,
+            },
+            timeout=httpx.Timeout(300.0, connect=10.0),
+        )
+
+    async def ml_submit_training(
+        self,
+        market: str,
+        cutoff_date: str,
+        forward_days: int,
+        config: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        """Call POST /ml-tools/train on data-processor."""
+        return await self._request(
+            "POST", "/ml-tools/train",
+            json={
+                "market": market,
+                "cutoff_date": cutoff_date,
+                "forward_days": forward_days,
+                "config": config,
+            },
+            timeout=httpx.Timeout(30.0, connect=10.0),
+        )
+
+    async def ml_get_training_task(self, task_id: str) -> Dict[str, Any]:
+        """Call GET /ml-tools/tasks/{task_id} on data-processor."""
+        return await self._request("GET", f"/ml-tools/tasks/{task_id}")
+
+    async def ml_run_validation(
+        self,
+        task_id: str,
+        cutoff_date: str,
+        validation_days: int,
+        forward_days: int,
+    ) -> Dict[str, Any]:
+        """Call POST /ml-tools/validate on data-processor."""
+        return await self._request(
+            "POST", "/ml-tools/validate",
+            json={
+                "task_id": task_id,
+                "cutoff_date": cutoff_date,
+                "validation_days": validation_days,
+                "forward_days": forward_days,
+            },
+            timeout=httpx.Timeout(600.0, connect=10.0),  # Long timeout for inference
+        )
+
+    async def ml_submit_rolling_backtest(
+        self,
+        market: str,
+        cutoff_date: str,
+        validation_days: int,
+        forward_days: int,
+        retrain_interval: int,
+        config: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        """Call POST /ml-tools/rolling-backtest on data-processor.
+
+        Returns task_id immediately.  Poll ml_get_training_task() for status.
+        """
+        return await self._request(
+            "POST", "/ml-tools/rolling-backtest",
+            json={
+                "market": market,
+                "cutoff_date": cutoff_date,
+                "validation_days": validation_days,
+                "forward_days": forward_days,
+                "retrain_interval": retrain_interval,
+                "config": config,
+            },
+            timeout=httpx.Timeout(30.0, connect=10.0),
+        )
+
+    async def ml_deploy_config(
+        self,
+        market: str,
+        backtest_id: str,
+        effective_config: Dict[str, Any],
+        iteration: int = 1,
+        val_ic: float = 0.0,
+        train_ic: Optional[float] = None,
+        train_icir: Optional[float] = None,
+    ) -> Dict[str, Any]:
+        """Call POST /ml-tools/deploy on data-processor."""
+        body: Dict[str, Any] = {
+            "market": market,
+            "backtest_id": backtest_id,
+            "effective_config": effective_config,
+            "iteration": iteration,
+            "val_ic": val_ic,
+        }
+        if train_ic is not None:
+            body["train_ic"] = train_ic
+        if train_icir is not None:
+            body["train_icir"] = train_icir
+        return await self._request("POST", "/ml-tools/deploy", json=body)
 
     # === Backtesting ===
 

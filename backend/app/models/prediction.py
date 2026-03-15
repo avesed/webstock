@@ -19,6 +19,7 @@ from sqlalchemy import (
     Boolean,
     Date,
     DateTime,
+    Float,
     ForeignKey,
     Identity,
     Integer,
@@ -220,6 +221,25 @@ class PredictionModel(Base):
         comment="Whether model passed quality gate (IC/ICIR thresholds)",
     )
 
+    model_type: Mapped[str] = mapped_column(
+        String(20),
+        nullable=False,
+        server_default="ranking",
+        comment="Model type: ranking or direction",
+    )
+
+    auc: Mapped[Optional[Decimal]] = mapped_column(
+        Numeric(8, 6),
+        nullable=True,
+        comment="Area Under ROC Curve (direction models)",
+    )
+
+    brier_score: Mapped[Optional[Decimal]] = mapped_column(
+        Numeric(8, 6),
+        nullable=True,
+        comment="Brier score for probability calibration (direction models)",
+    )
+
     created_at: Mapped[Optional[datetime]] = mapped_column(
         DateTime(timezone=True),
         default=lambda: datetime.now(timezone.utc),
@@ -228,8 +248,8 @@ class PredictionModel(Base):
 
     __table_args__ = (
         UniqueConstraint(
-            "market", "model_date", "forward_days",
-            name="uq_prediction_models_market_date_fwd",
+            "market", "model_date", "forward_days", "model_type",
+            name="uq_pred_models_mkt_date_fwd_type",
         ),
     )
 
@@ -293,6 +313,12 @@ class StockPrediction(Base):
         String(10),
         nullable=True,
         comment="up, down, or sideways",
+    )
+
+    up_probability: Mapped[Optional[float]] = mapped_column(
+        Float,
+        nullable=True,
+        comment="Probability of upward movement from direction model",
     )
 
     actual_return: Mapped[Optional[Decimal]] = mapped_column(
@@ -560,4 +586,179 @@ class DiscoveredFactor(Base):
         return (
             f"<DiscoveredFactor(id={self.id}, name={self.name!r}, "
             f"market={self.market!r}, ic={self.ic})>"
+        )
+
+
+class MLBacktest(Base):
+    """Historical cutoff backtest record with optional LLM agent loop.
+
+    Tracks training/validation metrics, config overrides, and agent
+    conversation state for checkpoint/resume across iterations.
+    """
+
+    __tablename__ = "ml_backtests"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        primary_key=True,
+        default=uuid.uuid4,
+        server_default=sa.text("uuid_generate_v4()"),
+    )
+
+    market: Mapped[str] = mapped_column(
+        String(10), nullable=False
+    )
+
+    cutoff_date: Mapped[date] = mapped_column(
+        Date, nullable=False
+    )
+
+    validation_days: Mapped[int] = mapped_column(
+        Integer, nullable=False
+    )
+
+    forward_days: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=5, server_default=sa.text("5")
+    )
+
+    # Configuration
+    config_override: Mapped[Optional[dict]] = mapped_column(
+        JSONB, nullable=True
+    )
+
+    effective_config: Mapped[dict] = mapped_column(
+        JSONB, nullable=False
+    )
+
+    # Training metrics
+    train_ic: Mapped[Optional[float]] = mapped_column(
+        sa.Float, nullable=True
+    )
+
+    train_icir: Mapped[Optional[float]] = mapped_column(
+        sa.Float, nullable=True
+    )
+
+    train_ndcg: Mapped[Optional[float]] = mapped_column(
+        sa.Float, nullable=True
+    )
+
+    fold_ics: Mapped[Optional[dict]] = mapped_column(
+        JSONB, nullable=True
+    )
+
+    ensemble_size: Mapped[Optional[int]] = mapped_column(
+        Integer, nullable=True
+    )
+
+    feature_count: Mapped[Optional[int]] = mapped_column(
+        Integer, nullable=True
+    )
+
+    symbol_count: Mapped[Optional[int]] = mapped_column(
+        Integer, nullable=True
+    )
+
+    # Validation metrics
+    val_ic: Mapped[Optional[float]] = mapped_column(
+        sa.Float, nullable=True
+    )
+
+    val_icir: Mapped[Optional[float]] = mapped_column(
+        sa.Float, nullable=True
+    )
+
+    val_direction_accuracy: Mapped[Optional[float]] = mapped_column(
+        sa.Float, nullable=True
+    )
+
+    direction_auc: Mapped[Optional[float]] = mapped_column(
+        sa.Float, nullable=True
+    )
+
+    direction_brier: Mapped[Optional[float]] = mapped_column(
+        sa.Float, nullable=True
+    )
+
+    val_spread: Mapped[Optional[float]] = mapped_column(
+        sa.Float, nullable=True
+    )
+
+    val_q1_return: Mapped[Optional[float]] = mapped_column(
+        sa.Float, nullable=True
+    )
+
+    val_q5_return: Mapped[Optional[float]] = mapped_column(
+        sa.Float, nullable=True
+    )
+
+    val_hit_rate: Mapped[Optional[float]] = mapped_column(
+        sa.Float, nullable=True
+    )
+
+    val_max_drawdown: Mapped[Optional[float]] = mapped_column(
+        sa.Float, nullable=True
+    )
+
+    # Detailed results
+    results: Mapped[dict] = mapped_column(
+        JSONB,
+        nullable=False,
+        default=dict,
+        server_default=sa.text("'{}'::jsonb"),
+    )
+
+    # Metadata
+    status: Mapped[str] = mapped_column(
+        String(20),
+        nullable=False,
+        default="pending",
+        server_default=sa.text("'pending'"),
+    )
+
+    error: Mapped[Optional[str]] = mapped_column(
+        Text, nullable=True
+    )
+
+    duration_seconds: Mapped[Optional[float]] = mapped_column(
+        sa.Float, nullable=True
+    )
+
+    agent_run_id: Mapped[Optional[str]] = mapped_column(
+        String(64), nullable=True
+    )
+
+    agent_iteration: Mapped[Optional[int]] = mapped_column(
+        Integer, nullable=True
+    )
+
+    # Agent conversation state for async checkpoint/resume
+    agent_conversation: Mapped[Optional[dict]] = mapped_column(
+        JSONB, nullable=True, default=None
+    )
+
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+        server_default=sa.text("NOW()"),
+    )
+
+    completed_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
+    __table_args__ = (
+        Index("ix_ml_bt_market", "market", sa.text("created_at DESC")),
+        Index(
+            "ix_ml_bt_status",
+            "status",
+            postgresql_where=sa.text("status IN ('pending', 'running', 'suspended')"),
+        ),
+    )
+
+    def __repr__(self) -> str:
+        return (
+            f"<MLBacktest(id={self.id}, market={self.market!r}, "
+            f"cutoff={self.cutoff_date}, status={self.status!r})>"
         )

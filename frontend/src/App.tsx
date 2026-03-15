@@ -27,7 +27,26 @@ const NewsPage = lazy(() => import('@/pages/NewsPage'))
 const NewsReaderPage = lazy(() => import('@/pages/NewsReaderPage'))
 const ChatPage = lazy(() => import('@/pages/ChatPage'))
 const SettingsPage = lazy(() => import('@/pages/SettingsPage'))
-const AdminDashboardPage = lazy(() => import('@/pages/admin/AdminDashboardPage'))
+const AdminLayout = lazy(() => import('@/pages/admin/AdminLayout'))
+const AdminUsersPage = lazy(() => import('@/pages/admin/UserManagementPage'))
+const SettProvidersPage = lazy(() => import('@/pages/admin/settings/ProvidersPage'))
+const SettModelsPage = lazy(() => import('@/pages/admin/settings/ModelsPage'))
+const SettNewsPage = lazy(() => import('@/pages/admin/settings/NewsPage'))
+const SettFeaturesPage = lazy(() => import('@/pages/admin/settings/FeaturesPage'))
+const MonitorOverviewPage = lazy(() => import('@/pages/admin/monitor/OverviewPage'))
+const MonitorFilterPage = lazy(() => import('@/pages/admin/monitor/FilterPage'))
+const MonitorPipelinePage = lazy(() => import('@/pages/admin/monitor/PipelinePage'))
+const AdminRssPage = lazy(() => import('@/pages/admin/RssFeedsPage'))
+const AdminCostsPage = lazy(() => import('@/pages/admin/CostTrackingPage'))
+const AdminKnowledgePage = lazy(() => import('@/pages/admin/KnowledgeBasePage'))
+const PredStatusPage = lazy(() => import('@/pages/admin/predictions/StatusPage'))
+const PredResultsPage = lazy(() => import('@/pages/admin/predictions/ResultsPage'))
+const PredTriggerPage = lazy(() => import('@/pages/admin/predictions/TriggerPage'))
+const PredPerformancePage = lazy(() => import('@/pages/admin/predictions/PerformancePage'))
+const PredModelsPage = lazy(() => import('@/pages/admin/predictions/ModelsPage'))
+const PredBacktestPage = lazy(() => import('@/pages/admin/predictions/BacktestPage'))
+const PredRDAgentPage = lazy(() => import('@/pages/admin/predictions/RDAgentPage'))
+const PredictionsPage = lazy(() => import('@/pages/PredictionsPage'))
 const QlibBacktestsPage = lazy(() => import('@/pages/QlibBacktestsPage'))
 const DiscussionPage = lazy(() => import('@/pages/DiscussionPage'))
 
@@ -154,16 +173,47 @@ function App() {
           <Route path="news/:newsId" element={<NewsReaderPage />} />
           <Route path="chat" element={<ChatPage />} />
           <Route path="discussion/:symbol" element={<DiscussionPage />} />
-          <Route path="backtests" element={<QlibBacktestsPage />} />
+          <Route path="predictions" element={<PredictionsPage />} />
+          <Route path="backtests" element={<Navigate to="/predictions" replace />} />
           <Route path="settings" element={<SettingsPage />} />
-          <Route
-            path="admin"
-            element={
+        </Route>
+
+        {/* Admin routes — own layout with sidebar */}
+        <Route
+          path="/admin"
+          element={
+            <ProtectedRoute>
               <AdminRoute>
-                <AdminDashboardPage />
+                <AdminLayout />
               </AdminRoute>
-            }
-          />
+            </ProtectedRoute>
+          }
+        >
+          <Route index element={<Navigate to="users" replace />} />
+          <Route path="users" element={<AdminUsersPage />} />
+          <Route path="settings" element={<Navigate to="providers" replace />} />
+          <Route path="settings/providers" element={<SettProvidersPage />} />
+          <Route path="settings/models" element={<SettModelsPage />} />
+          <Route path="settings/news" element={<SettNewsPage />} />
+          <Route path="features" element={<SettFeaturesPage />} />
+          <Route path="monitor" element={<Navigate to="overview" replace />} />
+          <Route path="monitor/overview" element={<MonitorOverviewPage />} />
+          <Route path="monitor/filter" element={<MonitorFilterPage />} />
+          <Route path="monitor/pipeline" element={<MonitorPipelinePage />} />
+          <Route path="filter" element={<Navigate to="/admin/monitor/filter" replace />} />
+          <Route path="pipeline" element={<Navigate to="/admin/monitor/pipeline" replace />} />
+          <Route path="rss" element={<AdminRssPage />} />
+          <Route path="costs" element={<AdminCostsPage />} />
+          <Route path="knowledge" element={<AdminKnowledgePage />} />
+          <Route path="predictions" element={<Navigate to="status" replace />} />
+          <Route path="predictions/status" element={<PredStatusPage />} />
+          <Route path="predictions/results" element={<PredResultsPage />} />
+          <Route path="predictions/trigger" element={<PredTriggerPage />} />
+          <Route path="predictions/performance" element={<PredPerformancePage />} />
+          <Route path="predictions/models" element={<PredModelsPage />} />
+          <Route path="predictions/backtest" element={<PredBacktestPage />} />
+          <Route path="predictions/rdagent" element={<PredRDAgentPage />} />
+          <Route path="backtests" element={<QlibBacktestsPage />} />
         </Route>
 
         {/* 404 */}

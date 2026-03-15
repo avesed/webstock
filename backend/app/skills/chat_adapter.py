@@ -25,6 +25,17 @@ MAX_TOOL_RESULT_CHARS = 2000
 # Per-tool execution timeout in seconds
 TOOL_TIMEOUT_SECONDS = 15
 
+# Extended timeouts for long-running ML skills (profile builds feature
+# matrices ~30-120s, validation runs multi-day inference ~60-300s)
+_SKILL_TIMEOUTS: dict[str, int] = {
+    "ml_profile_data": 600,
+    "ml_submit_training": 60,
+    "ml_get_training_status": 30,
+    "ml_run_validation": 660,
+    "ml_run_rolling_backtest": 60,  # Async submit — returns task_id immediately
+    "ml_deploy_config": 60,
+}
+
 # Skills exposed to the chat function-calling agent
 CHAT_SKILL_NAMES = [
     "get_stock_quote",
@@ -54,6 +65,16 @@ DISCUSSION_SKILL_NAMES = [
     "ask_news_expert",
 ]
 
+# Admin-only ML skills (only exposed when is_admin=True)
+ADMIN_SKILL_NAMES = [
+    "ml_profile_data",
+    "ml_submit_training",
+    "ml_get_training_status",
+    "ml_run_validation",
+    "ml_run_rolling_backtest",
+    "ml_deploy_config",
+]
+
 # Friendly display labels for tool calls (used by SSE events)
 TOOL_LABELS = {
     "get_stock_quote": "获取实时报价",
@@ -77,10 +98,16 @@ TOOL_LABELS = {
     "ask_technical_expert": "咨询技术面专家",
     "ask_sentiment_expert": "咨询情绪面专家",
     "ask_news_expert": "咨询新闻面专家",
+    "ml_profile_data": "分析数据特征",
+    "ml_submit_training": "提交模型训练",
+    "ml_get_training_status": "查询训练状态",
+    "ml_run_validation": "运行模型验证",
+    "ml_run_rolling_backtest": "提交滚动回测",
+    "ml_deploy_config": "部署训练配置",
 }
 
 # Skills that need user_id and db injection
-_USER_SCOPED_SKILLS = {"get_portfolio", "get_watchlist", "qlib_create_backtest", "qlib_get_backtest", "ask_fundamental_expert", "ask_technical_expert", "ask_sentiment_expert", "ask_news_expert"}
+_USER_SCOPED_SKILLS = {"get_portfolio", "get_watchlist", "qlib_create_backtest", "qlib_get_backtest", "ask_fundamental_expert", "ask_technical_expert", "ask_sentiment_expert", "ask_news_expert", "ml_profile_data", "ml_submit_training", "ml_get_training_status", "ml_run_validation", "ml_run_rolling_backtest", "ml_deploy_config"}
 _DB_SCOPED_SKILLS = {"get_portfolio", "get_watchlist", "search_knowledge_base", "search_related_stocks", "get_news", "qlib_create_backtest", "qlib_get_backtest", "ask_fundamental_expert", "ask_technical_expert", "ask_sentiment_expert", "ask_news_expert"}
 _DISCUSSION_SCOPED_SKILLS = {"ask_fundamental_expert", "ask_technical_expert", "ask_sentiment_expert", "ask_news_expert"}
 
@@ -95,12 +122,13 @@ def skill_to_tool_definition(skill: BaseSkill) -> ToolDefinition:
     )
 
 
-def get_chat_tools(include_discussion: bool = False) -> List[ToolDefinition]:
+def get_chat_tools(include_discussion: bool = False, is_admin: bool = False) -> List[ToolDefinition]:
     """Get ToolDefinition list for chat function calling.
 
     Args:
         include_discussion: If True, include discussion expert skills
             (only for conversations linked to a discussion session)
+        is_admin: If True, include admin-only ML skills
     """
     from app.skills.registry import get_skill_registry
 
@@ -108,6 +136,8 @@ def get_chat_tools(include_discussion: bool = False) -> List[ToolDefinition]:
     skill_names = list(CHAT_SKILL_NAMES)
     if include_discussion:
         skill_names.extend(DISCUSSION_SKILL_NAMES)
+    if is_admin:
+        skill_names.extend(ADMIN_SKILL_NAMES)
     tools: List[ToolDefinition] = []
     for name in skill_names:
         skill = registry.get(name)
@@ -344,9 +374,10 @@ async def execute_chat_tool(
         if tool_name in _DISCUSSION_SCOPED_SKILLS:
             kwargs["discussion_session_id"] = discussion_session_id
 
+        timeout = _SKILL_TIMEOUTS.get(tool_name, TOOL_TIMEOUT_SECONDS)
         result = await asyncio.wait_for(
             skill.execute(**kwargs),
-            timeout=TOOL_TIMEOUT_SECONDS,
+            timeout=timeout,
         )
 
         if not result.success:
@@ -362,7 +393,8 @@ async def execute_chat_tool(
         return out
 
     except asyncio.TimeoutError:
-        logger.warning("Tool %s timed out after %ds", tool_name, TOOL_TIMEOUT_SECONDS)
+        timeout = _SKILL_TIMEOUTS.get(tool_name, TOOL_TIMEOUT_SECONDS)
+        logger.warning("Tool %s timed out after %ds", tool_name, timeout)
         return {"error": f"Tool {tool_name} timed out"}
     except asyncio.CancelledError:
         logger.warning("Tool %s was cancelled", tool_name)

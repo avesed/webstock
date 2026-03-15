@@ -121,6 +121,14 @@ def _register_all_skills(registry: SkillRegistry) -> None:
     # Prediction (ML model)
     from app.skills.prediction_skill import StockPredictionSkill
 
+    # ML tools (admin-only)
+    from app.skills.ml.profile_skill import MLProfileSkill
+    from app.skills.ml.train_skill import MLTrainSkill
+    from app.skills.ml.training_status_skill import MLTrainingStatusSkill
+    from app.skills.ml.validate_skill import MLValidateSkill
+    from app.skills.ml.deploy_skill import MLDeploySkill
+    from app.skills.ml.rolling_backtest_skill import MLRollingBacktestSkill
+
     # Discussion (agent-as-skill)
     from app.skills.discussion_skills import (
         AskFundamentalExpertSkill,
@@ -167,6 +175,13 @@ def _register_all_skills(registry: SkillRegistry) -> None:
         PortfolioOptimizationSkill,
         # Prediction (ML model)
         StockPredictionSkill,
+        # ML tools (admin-only)
+        MLProfileSkill,
+        MLTrainSkill,
+        MLTrainingStatusSkill,
+        MLValidateSkill,
+        MLDeploySkill,
+        MLRollingBacktestSkill,
         # Discussion (agent-as-skill + moderator dispatch)
         AskFundamentalExpertSkill,
         AskTechnicalExpertSkill,

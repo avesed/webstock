@@ -22,7 +22,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.security import require_admin
 from app.db.database import get_db
-from app.models.prediction import PredictionUniverse
+from app.models.prediction import MLBacktest, PredictionUniverse
 from app.models.user import User
 from app.services.prediction_client import (
     PredictionServiceError,
@@ -108,6 +108,14 @@ class UpdateUniverseRequest(BaseModel):
     symbols: Optional[List[str]] = None
     is_default: Optional[bool] = None
     is_active: Optional[bool] = None
+
+
+class AgentBacktestRequest(BaseModel):
+    model_config = ConfigDict(alias_generator=to_camel, populate_by_name=True)
+    cutoff_date: str = Field(..., description="Training cutoff date (YYYY-MM-DD)")
+    validation_days: int = Field(default=60, ge=10, le=250)
+    forward_days: int = Field(default=5, ge=1, le=30)
+    max_iterations: int = Field(default=3, ge=1, le=10)
 
 
 # ---------------------------------------------------------------------------
@@ -300,6 +308,32 @@ async def get_prediction_accuracy(
     client = await get_prediction_client()
     try:
         return await client.get_accuracy(market=market, days=days)
+    except PredictionServiceError as e:
+        raise HTTPException(
+            status_code=e.status_code or 502,
+            detail=_sanitize_service_error(e),
+        )
+
+
+# ---------------------------------------------------------------------------
+# GET /predictions/{market}/direction/accuracy — direction model accuracy
+# ---------------------------------------------------------------------------
+
+
+@router.get(
+    "/predictions/{market}/direction/accuracy",
+    summary="Get direction model accuracy",
+    description="Returns direction model accuracy metrics (AUC, Brier, calibration, hit rate).",
+)
+async def get_direction_accuracy(
+    market: str,
+    days: int = Query(default=30, ge=1, le=365),
+    current_user: User = Depends(require_admin),
+) -> Dict[str, Any]:
+    market = _validate_market(market)
+    client = await get_prediction_client()
+    try:
+        return await client.get_direction_accuracy(market=market, days=days)
     except PredictionServiceError as e:
         raise HTTPException(
             status_code=e.status_code or 502,
@@ -1051,3 +1085,153 @@ async def delete_backtest(
         return resp
     except PredictionServiceError as e:
         raise HTTPException(status_code=e.status_code or 502, detail=_sanitize_service_error(e))
+
+
+@router.get(
+    "/predictions/ml-tools/tasks/{task_id}",
+    summary="Poll ML tools sub-task status",
+    description="Poll a data-processor ml-tools task (training or rolling backtest) for progress.",
+)
+async def get_ml_tools_task(
+    task_id: str,
+    current_user: User = Depends(require_admin),
+) -> Dict[str, Any]:
+    client = await get_prediction_client()
+    try:
+        return await client.ml_get_training_task(task_id)
+    except PredictionServiceError as e:
+        raise HTTPException(status_code=e.status_code or 502, detail=_sanitize_service_error(e))
+
+
+# ---------------------------------------------------------------------------
+# ML Agent -- LLM-driven backtest optimization
+# ---------------------------------------------------------------------------
+
+
+@router.post(
+    "/predictions/{market}/agent-backtest",
+    summary="Start agent-driven backtest",
+    description=(
+        "Start an LLM agent-driven backtest with iterative optimization. "
+        "The agent profiles data, generates training configs, and iterates "
+        "based on training results."
+    ),
+)
+async def start_agent_backtest(
+    market: str,
+    request: AgentBacktestRequest = Body(...),
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_admin),
+) -> Dict[str, Any]:
+    """Start an agent-driven backtest with LLM optimization loop."""
+    market = _validate_market(market)
+
+    from datetime import date as date_type
+
+    try:
+        cutoff = date_type.fromisoformat(request.cutoff_date)
+    except ValueError:
+        raise HTTPException(400, "Invalid cutoff_date format, use YYYY-MM-DD")
+
+    from app.services.ml_agent_service import ml_agent_service
+
+    try:
+        backtest_id = await ml_agent_service.create_session(
+            market=market,
+            cutoff_date=cutoff,
+            validation_days=request.validation_days,
+            forward_days=request.forward_days,
+            max_iterations=request.max_iterations,
+            db=db,
+        )
+    except Exception as e:
+        logger.error("Agent backtest creation failed: %s", e, exc_info=True)
+        raise HTTPException(500, f"Agent backtest failed: {str(e)[:500]}")
+
+    # Dispatch the heavy agent loop to a Celery worker asynchronously
+    from worker.tasks.ml_agent_tasks import run_ml_agent_session
+
+    run_ml_agent_session.delay(
+        backtest_id=backtest_id,
+        market=market,
+        cutoff_date=request.cutoff_date,
+        validation_days=request.validation_days,
+        forward_days=request.forward_days,
+        max_iterations=request.max_iterations,
+        user_id=current_user.id,
+    )
+
+    logger.info(
+        "Admin %s started agent backtest for market=%s (cutoff=%s, max_iter=%d)",
+        current_user.email, market, request.cutoff_date, request.max_iterations,
+    )
+    return {"backtest_id": backtest_id, "status": "pending"}
+
+
+@router.get(
+    "/predictions/agent-tasks/{backtest_id}",
+    summary="Get agent backtest status",
+    description="Returns the current status and metrics of an agent-driven backtest session.",
+)
+async def get_agent_task_status(
+    backtest_id: str,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_admin),
+) -> Dict[str, Any]:
+    """Get agent backtest session status."""
+    from uuid import UUID as UUIDType
+
+    try:
+        bt_id = UUIDType(backtest_id)
+    except ValueError:
+        raise HTTPException(400, "Invalid backtest_id format")
+
+    backtest = await db.get(MLBacktest, bt_id)
+    if not backtest:
+        raise HTTPException(404, f"Backtest {backtest_id} not found")
+
+    result: Dict[str, Any] = {
+        "backtest_id": str(backtest.id),
+        "market": backtest.market,
+        "status": backtest.status,
+        "cutoff_date": backtest.cutoff_date.isoformat() if backtest.cutoff_date else None,
+        "agent_iteration": backtest.agent_iteration,
+        "agent_run_id": backtest.agent_run_id,
+        "train_ic": backtest.train_ic,
+        "train_icir": backtest.train_icir,
+        "val_ic": backtest.val_ic,
+        "val_icir": backtest.val_icir,
+        "val_spread": backtest.val_spread,
+        "val_direction_accuracy": backtest.val_direction_accuracy,
+        "val_hit_rate": backtest.val_hit_rate,
+        "error": backtest.error,
+        "created_at": backtest.created_at.isoformat() if backtest.created_at else None,
+        "completed_at": backtest.completed_at.isoformat() if backtest.completed_at else None,
+    }
+
+    # effective_config stores both static config and live progress
+    eff = backtest.effective_config or {}
+    result["max_iterations"] = eff.get("max_iterations", 3)
+
+    # Live progress from effective_config (updated during agent loop)
+    result["iteration"] = eff.get("iteration", 0)
+    result["phase"] = eff.get("phase", "")
+    result["phase_detail"] = eff.get("phase_detail", "")
+    result["tool_history"] = eff.get("tool_history", [])
+
+    # Conversation state overrides (richer data when suspended/completed)
+    conv = backtest.agent_conversation
+    if conv and isinstance(conv, dict):
+        result["pending_task_id"] = conv.get("pending_task_id")
+        if "iteration" in conv:
+            result["iteration"] = conv["iteration"]
+        if conv.get("phase"):
+            result["phase"] = conv["phase"]
+        if conv.get("phase_detail"):
+            result["phase_detail"] = conv["phase_detail"]
+        if conv.get("tool_history"):
+            result["tool_history"] = conv["tool_history"]
+        if "max_iterations" in conv:
+            result["max_iterations"] = conv["max_iterations"]
+
+    return result

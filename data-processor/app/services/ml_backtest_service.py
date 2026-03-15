@@ -52,6 +52,8 @@ class BacktestTask:
     current_iteration: int = 0
     max_iterations: int = 1
     iterations: list[dict[str, Any]] = field(default_factory=list)
+    current_retrain: int = 0
+    total_retrains: int = 0
     error: Optional[str] = None
     _asyncio_task: Optional[asyncio.Task] = field(
         default=None, repr=False, compare=False
@@ -76,6 +78,8 @@ class BacktestTask:
             "current_iteration": self.current_iteration,
             "max_iterations": self.max_iterations,
             "iterations": self.iterations,
+            "current_retrain": self.current_retrain or None,
+            "total_retrains": self.total_retrains or None,
             "elapsed_seconds": round(elapsed, 1),
             "created_at": (
                 self.created_at.isoformat() if self.created_at else None
@@ -170,6 +174,8 @@ class MLBacktestService:
         config_override: dict[str, Any] | None = None,
         use_llm_agents: bool = False,
         max_iterations: int = 3,
+        backtest_type: str = "static",
+        retrain_interval: int = 5,
     ) -> tuple[str, str]:
         """Start a backtest task. Returns (task_id, backtest_id)."""
         if market in self._running_markets:
@@ -188,6 +194,12 @@ class MLBacktestService:
         self._tasks[task_id] = task
         self._running_markets.add(market)
 
+        # Build effective config, storing backtest_type metadata
+        eff_config = dataclasses.asdict(get_market_config(market))
+        if backtest_type == "rolling":
+            eff_config["backtest_type"] = "rolling"
+            eff_config["retrain_interval"] = retrain_interval
+
         # Insert initial DB record
         try:
             pool = settings_cache.pool
@@ -201,7 +213,7 @@ class MLBacktestService:
                         validation_days,
                         forward_days,
                         json.dumps(config_override) if config_override else None,
-                        json.dumps(dataclasses.asdict(get_market_config(market))),
+                        json.dumps(eff_config),
                         "pending",
                     )
         except Exception as e:
@@ -210,9 +222,19 @@ class MLBacktestService:
             del self._tasks[task_id]
             raise
 
-        # Launch async task
-        async_task = asyncio.create_task(
-            self._run_backtest(
+        # Route by backtest type
+        if backtest_type == "rolling":
+            coro = self._run_rolling_backtest(
+                task,
+                market,
+                cutoff_date,
+                validation_days,
+                forward_days,
+                config_override,
+                retrain_interval,
+            )
+        else:
+            coro = self._run_backtest(
                 task,
                 market,
                 cutoff_date,
@@ -222,7 +244,8 @@ class MLBacktestService:
                 use_llm_agents,
                 max_iter,
             )
-        )
+
+        async_task = asyncio.create_task(coro)
         task._asyncio_task = async_task
         return task_id, backtest_id
 
@@ -269,6 +292,329 @@ class MLBacktestService:
             return False
 
     # --- Core backtest logic ---
+
+    async def _run_rolling_backtest(
+        self,
+        task: BacktestTask,
+        market: str,
+        cutoff_date: date,
+        validation_days: int,
+        forward_days: int,
+        config_override: dict[str, Any] | None,
+        retrain_interval: int,
+    ) -> None:
+        """Rolling retrain backtest: retrain every N trading days.
+
+        Simulates production behavior where models are retrained periodically.
+        Builds features and prices once, then iterates through retrain windows.
+        """
+        t0 = time.monotonic()
+        try:
+            task.status = "running"
+            task.message = "Starting rolling backtest"
+            await self._update_db_status(task.backtest_id, "running")
+
+            base_config = apply_override(market, config_override)
+
+            # Step 1: Resolve symbols
+            task.current_phase = "resolving"
+            task.progress = 1.0
+            task.message = "Resolving universe symbols"
+            symbols = await self._resolve_symbols(market)
+            logger.info(
+                "Rolling backtest %s: resolved %d symbols for %s",
+                task.task_id, len(symbols), market,
+            )
+
+            # Step 2: Build full feature matrix (one-time)
+            task.current_phase = "building_features"
+            task.progress = 3.0
+            task.message = "Building feature matrix (one-time)"
+
+            train_start = cutoff_date - timedelta(days=730)
+            val_end = cutoff_date + timedelta(days=int(validation_days * 1.5))
+
+            from app.services.feature_service import feature_service
+
+            full_feature_df = await feature_service.build_feature_matrix(
+                market=market,
+                symbols=symbols,
+                start_date=train_start.isoformat(),
+                end_date=val_end.isoformat(),
+                config_override=base_config,
+            )
+            if full_feature_df.empty:
+                raise RuntimeError("Feature matrix is empty")
+
+            full_feature_df["date"] = pd.to_datetime(full_feature_df["date"])
+            logger.info(
+                "Rolling backtest %s: feature matrix %d rows x %d cols",
+                task.task_id, len(full_feature_df),
+                len(full_feature_df.columns) - 2,
+            )
+
+            # Step 3: Fetch close prices (one-time)
+            close_df = await prediction_service._fetch_close_prices(
+                market, symbols, train_start.isoformat(), val_end.isoformat(),
+            )
+            if close_df.empty:
+                raise RuntimeError("Close price data is empty")
+            close_df["date"] = pd.to_datetime(close_df["date"])
+
+            # Step 4: Determine validation trading dates
+            cutoff_ts = pd.Timestamp(cutoff_date)
+            all_dates = sorted(full_feature_df["date"].unique())
+            val_trading_dates = [
+                d for d in all_dates if d > cutoff_ts
+            ][:validation_days]
+
+            if len(val_trading_dates) < 5:
+                raise RuntimeError(
+                    f"Only {len(val_trading_dates)} validation dates "
+                    f"after cutoff {cutoff_date} (need at least 5)"
+                )
+
+            # Step 5: Split into retrain windows
+            retrain_windows: list[list] = []
+            for i in range(0, len(val_trading_dates), retrain_interval):
+                window = val_trading_dates[i : i + retrain_interval]
+                retrain_windows.append(window)
+
+            total_retrains = len(retrain_windows)
+            task.total_retrains = total_retrains
+            logger.info(
+                "Rolling backtest %s: %d validation dates → "
+                "%d retrain windows (interval=%d)",
+                task.task_id, len(val_trading_dates),
+                total_retrains, retrain_interval,
+            )
+
+            # Step 6: Rolling retrain loop
+            all_predictions: list[dict[str, Any]] = []
+            per_retrain_metrics: list[dict[str, Any]] = []
+
+            for win_idx, window_dates in enumerate(retrain_windows):
+                retrain_num = win_idx + 1
+                task.current_retrain = retrain_num
+                task.progress = 5.0 + 90.0 * win_idx / total_retrains
+
+                # Retrain cutoff = day before first date in this window
+                # (equivalent to training on all data up to that point)
+                retrain_cutoff_ts = window_dates[0] - pd.Timedelta(days=1)
+                retrain_cutoff = retrain_cutoff_ts.date()
+
+                # 6a: Training phase
+                task.current_phase = "training"
+                task.message = (
+                    f"Retrain {retrain_num}/{total_retrains}: "
+                    f"Training (cutoff {retrain_cutoff})"
+                )
+
+                train_slice = full_feature_df[
+                    full_feature_df["date"] <= retrain_cutoff_ts
+                ].copy()
+
+                if len(train_slice) < 100:
+                    logger.warning(
+                        "Retrain %d: only %d training rows, skipping",
+                        retrain_num, len(train_slice),
+                    )
+                    per_retrain_metrics.append({
+                        "retrain_date": str(retrain_cutoff),
+                        "train_ic": None,
+                        "window_ic": None,
+                        "n_dates": len(window_dates),
+                        "status": "skipped",
+                    })
+                    continue
+
+                try:
+                    train_result = await prediction_service.train_for_backtest(
+                        market=market,
+                        symbols=symbols,
+                        forward_days=forward_days,
+                        cutoff_date=retrain_cutoff,
+                        config=base_config,
+                        feature_df=train_slice,
+                    )
+                except Exception as e:
+                    logger.error(
+                        "Retrain %d training failed: %s", retrain_num, e,
+                    )
+                    per_retrain_metrics.append({
+                        "retrain_date": str(retrain_cutoff),
+                        "train_ic": None,
+                        "window_ic": None,
+                        "n_dates": len(window_dates),
+                        "status": "failed",
+                        "error": str(e)[:200],
+                    })
+                    continue
+
+                models = train_result["models"]
+                feature_cols = train_result["feature_cols"]
+                train_ic = train_result.get("ic")
+
+                # 6b: Inference on window dates
+                task.current_phase = "inference"
+                task.message = (
+                    f"Retrain {retrain_num}/{total_retrains}: "
+                    f"Inference on {len(window_dates)} dates"
+                )
+
+                window_predictions: list[dict[str, Any]] = []
+                for d in window_dates:
+                    day_df = full_feature_df[full_feature_df["date"] == d]
+                    if day_df.empty:
+                        continue
+                    missing_cols = [
+                        c for c in feature_cols if c not in day_df.columns
+                    ]
+                    if missing_cols:
+                        for mc in missing_cols:
+                            day_df = day_df.assign(**{mc: np.nan})
+                    X = day_df[feature_cols].values
+                    scores = np.mean(
+                        [m.predict(X) for m in models], axis=0
+                    )
+                    for sym, score in zip(
+                        day_df["symbol"].values, scores
+                    ):
+                        window_predictions.append({
+                            "date": d,
+                            "symbol": sym,
+                            "predicted_score": float(score),
+                        })
+
+                all_predictions.extend(window_predictions)
+
+                # 6c: Compute per-window IC
+                window_ic = None
+                if window_predictions:
+                    from scipy.stats import spearmanr
+
+                    win_pred_df = pd.DataFrame(window_predictions)
+                    close_sorted = close_df.sort_values(
+                        ["symbol", "date"]
+                    ).copy()
+                    close_sorted["fwd_ret"] = close_sorted.groupby(
+                        "symbol"
+                    )["close"].transform(
+                        lambda x: x.shift(-forward_days) / x - 1
+                    )
+                    win_merged = win_pred_df.merge(
+                        close_sorted[["symbol", "date", "fwd_ret"]],
+                        on=["symbol", "date"],
+                        how="left",
+                    ).dropna(subset=["fwd_ret", "predicted_score"])
+
+                    if len(win_merged) >= 20:
+                        win_ics = []
+                        for _, grp in win_merged.groupby("date"):
+                            if len(grp) >= 10:
+                                c, _ = spearmanr(
+                                    grp["predicted_score"], grp["fwd_ret"]
+                                )
+                                if not np.isnan(c):
+                                    win_ics.append(c)
+                        if win_ics:
+                            window_ic = round(float(np.mean(win_ics)), 6)
+
+                per_retrain_metrics.append({
+                    "retrain_date": str(retrain_cutoff),
+                    "train_ic": round(train_ic, 6) if train_ic else None,
+                    "window_ic": window_ic,
+                    "n_dates": len(window_dates),
+                    "n_predictions": len(window_predictions),
+                    "status": "completed",
+                })
+
+                # 6d: Release model references
+                del models, train_result
+
+                logger.info(
+                    "Rolling backtest %s: retrain %d/%d done, "
+                    "window_ic=%s, %d predictions",
+                    task.task_id, retrain_num, total_retrains,
+                    window_ic, len(window_predictions),
+                )
+
+            # Step 7: Aggregate all predictions
+            if not all_predictions:
+                raise RuntimeError(
+                    "All retrain windows failed — no predictions"
+                )
+
+            predictions_df = pd.DataFrame(all_predictions)
+
+            # Step 8: Compute aggregate validation metrics
+            task.current_phase = "computing_metrics"
+            task.progress = 95.0
+            task.message = "Computing aggregate metrics"
+
+            val_metrics = self._compute_validation_metrics(
+                predictions_df, close_df, forward_days, val_trading_dates,
+            )
+
+            # Step 9: Compute cumulative returns for Q5/Q1/Spread
+            cumulative_returns = self._compute_cumulative_returns(
+                predictions_df, close_df, forward_days,
+            )
+
+            # Build rolling-specific results
+            rolling_results = {
+                "backtest_type": "rolling",
+                "retrain_interval": retrain_interval,
+                "retrain_count": total_retrains,
+                "per_retrain_metrics": per_retrain_metrics,
+                "cumulative_returns": cumulative_returns,
+            }
+            # Merge with standard validation metrics
+            # (ic_curve already included via _compute_validation_metrics)
+            combined_result = {**val_metrics, **rolling_results}
+
+            # Step 10: Save
+            task.current_phase = "storing"
+            task.progress = 98.0
+            task.message = "Saving results"
+
+            duration = time.monotonic() - t0
+            await self._save_result(
+                task, combined_result, base_config,
+                duration, None, 0,
+            )
+
+            val_ic = val_metrics.get("val_ic", 0)
+            quality_tag = "PASS" if val_ic and val_ic > 0 else "FAIL"
+
+            task.status = "completed"
+            task.progress = 100.0
+            task.message = (
+                f"Rolling backtest [{quality_tag}] — "
+                f"val_IC={val_ic:.4f}, "
+                f"{total_retrains} retrains"
+            )
+            task.completed_at = datetime.now()
+
+            logger.info(
+                "Rolling backtest %s completed: val_IC=%.4f, "
+                "%d retrains, duration=%.0fs",
+                task.task_id, val_ic or 0,
+                total_retrains, duration,
+            )
+
+        except Exception as e:
+            logger.error(
+                "Rolling backtest %s failed: %s",
+                task.task_id, e, exc_info=True,
+            )
+            task.status = "failed"
+            task.error = str(e)
+            task.completed_at = datetime.now()
+            duration = time.monotonic() - t0
+            await self._mark_failed(task.backtest_id, str(e), duration)
+        finally:
+            self._running_markets.discard(market)
 
     async def _run_backtest(
         self,
@@ -445,8 +791,21 @@ class MLBacktestService:
                             eval_phase = last_iter.get("phases", {}).get(
                                 "evaluator", {}
                             )
-                            if eval_phase.get("suggested_adjustments"):
-                                prev_eval = eval_phase["suggested_adjustments"]
+                            if eval_phase.get("decision") in (
+                                "retry",
+                                "reject",
+                            ):
+                                prev_eval = {
+                                    "decision": eval_phase.get("decision"),
+                                    "reasoning": eval_phase.get(
+                                        "reasoning", ""
+                                    ),
+                                    "suggested_adjustments": eval_phase.get(
+                                        "suggested_adjustments", {}
+                                    ),
+                                    "val_ic": eval_phase.get("val_ic"),
+                                    "val_spread": eval_phase.get("val_spread"),
+                                }
 
                         tc = await strategist.generate(
                             profile,
@@ -493,6 +852,14 @@ class MLBacktestService:
 
                 phase_t0 = time.monotonic()
                 try:
+                    logger.info(
+                        "Iteration %d training with config: "
+                        "lgb_overrides=%s, boost=%d, early_stop=%d",
+                        iteration + 1,
+                        current_config.lgb_overrides,
+                        current_config.num_boost_round,
+                        current_config.early_stopping_rounds,
+                    )
                     train_result = await prediction_service.train_for_backtest(
                         market=market,
                         symbols=symbols,
@@ -638,6 +1005,14 @@ class MLBacktestService:
                                 "fold_ics": train_result["fold_ics"],
                                 "best_iters": train_result["best_iters"],
                                 "feature_importance_top20": fi_top20,
+                                # Include validation metrics so evaluator
+                                # can see actual backtest performance
+                                "val_ic": val_metrics.get("val_ic"),
+                                "val_icir": val_metrics.get("val_icir"),
+                                "val_direction_accuracy": val_metrics.get(
+                                    "val_direction_accuracy"
+                                ),
+                                "val_spread": val_metrics.get("val_spread"),
                             },
                             training_config=dataclasses.asdict(current_config),
                             data_profile={
@@ -712,15 +1087,43 @@ class MLBacktestService:
                         )
                         break
                     elif evaluator_result.decision == "reject":
-                        logger.info(
-                            "Evaluator says reject at iteration %d",
-                            iteration + 1,
-                        )
-                        break
-                    # else "retry" — continue loop
-                else:
+                        if iteration < max_iterations - 1:
+                            # Non-final iteration: treat reject as retry —
+                            # the whole point of the loop is to iterate.
+                            # Strategist reads feedback from
+                            # task.iterations[-1].phases.evaluator
+                            logger.info(
+                                "Evaluator says reject at iteration %d, "
+                                "but %d iterations remain — will retry",
+                                iteration + 1,
+                                max_iterations - iteration - 1,
+                            )
+                        else:
+                            logger.info(
+                                "Evaluator says reject at final iteration %d",
+                                iteration + 1,
+                            )
+                            break
+                    # else "retry" — continue loop; strategist reads
+                    # feedback from task.iterations[-1].phases.evaluator
+                elif not use_llm_agents:
                     # No evaluator (non-LLM mode) — single iteration
                     break
+                else:
+                    # Evaluator failed (exception) — continue loop if
+                    # iterations remain, don't let a transient LLM error
+                    # terminate the optimization loop
+                    if iteration < max_iterations - 1:
+                        logger.warning(
+                            "Evaluator failed at iteration %d, "
+                            "continuing to next iteration",
+                            iteration + 1,
+                        )
+                    else:
+                        logger.warning(
+                            "Evaluator failed at final iteration %d",
+                            iteration + 1,
+                        )
 
             # Store best result
             if best_result is None:
@@ -742,9 +1145,17 @@ class MLBacktestService:
                 best_iteration,
             )
 
+            # Determine quality verdict based on market thresholds
+            quality_passed = best_val_ic > 0
+            quality_tag = "PASS" if quality_passed else "FAIL"
+
             task.status = "completed"
             task.progress = 100.0
-            task.message = f"Completed -- val_IC={best_val_ic:.4f}"
+            task.message = (
+                f"Completed [{quality_tag}] -- "
+                f"val_IC={best_val_ic:.4f} "
+                f"(best iteration {best_iteration})"
+            )
             task.completed_at = datetime.now()
 
             logger.info(
@@ -918,6 +1329,73 @@ class MLBacktestService:
             "quintile_returns": {
                 int(k): round(float(v), 6) for k, v in q_returns.items()
             },
+        }
+
+    @staticmethod
+    def _compute_cumulative_returns(
+        predictions_df: pd.DataFrame,
+        close_df: pd.DataFrame,
+        forward_days: int,
+    ) -> dict[str, list[dict[str, Any]]]:
+        """Compute daily cumulative returns for Q5, Q1, and spread."""
+        close_sorted = close_df.sort_values(["symbol", "date"]).copy()
+        close_sorted["fwd_ret"] = close_sorted.groupby("symbol")[
+            "close"
+        ].transform(lambda x: x.shift(-forward_days) / x - 1)
+
+        merged = predictions_df.merge(
+            close_sorted[["symbol", "date", "fwd_ret"]],
+            on=["symbol", "date"],
+            how="left",
+        ).dropna(subset=["fwd_ret", "predicted_score"])
+
+        if len(merged) < 50:
+            return {"q5": [], "q1": [], "spread": []}
+
+        # Assign quintiles per date
+        merged["quintile"] = merged.groupby("date")[
+            "predicted_score"
+        ].transform(
+            lambda x: pd.qcut(
+                x.rank(method="first"), q=5, labels=[1, 2, 3, 4, 5]
+            )
+        )
+
+        # Daily mean return per quintile
+        q5_daily = (
+            merged[merged["quintile"] == 5]
+            .groupby("date")["fwd_ret"]
+            .mean()
+            .sort_index()
+        )
+        q1_daily = (
+            merged[merged["quintile"] == 1]
+            .groupby("date")["fwd_ret"]
+            .mean()
+            .sort_index()
+        )
+
+        # Align dates
+        common_dates = q5_daily.index.intersection(q1_daily.index)
+        q5_daily = q5_daily.loc[common_dates]
+        q1_daily = q1_daily.loc[common_dates]
+        spread_daily = q5_daily - q1_daily
+
+        # Cumulative returns
+        q5_cum = (1 + q5_daily).cumprod() - 1
+        q1_cum = (1 + q1_daily).cumprod() - 1
+        spread_cum = (1 + spread_daily).cumprod() - 1
+
+        def _series_to_list(s: pd.Series) -> list[dict[str, Any]]:
+            return [
+                {"date": str(d)[:10], "cumret": round(float(v), 6)}
+                for d, v in s.items()
+            ]
+
+        return {
+            "q5": _series_to_list(q5_cum),
+            "q1": _series_to_list(q1_cum),
+            "spread": _series_to_list(spread_cum),
         }
 
     async def _save_result(

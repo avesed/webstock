@@ -673,6 +673,11 @@ export interface PredictionConfig {
   enabled: boolean
   providerId: string | null
   model: string
+  autoRetrainEnabled?: boolean | null | undefined
+  autoRetrainIntervalDays?: number | null | undefined
+  autoTuneEnabled?: boolean | null | undefined
+  autoTuneIntervalDays?: number | null | undefined
+  autoTuneMaxIterations?: number | null | undefined
 }
 
 // Discussion group configuration

@@ -9,6 +9,7 @@ Used by RD-Agent subprocess which cannot directly access ai-gateway
 credentials or provider routing.
 """
 
+import asyncio
 import json
 import logging
 from typing import AsyncIterator
@@ -28,6 +29,9 @@ router = APIRouter(tags=["llm"])
 _client: httpx.AsyncClient | None = None
 
 _LLM_TIMEOUT = 120.0  # seconds
+
+# Strong references to fire-and-forget tasks (prevent GC before completion)
+_background_tasks: set[asyncio.Task[None]] = set()
 
 
 def _get_client() -> httpx.AsyncClient:
@@ -164,9 +168,18 @@ async def llm_proxy(request: Request) -> StreamingResponse | JSONResponse:
                     content={"detail": f"AI gateway error: {resp.status_code}"},
                 )
 
+            resp_data = resp.json()
+
+            # Fire-and-forget usage recording
+            task = asyncio.create_task(
+                _record_proxy_usage(resp_data)
+            )
+            _background_tasks.add(task)
+            task.add_done_callback(_background_tasks.discard)
+
             return JSONResponse(
                 status_code=200,
-                content=resp.json(),
+                content=resp_data,
             )
 
     except httpx.TimeoutException:
@@ -187,3 +200,29 @@ async def llm_proxy(request: Request) -> StreamingResponse | JSONResponse:
             status_code=500,
             content={"detail": "Internal error in LLM proxy"},
         )
+
+
+async def _record_proxy_usage(resp_data: dict) -> None:
+    """Extract usage from OpenAI-format response and record it."""
+    try:
+        from app.core.usage_recorder import record_usage
+
+        usage = resp_data.get("usage", {})
+        if not usage:
+            return
+
+        model = resp_data.get("model", "unknown")
+        cached = 0
+        details = usage.get("prompt_tokens_details")
+        if isinstance(details, dict):
+            cached = details.get("cached_tokens", 0)
+
+        await record_usage(
+            purpose="rdagent",
+            model=model,
+            prompt_tokens=usage.get("prompt_tokens", 0),
+            completion_tokens=usage.get("completion_tokens", 0),
+            cached_tokens=cached,
+        )
+    except Exception as e:
+        logger.debug("Proxy usage recording failed: %s", e)

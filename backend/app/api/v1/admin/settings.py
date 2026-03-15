@@ -455,6 +455,11 @@ async def get_system_config(
             enabled=settings.prediction_enabled,
             provider_id=str(settings.prediction_provider_id) if settings.prediction_provider_id else None,
             model=settings.prediction_model or "gpt-4o-mini",
+            auto_retrain_enabled=settings.auto_retrain_enabled,
+            auto_retrain_interval_days=settings.auto_retrain_interval_days,
+            auto_tune_enabled=settings.auto_tune_enabled,
+            auto_tune_interval_days=settings.auto_tune_interval_days,
+            auto_tune_max_iterations=settings.auto_tune_max_iterations,
         ),
     )
 
@@ -633,6 +638,16 @@ async def update_system_config(
                 settings.prediction_provider_id = None
             else:
                 settings.prediction_provider_id = UUID(p.provider_id)
+        if p.auto_retrain_enabled is not None:
+            settings.auto_retrain_enabled = p.auto_retrain_enabled
+        if p.auto_retrain_interval_days is not None:
+            settings.auto_retrain_interval_days = max(1, min(30, p.auto_retrain_interval_days))
+        if p.auto_tune_enabled is not None:
+            settings.auto_tune_enabled = p.auto_tune_enabled
+        if p.auto_tune_interval_days is not None:
+            settings.auto_tune_interval_days = max(7, min(90, p.auto_tune_interval_days))
+        if p.auto_tune_max_iterations is not None:
+            settings.auto_tune_max_iterations = max(1, min(10, p.auto_tune_max_iterations))
 
     settings.updated_at = datetime.now(timezone.utc)
     settings.updated_by = admin.id

@@ -40,6 +40,7 @@ class SkillDefinition:
     description: str
     category: str  # "market_data", "news", "user_data", "knowledge", "computation"
     parameters: List[SkillParameter] = field(default_factory=list)
+    admin_only: bool = False
 
     def to_json_schema(self) -> Dict[str, Any]:
         """Convert to JSON Schema format (compatible with ToolDefinition.parameters)."""

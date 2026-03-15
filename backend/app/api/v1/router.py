@@ -18,6 +18,7 @@ from app.api.v1.reports import router as reports_router
 from app.api.v1.settings import router as settings_router
 from app.api.v1.stocks import router as stocks_router
 from app.api.v1.transactions import router as transactions_router
+from app.api.v1.predictions import router as predictions_router
 from app.api.v1.watchlist import router as watchlist_router
 
 api_router = APIRouter(prefix="/api/v1")
@@ -37,6 +38,7 @@ api_router.include_router(push_router)
 api_router.include_router(reports_router)
 api_router.include_router(settings_router)
 api_router.include_router(admin_router)
+api_router.include_router(predictions_router)
 api_router.include_router(qlib_router)
 api_router.include_router(discussion_router)
 api_router.include_router(internal_router)

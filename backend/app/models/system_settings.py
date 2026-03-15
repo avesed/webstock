@@ -525,6 +525,47 @@ class SystemSettings(Base):
         comment="是否启用ML预测功能",
     )
 
+    # === Auto Retrain / Auto Tune ===
+    auto_retrain_enabled: Mapped[bool] = mapped_column(
+        Boolean,
+        nullable=False,
+        default=False,
+        server_default="false",
+        comment="是否启用自动重训练",
+    )
+
+    auto_retrain_interval_days: Mapped[int] = mapped_column(
+        Integer,
+        nullable=False,
+        default=7,
+        server_default="7",
+        comment="自动重训练间隔天数",
+    )
+
+    auto_tune_enabled: Mapped[bool] = mapped_column(
+        Boolean,
+        nullable=False,
+        default=False,
+        server_default="false",
+        comment="是否启用自动调参",
+    )
+
+    auto_tune_interval_days: Mapped[int] = mapped_column(
+        Integer,
+        nullable=False,
+        default=30,
+        server_default="30",
+        comment="自动调参间隔天数",
+    )
+
+    auto_tune_max_iterations: Mapped[int] = mapped_column(
+        Integer,
+        nullable=False,
+        default=3,
+        server_default="3",
+        comment="自动调参最大迭代次数",
+    )
+
     # === Audit Fields ===
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),

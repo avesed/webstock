@@ -99,7 +99,17 @@ _BASE_LGB_PARAMS: dict[str, Any] = {
 def _get_lgb_params(market: str, cfg: MarketConfig | None = None) -> dict[str, Any]:
     """Return merged LightGBM params for the given market."""
     params = dict(_BASE_LGB_PARAMS)
-    params.update((cfg or get_market_config(market)).lgb_overrides)
+    resolved = cfg or get_market_config(market)
+    params.update(resolved.lgb_overrides)
+    logger.debug(
+        "LGB params for %s (cfg=%s): lr=%s leaves=%s lambda=%s overrides=%s",
+        market,
+        "custom" if cfg else "default",
+        params.get("learning_rate"),
+        params.get("num_leaves"),
+        params.get("lambda_l2"),
+        resolved.lgb_overrides,
+    )
     return params
 
 
@@ -141,6 +151,26 @@ def _safe_round(val: float, decimals: int) -> float | None:
     if math.isnan(val) or math.isinf(val):
         return None
     return round(val, decimals)
+
+
+def _rank_auc(probs: np.ndarray, labels: np.ndarray) -> float | None:
+    """Compute AUC-ROC using the Wilcoxon-Mann-Whitney rank formula.
+
+    Uses scipy.stats.rankdata for correct tied-value handling (average
+    method). Returns None if only one class is present (AUC undefined).
+    """
+    from scipy.stats import rankdata
+
+    pos = np.where(labels == 1)[0]
+    neg = np.where(labels == 0)[0]
+    n_pos, n_neg = len(pos), len(neg)
+    if n_pos == 0 or n_neg == 0:
+        return None
+    # Average ranks (handles ties correctly)
+    ranks = rankdata(probs)
+    # AUC = (sum of positive ranks - n_pos*(n_pos+1)/2) / (n_pos * n_neg)
+    auc = (ranks[pos].sum() - n_pos * (n_pos + 1) / 2) / (n_pos * n_neg)
+    return float(auc)
 
 
 _redis_client: Optional[aioredis.Redis] = None
@@ -216,19 +246,13 @@ class PredictionTask:
 # SQL queries (asyncpg parameterized: $1, $2, ...)
 # ---------------------------------------------------------------------------
 
-_SQL_CHECK_MODEL = """
-SELECT id FROM prediction_models
-WHERE market = $1 AND model_date = $2 AND forward_days = $3
-LIMIT 1
-"""
-
 _SQL_INSERT_MODEL = """
 INSERT INTO prediction_models (
     market, model_date, train_start, train_end, val_start, val_end,
     forward_days, feature_count, symbol_count, feature_sources,
-    ic, icir, ndcg, model_path, metadata, quality_passed
-) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
-ON CONFLICT (market, model_date, forward_days) DO UPDATE SET
+    ic, icir, ndcg, model_path, metadata, quality_passed, model_type
+) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, 'ranking')
+ON CONFLICT (market, model_date, forward_days, model_type) DO UPDATE SET
     ic = EXCLUDED.ic,
     icir = EXCLUDED.icir,
     ndcg = EXCLUDED.ndcg,
@@ -254,7 +278,7 @@ ON CONFLICT (market, prediction_date, symbol, forward_days) DO UPDATE SET
 
 _SQL_GET_LATEST_PREDICTIONS = """
 SELECT symbol, predicted_score, percentile_rank, predicted_direction,
-       prediction_date, forward_days
+       up_probability, prediction_date, forward_days
 FROM stock_predictions
 WHERE market = $1
   AND prediction_date = (
@@ -266,7 +290,7 @@ LIMIT $2
 
 _SQL_GET_LATEST_PREDICTIONS_BY_SYMBOL = """
 SELECT symbol, predicted_score, percentile_rank, predicted_direction,
-       prediction_date, forward_days
+       up_probability, prediction_date, forward_days
 FROM stock_predictions
 WHERE market = $1 AND symbol = $2
   AND prediction_date = (
@@ -277,7 +301,8 @@ WHERE market = $1 AND symbol = $2
 _SQL_GET_MODELS = """
 SELECT id, market, model_date, train_start, train_end, val_start, val_end,
        forward_days, feature_count, symbol_count, feature_sources,
-       ic, icir, ndcg, model_path, metadata, quality_passed, created_at
+       ic, icir, ndcg, auc, brier_score, model_type,
+       model_path, metadata, quality_passed, created_at
 FROM prediction_models
 WHERE ($1::text IS NULL OR market = $1)
 ORDER BY model_date DESC, created_at DESC
@@ -286,7 +311,7 @@ LIMIT 50
 
 _SQL_GET_PREDICTION_HISTORY = """
 SELECT symbol, predicted_score, percentile_rank, predicted_direction,
-       prediction_date, forward_days, actual_return
+       up_probability, prediction_date, forward_days, actual_return
 FROM stock_predictions
 WHERE market = $1
   AND prediction_date >= CURRENT_DATE - $2 * INTERVAL '1 day'
@@ -310,6 +335,7 @@ WHERE id = $2
 _SQL_GET_LATEST_MODEL_PATH = """
 SELECT id, model_path FROM prediction_models
 WHERE market = $1 AND forward_days = $2 AND quality_passed = TRUE
+  AND model_type = 'ranking'
 ORDER BY model_date DESC, created_at DESC
 LIMIT 1
 """
@@ -317,6 +343,7 @@ LIMIT 1
 _SQL_GET_LATEST_MODEL_PATH_ANY = """
 SELECT id, model_path FROM prediction_models
 WHERE market = $1 AND forward_days = $2
+  AND model_type = 'ranking'
 ORDER BY model_date DESC, created_at DESC
 LIMIT 1
 """
@@ -330,7 +357,8 @@ RETURNING id
 
 _SQL_GET_MODEL_DETAIL = """
 SELECT id, market, model_date, forward_days, feature_count, symbol_count,
-       ic, icir, ndcg, model_path, metadata, quality_passed, created_at
+       ic, icir, ndcg, auc, brier_score, model_type,
+       model_path, metadata, quality_passed, created_at
 FROM prediction_models WHERE id = $1
 """
 
@@ -341,6 +369,7 @@ SELECT
     predicted_score,
     percentile_rank,
     predicted_direction,
+    up_probability,
     actual_return
 FROM stock_predictions
 WHERE market = $1
@@ -359,7 +388,7 @@ LIMIT $3
 
 _SQL_PREDICTIONS_BY_DATES = """
 SELECT symbol, predicted_score, percentile_rank, predicted_direction,
-       prediction_date, forward_days
+       up_probability, prediction_date, forward_days
 FROM stock_predictions
 WHERE market = $1 AND forward_days = $2
   AND prediction_date = ANY($3::date[])
@@ -368,7 +397,7 @@ ORDER BY prediction_date DESC, predicted_score DESC
 
 _SQL_GET_LATEST_PREDICTIONS_FD = """
 SELECT symbol, predicted_score, percentile_rank, predicted_direction,
-       prediction_date, forward_days
+       up_probability, prediction_date, forward_days
 FROM stock_predictions
 WHERE market = $1
   AND forward_days = $3
@@ -536,6 +565,9 @@ class PredictionService:
     ) -> None:
         """Run full pipeline for multiple horizons, then combine signals."""
         n_horizons = len(horizons)
+        # Capture prediction_date once at the start, so the direction model
+        # uses the same date even if the pipeline crosses midnight.
+        prediction_date = date.today()
         try:
             for i, h in enumerate(horizons):
                 pct_base = (i / n_horizons) * 90
@@ -565,12 +597,22 @@ class PredictionService:
                     n_combined, market,
                 )
 
+            # Run direction model (non-fatal)
+            task.message = "Training direction model"
+            task.progress = 95.0
+            dir_result = await self._run_direction_step(
+                task, market, force_retrain=force_retrain,
+                prediction_date=prediction_date,
+            )
+
             task.status = "completed"
             task.progress = 100.0
             task.completed_at = datetime.now()
             task.message = f"Completed: {n_horizons} horizons"
             task.results = task.results or {}
             task.results["horizons"] = horizons
+            if dir_result:
+                task.results["direction_model"] = dir_result
 
         except Exception as e:
             logger.error(
@@ -625,6 +667,73 @@ class PredictionService:
         del self._tasks[task_id]
         logger.info("Prediction task deleted: task_id=%s", task_id)
         return True
+
+    # ------------------------------------------------------------------
+    # Direction model integration
+    # ------------------------------------------------------------------
+
+    async def _run_direction_step(
+        self,
+        task: "PredictionTask",
+        market: str,
+        force_retrain: bool = False,
+        prediction_date: Optional[date] = None,
+    ) -> Optional[dict]:
+        """Run direction model training + inference after ranking completes.
+
+        This is non-fatal: errors are logged but do not fail the parent task.
+        Returns a summary dict or None on failure.
+
+        Args:
+            prediction_date: Must match the date used by the ranking model
+                for its INSERT, so the direction model UPDATE finds rows.
+        """
+        try:
+            from app.core.settings_cache import settings_cache
+            from app.services.direction_service import train_and_predict_direction
+
+            pool = settings_cache.pool
+            if not pool:
+                logger.warning(
+                    "DB pool unavailable for direction model (%s)", market,
+                )
+                return None
+
+            prev_msg = task.message
+            task.message = "Training direction model"
+
+            result = await train_and_predict_direction(
+                market, pool, force_retrain=force_retrain,
+                prediction_date=prediction_date,
+            )
+
+            if result:
+                n_updated = result.get("predictions_updated", 0)
+                logger.info(
+                    "Direction model for %s: updated=%d, quality_passed=%s",
+                    market, n_updated, result.get("quality_passed"),
+                )
+
+                # Refresh Redis cache so up_probability is visible to API
+                if n_updated > 0:
+                    await self._refresh_prediction_cache(market)
+
+                return {
+                    "predictions_updated": n_updated,
+                    "quality_passed": result.get("quality_passed"),
+                    "auc": result.get("auc"),
+                    "brier_score": result.get("brier_score"),
+                }
+
+            task.message = prev_msg
+            return None
+
+        except Exception as e:
+            logger.error(
+                "Direction model failed for %s (non-fatal): %s",
+                market, e, exc_info=True,
+            )
+            return None
 
     # ------------------------------------------------------------------
     # Public API: predictions query
@@ -813,6 +922,13 @@ class PredictionService:
                     await self._flag_retrain_needed(mkt)
             except Exception as e:
                 logger.debug("Decay check failed for %s: %s", mkt, e)
+            # Direction model decay check
+            try:
+                dir_decayed = await self._check_direction_decay(mkt)
+                if dir_decayed:
+                    await self._flag_direction_retrain(mkt)
+            except Exception as e:
+                logger.debug("Direction decay check failed for %s: %s", mkt, e)
 
         return summary
 
@@ -884,6 +1000,89 @@ class PredictionService:
             val = await r.get(key)
             if val:
                 await r.delete(key)  # Consume the flag
+                return True
+        except Exception:
+            pass
+        return False
+
+    async def _check_direction_decay(
+        self, market: str, lookback_days: int = 20,
+    ) -> bool:
+        """Check if direction model (up_probability) shows performance decay.
+
+        Computes rolling AUC from backfilled predictions over the last
+        N trading days. Returns True if mean AUC is below random (0.50).
+        """
+        from app.core.settings_cache import settings_cache
+
+        pool = settings_cache.pool
+        if not pool:
+            return False
+
+        try:
+            async with pool.acquire(timeout=10) as conn:
+                rows = await conn.fetch(
+                    "SELECT prediction_date, "
+                    "  array_agg(up_probability ORDER BY symbol) AS probs, "
+                    "  array_agg(CASE WHEN actual_return > 0 THEN 1 ELSE 0 END "
+                    "            ORDER BY symbol) AS outcomes "
+                    "FROM stock_predictions "
+                    "WHERE market = $1 "
+                    "  AND up_probability IS NOT NULL "
+                    "  AND actual_return IS NOT NULL "
+                    "  AND prediction_date >= CURRENT_DATE - $2 * INTERVAL '1 day' "
+                    "GROUP BY prediction_date "
+                    "HAVING COUNT(*) >= 20 "
+                    "ORDER BY prediction_date",
+                    market, lookback_days,
+                )
+        except Exception as e:
+            logger.warning("Direction decay query failed for %s: %s", market, e)
+            return False
+
+        if len(rows) < 5:
+            return False
+
+        aucs = []
+        for row in rows:
+            probs = np.array(row["probs"], dtype=float)
+            outcomes = np.array(row["outcomes"], dtype=int)
+            auc = _rank_auc(probs, outcomes)
+            if auc is not None:
+                aucs.append(auc)
+
+        if not aucs:
+            return False
+
+        mean_auc = sum(aucs) / len(aucs)
+        if mean_auc < 0.50:
+            logger.warning(
+                "Direction model decay detected for %s: "
+                "rolling AUC=%.4f over %d days (threshold=0.50)",
+                market, mean_auc, len(aucs),
+            )
+            return True
+
+        return False
+
+    async def _flag_direction_retrain(self, market: str) -> None:
+        """Set Redis flag to force direction model retrain."""
+        try:
+            r = await _get_redis_client()
+            key = f"prediction:direction_retrain:{market}"
+            await r.set(key, b"1", ex=86400 * 2)
+            logger.info("Flagged %s direction model for forced retrain", market)
+        except Exception as e:
+            logger.debug("Failed to set direction retrain flag for %s: %s", market, e)
+
+    async def check_direction_retrain_needed(self, market: str) -> bool:
+        """Check if direction model has been flagged for forced retraining."""
+        try:
+            r = await _get_redis_client()
+            key = f"prediction:direction_retrain:{market}"
+            val = await r.get(key)
+            if val:
+                await r.delete(key)
                 return True
         except Exception:
             pass
@@ -1078,6 +1277,14 @@ class PredictionService:
             if task._psi_data is not None:
                 task.results["feature_psi"] = task._psi_data
 
+            # Run direction model (non-fatal: failures don't fail the task)
+            dir_result = await self._run_direction_step(
+                task, market, force_retrain=trained_this_run,
+                prediction_date=today,
+            )
+            if dir_result:
+                task.results["direction_model"] = dir_result
+
             logger.info(
                 "Prediction pipeline completed: task_id=%s, market=%s, "
                 "predictions=%d, retrained=%s",
@@ -1218,11 +1425,11 @@ class PredictionService:
 
         try:
             async with pool.acquire(timeout=10) as conn:
-                # Single query: today's model that also passed quality gate
+                # Single query: today's ranking model that also passed quality gate
                 row = await conn.fetchrow(
                     """SELECT id, model_path FROM prediction_models
                     WHERE market = $1 AND model_date = $2 AND forward_days = $3
-                      AND quality_passed = TRUE
+                      AND quality_passed = TRUE AND model_type = 'ranking'
                     LIMIT 1""",
                     market, model_date, forward_days,
                 )
@@ -2887,6 +3094,129 @@ class PredictionService:
             "pending_count": pending_count,
         }
 
+    async def get_direction_accuracy(
+        self, market: str, days: int = 30,
+    ) -> dict:
+        """Compute direction model (up_probability) accuracy vs actual outcomes.
+
+        Unlike get_accuracy() which evaluates the ranking model's
+        predicted_direction, this evaluates the direction model's
+        up_probability against binary(actual_return > 0).
+
+        Metrics: AUC, Brier score, direction hit rate, calibration curve.
+        """
+        from app.core.settings_cache import settings_cache
+
+        pool = settings_cache.pool
+        empty = {
+            "market": market, "days": days,
+            "total_predictions": 0, "predictions_with_direction": 0,
+            "aggregate": {}, "calibration": [], "daily": [], "summary": {},
+        }
+        if not pool:
+            return empty
+
+        try:
+            async with pool.acquire(timeout=30) as conn:
+                rows = await conn.fetch(
+                    _SQL_PERFORMANCE_METRICS, market, days,
+                )
+        except Exception as e:
+            logger.error("Failed to fetch direction accuracy data: %s", e)
+            return empty
+
+        if not rows:
+            return empty
+
+        df = pd.DataFrame([dict(r) for r in rows])
+        total = len(df)
+
+        # Filter to rows that have both up_probability and actual_return
+        df = df.dropna(subset=["up_probability", "actual_return"])
+        df["up_probability"] = df["up_probability"].astype(float)
+        df["actual_return"] = df["actual_return"].astype(float)
+        df["binary_outcome"] = (df["actual_return"] > 0).astype(int)
+
+        n_dir = len(df)
+        if n_dir < 20:
+            return {**empty, "total_predictions": total, "predictions_with_direction": n_dir}
+
+        # --- Aggregate metrics ---
+        probs = df["up_probability"].values
+        outcomes = df["binary_outcome"].values
+
+        # AUC (rank-based: no sklearn dependency needed)
+        agg_auc = _rank_auc(probs, outcomes)
+        # Brier score
+        agg_brier = float(np.mean((probs - outcomes) ** 2))
+        # Direction hit rate
+        correct = ((probs > 0.5) & (outcomes == 1)) | ((probs < 0.5) & (outcomes == 0))
+        agg_hit_rate = float(correct.mean())
+
+        # --- Calibration curve (10 bins) ---
+        calibration = []
+        bin_edges = np.linspace(0.0, 1.0, 11)
+        for i in range(10):
+            lo, hi = bin_edges[i], bin_edges[i + 1]
+            if i < 9:
+                mask = (probs >= lo) & (probs < hi)
+            else:
+                mask = (probs >= lo) & (probs <= hi)
+            bin_count = int(mask.sum())
+            if bin_count > 0:
+                calibration.append({
+                    "bin_center": round((lo + hi) / 2, 2),
+                    "predicted_mean": round(float(probs[mask].mean()), 4),
+                    "observed_freq": round(float(outcomes[mask].mean()), 4),
+                    "count": bin_count,
+                })
+
+        # --- Daily metrics ---
+        daily = []
+        for dt, group in df.groupby("prediction_date"):
+            if len(group) < 20:
+                continue
+            g_probs = group["up_probability"].values
+            g_out = group["binary_outcome"].values
+            d_auc = _rank_auc(g_probs, g_out)
+            d_brier = float(np.mean((g_probs - g_out) ** 2))
+            d_correct = ((g_probs > 0.5) & (g_out == 1)) | ((g_probs < 0.5) & (g_out == 0))
+            daily.append({
+                "date": dt.isoformat() if hasattr(dt, "isoformat") else str(dt),
+                "auc": round(d_auc, 6) if d_auc is not None else None,
+                "brier": round(d_brier, 6),
+                "hit_rate": round(float(d_correct.mean()), 4),
+                "count": len(group),
+            })
+
+        # --- Summary ---
+        auc_values = [d["auc"] for d in daily if d["auc"] is not None]
+        brier_values = [d["brier"] for d in daily]
+        hit_values = [d["hit_rate"] for d in daily]
+
+        summary = {
+            "avg_daily_auc": _safe_round(float(np.mean(auc_values)), 6) if auc_values else None,
+            "auc_std": _safe_round(float(np.std(auc_values)), 6) if auc_values else None,
+            "avg_brier": _safe_round(float(np.mean(brier_values)), 6) if brier_values else None,
+            "avg_hit_rate": _safe_round(float(np.mean(hit_values)), 4) if hit_values else None,
+            "total_dates": len(daily),
+        }
+
+        return {
+            "market": market,
+            "days": days,
+            "total_predictions": total,
+            "predictions_with_direction": n_dir,
+            "aggregate": {
+                "auc": round(agg_auc, 6) if agg_auc is not None else None,
+                "brier": round(agg_brier, 6),
+                "hit_rate": round(agg_hit_rate, 4),
+            },
+            "calibration": calibration,
+            "daily": daily,
+            "summary": summary,
+        }
+
     async def get_turnover_metrics(
         self, market: str, days: int = 90, top_n: int = 20,
     ) -> dict:
@@ -3676,15 +4006,16 @@ class PredictionService:
         try:
             records = []
             for _, row in results_df.iterrows():
-                records.append(
-                    {
-                        "symbol": row["symbol"],
-                        "predicted_score": float(row["predicted_score"]),
-                        "percentile_rank": float(row["percentile_rank"]),
-                        "predicted_direction": row["predicted_direction"],
-                        "prediction_date": prediction_date.isoformat(),
-                    }
-                )
+                record = {
+                    "symbol": row["symbol"],
+                    "predicted_score": float(row["predicted_score"]),
+                    "percentile_rank": float(row["percentile_rank"]),
+                    "predicted_direction": row["predicted_direction"],
+                    "prediction_date": prediction_date.isoformat(),
+                }
+                if "up_probability" in row and row.get("up_probability") is not None:
+                    record["up_probability"] = float(row["up_probability"])
+                records.append(record)
 
             packed = msgpack.packb(records, use_bin_type=True)
             r = await _get_redis_client()
@@ -3699,6 +4030,47 @@ class PredictionService:
         except Exception as e:
             logger.warning("Prediction cache write failed (non-fatal): %s", e)
 
+    async def _refresh_prediction_cache(self, market: str) -> None:
+        """Re-read predictions from DB and overwrite Redis cache.
+
+        Called after direction model updates up_probability so the cache
+        includes the freshly-written probability values.
+        """
+        try:
+            from app.core.settings_cache import settings_cache
+
+            pool = settings_cache.pool
+            if not pool:
+                return
+
+            key = _prediction_cache_key(market)
+            async with pool.acquire(timeout=10) as conn:
+                rows = await conn.fetch(
+                    _SQL_GET_LATEST_PREDICTIONS, market, 500,
+                )
+
+            if not rows:
+                return
+
+            records = []
+            for row in rows:
+                d = self._row_to_prediction_dict(row)
+                records.append(d)
+
+            packed = msgpack.packb(records, use_bin_type=True)
+            r = await _get_redis_client()
+            await r.setex(key, _PREDICTION_CACHE_TTL, packed)
+
+            logger.info(
+                "Refreshed prediction cache after direction update: "
+                "market=%s, %d records",
+                market, len(records),
+            )
+        except Exception as e:
+            logger.warning(
+                "Prediction cache refresh failed (non-fatal): %s", e,
+            )
+
     # ------------------------------------------------------------------
     # Row conversion helpers
     # ------------------------------------------------------------------
@@ -3712,7 +4084,7 @@ class PredictionService:
             if key in d and d[key] is not None:
                 d[key] = d[key].isoformat() if hasattr(d[key], "isoformat") else str(d[key])
         # Convert Decimal to float
-        for key in ("predicted_score", "percentile_rank", "actual_return"):
+        for key in ("predicted_score", "percentile_rank", "actual_return", "up_probability"):
             if key in d and d[key] is not None:
                 d[key] = float(d[key])
         return d
@@ -3732,7 +4104,7 @@ class PredictionService:
             if key in d and d[key] is not None:
                 d[key] = d[key].isoformat() if hasattr(d[key], "isoformat") else str(d[key])
         # Numeric to float
-        for key in ("ic", "icir", "ndcg"):
+        for key in ("ic", "icir", "ndcg", "auc", "brier_score"):
             if key in d and d[key] is not None:
                 d[key] = float(d[key])
         # Quality gate flag

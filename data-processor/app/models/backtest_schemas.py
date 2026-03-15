@@ -17,6 +17,8 @@ class BacktestRequest(BaseModel):
     config_override: dict[str, Any] | None = None
     use_llm_agents: bool = False
     max_iterations: int = Field(default=3, ge=1, le=10)
+    backtest_type: Literal["static", "rolling"] = "static"
+    retrain_interval: int = Field(default=5, ge=1, le=20)
 
 
 class BacktestStartResponse(BaseModel):
@@ -41,6 +43,8 @@ class BacktestTaskStatus(BaseModel):
     current_iteration: int = 0
     max_iterations: int = 1
     iterations: list[dict[str, Any]] = Field(default_factory=list)
+    current_retrain: int | None = None
+    total_retrains: int | None = None
     elapsed_seconds: float = 0.0
     created_at: datetime | None = None
     completed_at: datetime | None = None

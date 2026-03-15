@@ -272,6 +272,11 @@ class PredictionConfig(CamelModel):
     enabled: Optional[bool] = None
     provider_id: Optional[str] = None
     model: Optional[str] = None
+    auto_retrain_enabled: Optional[bool] = None
+    auto_retrain_interval_days: Optional[int] = None
+    auto_tune_enabled: Optional[bool] = None
+    auto_tune_interval_days: Optional[int] = None
+    auto_tune_max_iterations: Optional[int] = None
 
 
 class SystemConfigResponse(CamelModel):

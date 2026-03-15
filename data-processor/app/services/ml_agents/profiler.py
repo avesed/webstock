@@ -167,9 +167,18 @@ class Profiler:
         if stats["recent_model_ics"]:
             llm_input["recent_model_ics"] = stats["recent_model_ics"]
 
+        # Wrap data with explicit output instruction to prevent LLM
+        # from echoing the input JSON in json_object mode
+        user_message = (
+            "Below is the input data. Based on this data and the system prompt, "
+            "generate a JSON response with these exact fields: "
+            "regime_analysis, data_quality_warnings.\n\n"
+            f"Input data:\n{json.dumps(llm_input)}"
+        )
+
         result = await self._client.chat_json(
             system_prompt=self._get_system_prompt(),
-            user_content=json.dumps(llm_input),
+            user_content=user_message,
             temperature=0.1,
             max_tokens=800,
         )

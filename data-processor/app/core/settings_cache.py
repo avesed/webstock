@@ -24,6 +24,17 @@ _FORCE_REFRESH_MIN_INTERVAL = 5.0  # seconds
 
 
 @dataclass(frozen=True)
+class AutoTuneConfig:
+    """Auto-retrain and auto-tune scheduling configuration."""
+
+    auto_retrain_enabled: bool = False
+    auto_retrain_interval_days: int = 7
+    auto_tune_enabled: bool = False
+    auto_tune_interval_days: int = 30
+    auto_tune_max_iterations: int = 3
+
+
+@dataclass(frozen=True)
 class PredictionLLMConfig:
     """LLM configuration for prediction workflows."""
 
@@ -51,6 +62,7 @@ class PredictionConfig:
 
     llm: PredictionLLMConfig
     universes: list[UniverseConfig]
+    auto_tune: AutoTuneConfig = field(default_factory=AutoTuneConfig)
 
 
 class SettingsCache:
@@ -138,9 +150,11 @@ class SettingsCache:
             return
 
         async with self._pool.acquire(timeout=10) as conn:
-            # Fetch LLM settings from system_settings
+            # Fetch LLM settings + auto-tune config from system_settings
             settings_row = await conn.fetchrow(
-                "SELECT prediction_provider_id, prediction_model, prediction_enabled "
+                "SELECT prediction_provider_id, prediction_model, prediction_enabled, "
+                "auto_retrain_enabled, auto_retrain_interval_days, "
+                "auto_tune_enabled, auto_tune_interval_days, auto_tune_max_iterations "
                 "FROM system_settings WHERE id = 1"
             )
 
@@ -158,12 +172,24 @@ class SettingsCache:
                 model=settings_row["prediction_model"],
                 enabled=bool(settings_row["prediction_enabled"]),
             )
+            # Auto-tune config (columns may not exist on older schema)
+            try:
+                auto_tune_config = AutoTuneConfig(
+                    auto_retrain_enabled=bool(settings_row["auto_retrain_enabled"]),
+                    auto_retrain_interval_days=int(settings_row["auto_retrain_interval_days"]),
+                    auto_tune_enabled=bool(settings_row["auto_tune_enabled"]),
+                    auto_tune_interval_days=int(settings_row["auto_tune_interval_days"]),
+                    auto_tune_max_iterations=int(settings_row["auto_tune_max_iterations"]),
+                )
+            except (KeyError, TypeError):
+                auto_tune_config = AutoTuneConfig()
         else:
             llm_config = PredictionLLMConfig(
                 provider_id=None,
                 model=None,
                 enabled=False,
             )
+            auto_tune_config = AutoTuneConfig()
 
         # Build universe configs
         universes: list[UniverseConfig] = []
@@ -192,7 +218,9 @@ class SettingsCache:
                 )
             )
 
-        self._config = PredictionConfig(llm=llm_config, universes=universes)
+        self._config = PredictionConfig(
+            llm=llm_config, universes=universes, auto_tune=auto_tune_config,
+        )
         self._last_refresh = time.monotonic()
         logger.debug(
             "Settings cache refreshed: prediction_enabled=%s, universes=%d",
@@ -223,6 +251,7 @@ class SettingsCache:
             return PredictionConfig(
                 llm=PredictionLLMConfig(provider_id=None, model=None, enabled=False),
                 universes=[],
+                auto_tune=AutoTuneConfig(),
             )
         return self._config
 

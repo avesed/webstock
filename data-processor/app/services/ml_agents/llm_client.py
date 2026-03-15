@@ -25,6 +25,10 @@ class MLAgentError(Exception):
     pass
 
 
+# Strong references to fire-and-forget tasks (prevent GC before completion)
+_background_tasks: set[asyncio.Task[None]] = set()
+
+
 class MLAgentClient:
     """AI Gateway client for ML agent LLM calls.
 
@@ -154,12 +158,22 @@ class MLAgentClient:
                 content_str = resp_json["choices"][0]["message"]["content"]
                 result = json.loads(content_str)
 
+                resp_model = resp_json.get("model", "unknown")
+                usage = resp_json.get("usage", {})
                 logger.info(
                     "LLM call OK (%.0fms, model=%s, tokens=%s)",
                     elapsed_ms,
-                    resp_json.get("model", "unknown"),
-                    resp_json.get("usage", {}).get("total_tokens", "?"),
+                    resp_model,
+                    usage.get("total_tokens", "?"),
                 )
+
+                # Fire-and-forget usage recording
+                task = asyncio.create_task(
+                    _record_usage("ml_agent", resp_model, usage)
+                )
+                _background_tasks.add(task)
+                task.add_done_callback(_background_tasks.discard)
+
                 return result
 
             except (httpx.TimeoutException, httpx.ConnectError) as e:
@@ -225,6 +239,23 @@ class MLAgentClient:
         except Exception as e:
             logger.debug("LLM availability check failed: %s: %s", type(e).__name__, e)
             return False
+
+
+async def _record_usage(purpose: str, model: str, usage: dict) -> None:
+    """Fire-and-forget wrapper for usage recording."""
+    try:
+        from app.core.usage_recorder import record_usage
+
+        await record_usage(
+            purpose=purpose,
+            model=model,
+            prompt_tokens=usage.get("prompt_tokens", 0),
+            completion_tokens=usage.get("completion_tokens", 0),
+            cached_tokens=usage.get("prompt_tokens_details", {}).get("cached_tokens", 0)
+            if isinstance(usage.get("prompt_tokens_details"), dict) else 0,
+        )
+    except Exception as e:
+        logger.debug("Usage recording failed: %s", e)
 
 
 # Singleton instance

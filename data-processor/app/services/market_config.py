@@ -66,6 +66,14 @@ class MarketConfig:
     min_icir_threshold : float
         Minimum ICIR to pass quality gate.
 
+    Market-level features
+    ---------------------
+    index_symbol : str
+        Benchmark index symbol used for market-level features (index returns,
+        market volatility).  Must be a symbol recognised by data-service's
+        ``/api/v1/internal/history/batch`` endpoint.
+        US: ``^GSPC`` (S&P 500), CN: ``000300.SS`` (CSI 300), HK: ``^HSI`` (Hang Seng).
+
     LightGBM hyperparameters
     ------------------------
     lgb_overrides : dict
@@ -73,6 +81,19 @@ class MarketConfig:
         Includes min_child_samples: US=30, CN/HK=50 (larger for smaller universes).
     num_boost_round : int
     early_stopping_rounds : int
+
+    Direction model
+    ---------------
+    direction_lgb_overrides : dict
+        Merged on top of ``_DIRECTION_LGB_PARAMS`` in direction_service.
+        Allows per-market hyperparameter tuning for binary classification
+        independently of the ranking model.
+    direction_min_auc : float
+        Minimum AUC-ROC to pass the direction model quality gate.
+        Default 0.52 (barely above random). HK has lower baseline (0.51).
+    direction_max_brier : float
+        Maximum Brier score to pass the direction model quality gate.
+        Lower is better. Default 0.25 (uncalibrated baseline ~0.25).
     """
 
     # Training mode
@@ -85,6 +106,8 @@ class MarketConfig:
     use_interactions: bool
     nan_threshold: float
     ffill_limit: int
+    # Market-level features
+    index_symbol: str = "^GSPC"
     # Quality gate (per-market overrides for global PREDICTION_MIN_IC/ICIR)
     min_ic_threshold: float = 0.01
     min_icir_threshold: float = 0.10
@@ -92,6 +115,10 @@ class MarketConfig:
     lgb_overrides: dict[str, Any] = field(default_factory=dict)
     num_boost_round: int = 1000
     early_stopping_rounds: int = 100
+    # Direction model
+    direction_lgb_overrides: dict[str, Any] = field(default_factory=dict)
+    direction_min_auc: float = 0.52
+    direction_max_brier: float = 0.255
 
 
 MARKET_CONFIGS: dict[str, MarketConfig] = {
@@ -111,6 +138,14 @@ MARKET_CONFIGS: dict[str, MarketConfig] = {
         },
         num_boost_round=1000,
         early_stopping_rounds=100,
+        # Direction: low LR + few leaves for weak-signal classification.
+        # US has more data (195k rows) but absolute direction is still noisy.
+        direction_lgb_overrides={
+            "learning_rate": 0.005,
+            "num_leaves": 15,
+            "min_child_samples": 100,
+            "lambda_l2": 5.0,
+        },
     ),
     "cn": MarketConfig(
         # CN uses temporal sort (symbol-date) — strong momentum signal in A-shares.
@@ -123,6 +158,7 @@ MARKET_CONFIGS: dict[str, MarketConfig] = {
         use_interactions=False,
         nan_threshold=0.90,
         ffill_limit=90,
+        index_symbol="000300.SS",
         lgb_overrides={
             "learning_rate": 0.05,
             "num_leaves": 63,
@@ -131,6 +167,15 @@ MARKET_CONFIGS: dict[str, MarketConfig] = {
         },
         num_boost_round=500,
         early_stopping_rounds=50,
+        # CN direction AUC baseline ~0.52, lower threshold to match HK
+        direction_min_auc=0.51,
+        # Direction: low LR + few leaves — prevent overfit in 1-2 iters
+        direction_lgb_overrides={
+            "learning_rate": 0.01,
+            "num_leaves": 15,
+            "min_child_samples": 100,
+            "lambda_l2": 5.0,
+        },
     ),
     "hk": MarketConfig(
         # HK uses temporal sort (symbol-date) — small universe (~79 stocks).
@@ -144,6 +189,7 @@ MARKET_CONFIGS: dict[str, MarketConfig] = {
         use_interactions=False,
         nan_threshold=0.90,
         ffill_limit=45,
+        index_symbol="^HSI",
         min_ic_threshold=0.005,
         min_icir_threshold=0.05,
         lgb_overrides={
@@ -154,6 +200,13 @@ MARKET_CONFIGS: dict[str, MarketConfig] = {
         },
         num_boost_round=500,
         early_stopping_rounds=50,
+        direction_min_auc=0.51,
+        direction_lgb_overrides={
+            "learning_rate": 0.01,
+            "num_leaves": 15,
+            "min_child_samples": 100,
+            "lambda_l2": 5.0,
+        },
     ),
 }
 

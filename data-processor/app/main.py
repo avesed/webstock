@@ -114,6 +114,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
     # --- 4. APScheduler (prediction + fundamental collection jobs) ---
     scheduler = None
+    _retrain_redis_client = None
     try:
         from apscheduler.schedulers.asyncio import AsyncIOScheduler
         from app.core.settings_cache import settings_cache as _sc
@@ -121,12 +122,16 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         scheduler = AsyncIOScheduler()
 
         # Helper: check if prediction is enabled before running
-        async def _guarded_prediction(market: str) -> None:
+        async def _guarded_prediction(market: str, force_retrain: bool = False) -> None:
             """Only run prediction if enabled in settings.
 
             Checks for performance decay flag (set by backfill_returns)
             and forces retrain if the model's rolling IC has decayed.
             Supports multi-horizon training when PREDICTION_HORIZONS has >1 value.
+
+            Direction model now runs as part of the prediction pipeline
+            (inside _run_prediction_async / _run_multi_horizon_async), so
+            there is no need to call it separately here.
             """
             try:
                 config = await _sc.get_config()
@@ -136,20 +141,30 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
                 from app.services.prediction_service import (
                     prediction_service, _get_prediction_horizons,
                 )
-                force = await prediction_service.check_retrain_needed(market)
+                ranking_decay = await prediction_service.check_retrain_needed(market)
+                direction_decay = await prediction_service.check_direction_retrain_needed(market)
+                force = force_retrain or ranking_decay or direction_decay
                 if force:
                     logger.info(
-                        "Performance decay flag set for %s, forcing retrain", market,
+                        "Forcing retrain for %s (explicit=%s, ranking_decay=%s, direction_decay=%s)",
+                        market, force_retrain, ranking_decay, direction_decay,
                     )
                 horizons = _get_prediction_horizons()
                 if len(horizons) > 1:
-                    await prediction_service.run_multi_horizon(
+                    task_id = await prediction_service.run_multi_horizon(
                         market, force_retrain=force,
                     )
                 else:
-                    await prediction_service.run_prediction(
+                    task_id = await prediction_service.run_prediction(
                         market, force_retrain=force, forward_days=horizons[0],
                     )
+
+                # Await background task to completion so scheduler knows
+                # when the full pipeline (ranking + direction) has finished.
+                task_obj = prediction_service._tasks.get(task_id)
+                if task_obj and task_obj._asyncio_task:
+                    await task_obj._asyncio_task
+
             except Exception as e:
                 logger.error("Scheduled prediction failed for %s: %s", market, e, exc_info=True)
 
@@ -307,6 +322,92 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
         scheduler.add_job(_cleanup_models, 'cron', hour=1, minute=0, id='cleanup_models', **_JOB_KWARGS)
 
+        # Auto-retrain: periodic forced retraining based on admin-configured interval.
+        # Runs daily at 01:30 UTC and checks each market against its last retrain date.
+        # Uses _guarded_prediction to ensure direction model also runs after ranking.
+
+        async def _get_retrain_redis():
+            """Lazy singleton Redis client (decode_responses=True) for auto-retrain keys.
+
+            Uses REDIS_URL from settings (DB 3 for data-processor).
+            The client is closed during app shutdown via the nonlocal reference.
+            """
+            nonlocal _retrain_redis_client
+            if _retrain_redis_client is None:
+                import redis.asyncio as aioredis
+                _settings = get_settings()
+                _retrain_redis_client = aioredis.from_url(
+                    _settings.REDIS_URL, decode_responses=True,
+                )
+            return _retrain_redis_client
+
+        async def _check_auto_retrain() -> None:
+            """Check if auto-retrain is due for any market and trigger if so.
+
+            Guards: prediction must be enabled AND auto_retrain must be enabled.
+            Uses Redis SET NX lock to prevent duplicate retrains on container restart.
+            Calls _guarded_prediction which runs both ranking + direction models.
+            """
+            from datetime import date as date_type
+
+            try:
+                config = await _sc.get_config()
+                if not config.llm.enabled:
+                    return
+                at = config.auto_tune
+                if not at.auto_retrain_enabled:
+                    return
+
+                interval = at.auto_retrain_interval_days
+                r = await _get_retrain_redis()
+                today_str = date_type.today().isoformat()
+
+                for market in ("cn", "us", "hk"):
+                    last_key = f"auto_retrain:last:{market}"
+                    last_run = await r.get(last_key)
+                    if last_run:
+                        last_date = date_type.fromisoformat(last_run)
+                        if (date_type.today() - last_date).days < interval:
+                            continue
+
+                    # Acquire lock to prevent duplicate retrains (2-hour TTL)
+                    lock_key = f"auto_retrain:lock:{market}"
+                    acquired = await r.set(lock_key, "1", nx=True, ex=7200)
+                    if not acquired:
+                        logger.info(
+                            "Auto-retrain already in progress for %s, skipping",
+                            market,
+                        )
+                        continue
+
+                    logger.info(
+                        "Auto-retrain triggered for %s (interval=%d days)",
+                        market, interval,
+                    )
+                    try:
+                        # _guarded_prediction handles ranking + direction models
+                        await _guarded_prediction(market, force_retrain=True)
+                        await r.set(
+                            last_key, today_str,
+                            ex=86400 * 90,
+                        )
+                    except Exception as e:
+                        logger.error(
+                            "Auto-retrain failed for %s: %s",
+                            market, e, exc_info=True,
+                        )
+                    finally:
+                        await r.delete(lock_key)
+            except Exception as e:
+                logger.error(
+                    "Auto-retrain check failed: %s", e, exc_info=True,
+                )
+
+        scheduler.add_job(
+            _check_auto_retrain, 'cron', hour=1, minute=30,
+            id='check_auto_retrain', **_JOB_KWARGS,
+        )
+
         scheduler.start()
         logger.info("APScheduler started with %d jobs", len(scheduler.get_jobs()))
     except Exception as e:
@@ -326,6 +427,14 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             logger.info("APScheduler shut down")
         except Exception as e:
             logger.warning("APScheduler shutdown error: %s", e)
+
+    # Close auto-retrain Redis client
+    if _retrain_redis_client is not None:
+        try:
+            await _retrain_redis_client.aclose()
+            logger.info("Auto-retrain Redis client closed")
+        except Exception as e:
+            logger.warning("Auto-retrain Redis close error: %s", e)
 
     # Close settings cache (asyncpg pool)
     try:
@@ -354,6 +463,13 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         _rdr.shutdown()
     except Exception as e:
         logger.warning("RDAgentRunner shutdown error: %s", e)
+
+    # Cancel running ML tools training tasks
+    try:
+        from app.services.ml_tools_service import ml_tools_service as _mts
+        await _mts.shutdown()
+    except Exception as e:
+        logger.warning("MLToolsService shutdown error: %s", e)
 
     # Shutdown Qlib executors
     from app.executor import shutdown_executors
@@ -418,3 +534,8 @@ from app.api.rdagent import router as rdagent_router
 app.include_router(llm_proxy_router)
 app.include_router(predictions_router)
 app.include_router(rdagent_router)
+
+# ML Tools API (decomposed backtest steps for ML Agent orchestration)
+from app.api.ml_tools import router as ml_tools_router
+
+app.include_router(ml_tools_router)

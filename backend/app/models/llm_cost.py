@@ -78,6 +78,10 @@ class LlmUsageRecord(Base):
     Cost is calculated at insert time using the active ModelPricing for the
     model. This ensures historical records retain accurate costs even after
     pricing changes.
+
+    NOTE: data-processor also writes to this table via raw SQL
+    (data-processor/app/core/usage_recorder.py).  Keep both in sync
+    when changing the schema.
     """
 
     __tablename__ = "llm_usage_records"

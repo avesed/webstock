@@ -133,6 +133,61 @@ class BackendDataClient:
                 f"(market={market}): [{type(e).__name__}] {e}"
             ) from e
 
+    def get_index_history(
+        self,
+        symbol: str,
+        market: str,
+        start_date: str | None = None,
+        end_date: str | None = None,
+    ) -> list[dict] | None:
+        """Fetch daily OHLCV bars for an index symbol via data-service.
+
+        Uses the public ``/v1/stock/history/{symbol}`` endpoint which falls
+        through to yfinance for symbols not in ``stock_daily_bars`` (like
+        index symbols ``^GSPC``, ``^HSI``, ``000300.SS``).
+
+        Returns a list of bar dicts ``[{date, open, high, low, close, volume}]``
+        or None on failure.
+        """
+        params: dict[str, str] = {"market": market, "interval": "1d"}
+        if start_date and end_date:
+            params["start"] = start_date
+            params["end"] = end_date
+            params["period"] = "max"  # hint to override server default of "1y"
+        else:
+            params["period"] = "2y"
+
+        try:
+            resp = self._client.get(
+                f"/v1/history/{symbol}",
+                params=params,
+                timeout=httpx.Timeout(60.0, connect=10.0),
+            )
+            resp.raise_for_status()
+            body = resp.json()
+            if not body.get("success"):
+                logger.warning(
+                    "Index history response unsuccessful: symbol=%s error=%s",
+                    symbol, body.get("error"),
+                )
+                return None
+            bars = body.get("data", {}).get("bars", [])
+            if bars:
+                logger.info(
+                    "Fetched index history: symbol=%s, %d bars, %s ~ %s",
+                    symbol, len(bars),
+                    bars[0].get("date", "?"), bars[-1].get("date", "?"),
+                )
+            else:
+                logger.warning("No bars in index history for %s", symbol)
+            return bars or None
+        except Exception as e:
+            logger.warning(
+                "Failed to fetch index history for %s (market=%s): %s",
+                symbol, market, e,
+            )
+            return None
+
     def get_index_constituents(self, index_code: str, market: str) -> list[str]:
         """Fetch constituent symbols for a market index from data-service.
 

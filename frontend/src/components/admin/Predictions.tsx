@@ -3,7 +3,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { useTranslation } from 'react-i18next'
 import {
   TrendingUp, Play, RefreshCw, Loader2, ChevronDown, ChevronRight,
-  BarChart3, Target, Brain, AlertCircle, CheckCircle2, XCircle, Activity,
+  BarChart3, Target, AlertCircle, CheckCircle2, XCircle, Activity,
   ArrowUpRight, ArrowDownRight, Minus, PieChart,
 } from 'lucide-react'
 
@@ -45,14 +45,37 @@ function formatPercent(v: number | null): string {
 }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-function directionBadge(dir: PredictionResult['predictedDirection'], t: (k: any, opts?: any) => string) {
+function directionBadge(dir: PredictionResult['predictedDirection'], t: (k: any, opts?: any) => string, upProb?: number | null) {
+  const NEUTRAL_LO = 0.45
+  const NEUTRAL_HI = 0.55
+  const greenCls = 'bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-200'
+  const redCls = 'bg-red-100 text-red-800 dark:bg-red-900 dark:text-red-200'
+  const grayCls = 'bg-gray-100 text-gray-800 dark:bg-gray-800 dark:text-gray-200'
+
   const map = {
-    up: { label: td(t, 'predictions.direction_up'), cls: 'bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-200' },
-    down: { label: td(t, 'predictions.direction_down'), cls: 'bg-red-100 text-red-800 dark:bg-red-900 dark:text-red-200' },
-    sideways: { label: td(t, 'predictions.direction_flat'), cls: 'bg-gray-100 text-gray-800 dark:bg-gray-800 dark:text-gray-200' },
+    up: { label: td(t, 'predictions.direction_up'), cls: greenCls },
+    down: { label: td(t, 'predictions.direction_down'), cls: redCls },
+    sideways: { label: td(t, 'predictions.direction_flat'), cls: grayCls },
   }
   const m = map[dir]
+  if (upProb != null) {
+    const pctText = `${(upProb * 100).toFixed(0)}%`
+    const probCls = upProb > NEUTRAL_HI
+      ? greenCls
+      : upProb < NEUTRAL_LO
+        ? redCls
+        : grayCls
+    return <Badge className={probCls}>{m.label} {pctText}</Badge>
+  }
   return <Badge className={m.cls}>{m.label}</Badge>
+}
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function modelTypeBadge(modelType: PredictionModel['modelType'], t: (k: any) => string) {
+  if (modelType === 'direction') {
+    return <Badge className="bg-purple-100 text-purple-800 dark:bg-purple-900 dark:text-purple-200">{td(t, 'predictions.modelTypeDirection')}</Badge>
+  }
+  return <Badge className="bg-blue-100 text-blue-800 dark:bg-blue-900 dark:text-blue-200">{td(t, 'predictions.modelTypeRanking')}</Badge>
 }
 
 // ── Status Overview ────────────────────────────
@@ -64,12 +87,13 @@ function StatusOverview({ status }: { status: Record<string, PredictionStatusIte
     <div className="grid gap-4 md:grid-cols-3">
       {MARKETS.map(mkt => {
         const s = status[mkt]
-        const latestModel = s?.models?.[0]
+        const latestRankingModel = s?.models?.find(m => m.modelType !== 'direction') ?? s?.models?.[0]
+        const latestDirectionModel = s?.models?.find(m => m.modelType === 'direction')
         const latestPrediction = s?.latestPredictions?.[0]
-        const lastIc = latestModel?.ic ?? null
-        const lastIcir = latestModel?.icir ?? null
-        const ensembleSize = latestModel?.ensembleSize
-        const foldIcs = latestModel?.foldIcs
+        const lastIc = latestRankingModel?.ic ?? null
+        const lastIcir = latestRankingModel?.icir ?? null
+        const ensembleSize = latestRankingModel?.ensembleSize
+        const foldIcs = latestRankingModel?.foldIcs
         return (
           <Card key={mkt}>
             <CardHeader className="pb-2">
@@ -85,7 +109,7 @@ function StatusOverview({ status }: { status: Record<string, PredictionStatusIte
                 <>
                   <div className="flex justify-between">
                     <span className="text-muted-foreground">{td(t, 'predictions.lastPrediction')}</span>
-                    <span>{latestPrediction?.predictionDate ?? latestModel?.modelDate ?? '-'}</span>
+                    <span>{latestPrediction?.predictionDate ?? latestRankingModel?.modelDate ?? '-'}</span>
                   </div>
                   <div className="flex justify-between">
                     <span className="text-muted-foreground">{td(t, 'predictions.modelIc')}</span>
@@ -129,6 +153,40 @@ function StatusOverview({ status }: { status: Record<string, PredictionStatusIte
                           </Badge>
                         ))}
                       </div>
+                    </div>
+                  )}
+                  {/* Direction model status */}
+                  <div className="flex justify-between items-center">
+                    <span className="text-muted-foreground">{td(t, 'predictions.directionModel')}</span>
+                    {latestDirectionModel ? (
+                      <div className="flex items-center gap-2">
+                        {modelTypeBadge('direction', t)}
+                        {latestDirectionModel.auc != null && (
+                          <span className={cn(
+                            'text-xs font-medium',
+                            latestDirectionModel.auc > 0.55 && 'text-green-600 dark:text-green-400',
+                            latestDirectionModel.auc < 0.52 && 'text-red-600 dark:text-red-400',
+                          )}>
+                            AUC {latestDirectionModel.auc.toFixed(3)}
+                          </span>
+                        )}
+                      </div>
+                    ) : (
+                      <Badge variant="outline" className="text-xs text-muted-foreground">
+                        {td(t, 'predictions.directionNotTrained')}
+                      </Badge>
+                    )}
+                  </div>
+                  {latestDirectionModel?.brierScore != null && (
+                    <div className="flex justify-between">
+                      <span className="text-muted-foreground">{td(t, 'predictions.brierScore')}</span>
+                      <span className={cn(
+                        'text-xs font-medium',
+                        latestDirectionModel.brierScore < 0.20 && 'text-green-600 dark:text-green-400',
+                        latestDirectionModel.brierScore > 0.25 && 'text-red-600 dark:text-red-400',
+                      )}>
+                        {latestDirectionModel.brierScore.toFixed(4)}
+                      </span>
                     </div>
                   )}
                   <div className="flex justify-between">
@@ -200,6 +258,7 @@ function PredictionResultsSection() {
                   <th className="text-right py-2 font-medium">{td(t, 'predictions.score')}</th>
                   <th className="text-right py-2 font-medium">{td(t, 'predictions.rank')}</th>
                   <th className="text-center py-2 font-medium">{td(t, 'predictions.direction')}</th>
+                  <th className="text-right py-2 font-medium">{td(t, 'predictions.upProbability')}</th>
                   <th className="text-right py-2 font-medium">{td(t, 'predictions.actualReturn')}</th>
                 </tr>
               </thead>
@@ -209,7 +268,14 @@ function PredictionResultsSection() {
                     <td className="py-2 font-mono text-xs">{p.symbol}</td>
                     <td className="py-2 text-right">{p.predictedScore.toFixed(4)}</td>
                     <td className="py-2 text-right">{formatPercent(p.percentileRank)}</td>
-                    <td className="py-2 text-center">{directionBadge(p.predictedDirection, t)}</td>
+                    <td className="py-2 text-center">{directionBadge(p.predictedDirection, t, p.upProbability)}</td>
+                    <td className="py-2 text-right">
+                      {p.upProbability != null ? (
+                        <span className={p.upProbability > 0.55 ? 'text-green-600' : p.upProbability < 0.45 ? 'text-red-600' : 'text-muted-foreground'}>
+                          {(p.upProbability * 100).toFixed(1)}%
+                        </span>
+                      ) : '-'}
+                    </td>
                     <td className="py-2 text-right">
                       {p.actualReturn != null ? (
                         <span className={p.actualReturn >= 0 ? 'text-green-600' : 'text-red-600'}>
@@ -296,9 +362,12 @@ function ModelHistorySection() {
                   <tr className="border-b text-muted-foreground">
                     <th className="text-left py-2 font-medium">{td(t, 'predictions.date')}</th>
                     <th className="text-left py-2 font-medium">{td(t, 'predictions.marketLabel')}</th>
+                    <th className="text-center py-2 font-medium">{td(t, 'predictions.modelType')}</th>
                     <th className="text-right py-2 font-medium">IC</th>
                     <th className="text-right py-2 font-medium">ICIR</th>
                     <th className="text-right py-2 font-medium">NDCG</th>
+                    <th className="text-right py-2 font-medium">{td(t, 'predictions.auc')}</th>
+                    <th className="text-right py-2 font-medium">{td(t, 'predictions.brierScore')}</th>
                     <th className="text-center py-2 font-medium">{td(t, 'predictions.quality')}</th>
                     <th className="text-right py-2 font-medium">{td(t, 'predictions.features')}</th>
                     <th className="text-right py-2 font-medium">{td(t, 'predictions.symbols')}</th>
@@ -323,6 +392,7 @@ function ModelHistorySection() {
                       >
                         <td className="py-2 text-xs">{m.modelDate}</td>
                         <td className="py-2">{m.market.toUpperCase()}</td>
+                        <td className="py-2 text-center">{modelTypeBadge(m.modelType, t)}</td>
                         <td className={cn(
                           'py-2 text-right',
                           m.ic != null && m.ic > 0.03 && 'text-green-600 dark:text-green-400',
@@ -332,6 +402,12 @@ function ModelHistorySection() {
                         </td>
                         <td className="py-2 text-right">{formatIc(m.icir)}</td>
                         <td className="py-2 text-right">{formatIc(m.ndcg)}</td>
+                        <td className="py-2 text-right">
+                          {m.auc != null ? m.auc.toFixed(4) : '-'}
+                        </td>
+                        <td className="py-2 text-right">
+                          {m.brierScore != null ? m.brierScore.toFixed(4) : '-'}
+                        </td>
                         <td className="py-2 text-center">
                           {m.qualityPassed ? (
                             <CheckCircle2 className="h-4 w-4 text-green-600 dark:text-green-400 inline" />
@@ -351,7 +427,7 @@ function ModelHistorySection() {
                       </tr>
                       {expandedModelId === m.id && (
                         <tr>
-                          <td colSpan={9} className="py-3 px-4 bg-muted/30">
+                          <td colSpan={12} className="py-3 px-4 bg-muted/30">
                             <div className="space-y-3">
                               {/* Quality override buttons */}
                               <div className="flex items-center gap-2">
@@ -635,6 +711,9 @@ function TriggerSection() {
                     {td(t, 'predictions.retrain')}
                   </Button>
                 </div>
+                <p className="text-[11px] text-muted-foreground">
+                  {td(t, 'predictions.triggerBothModels')}
+                </p>
               </div>
             )
           })}
@@ -1312,17 +1391,31 @@ function SignalDashboardSection() {
 
 // ── Main Component ─────────────────────────────
 
-export default function Predictions() {
+export type PredictionSection =
+  | 'status'
+  | 'results'
+  | 'trigger'
+  | 'performance'
+  | 'models'
+  | 'backtest'
+  | 'rdagent'
+
+interface PredictionsProps {
+  section?: PredictionSection
+}
+
+export default function Predictions({ section }: PredictionsProps) {
   const { t } = useTranslation('admin')
-  const [showRDAgent, setShowRDAgent] = useState(false)
+  const showAll = !section
 
   const { data: status, isLoading: statusLoading, error: statusError } = useQuery({
     queryKey: ['admin', 'predictions', 'status'],
     queryFn: predictionsApi.getStatus,
     staleTime: 60_000,
+    enabled: showAll || section === 'status',
   })
 
-  if (statusError) {
+  if (statusError && (showAll || section === 'status')) {
     return (
       <Card>
         <CardContent className="flex items-center gap-2 py-8 justify-center text-muted-foreground">
@@ -1336,59 +1429,46 @@ export default function Predictions() {
   return (
     <div className="space-y-6">
       {/* Status Overview */}
-      {statusLoading ? (
-        <div className="grid gap-4 md:grid-cols-3">
-          {Array.from({ length: 3 }).map((_, i) => (
-            <Skeleton key={i} className="h-36" />
-          ))}
-        </div>
-      ) : status ? (
-        <StatusOverview status={status} />
-      ) : null}
+      {(showAll || section === 'status') && (
+        statusLoading ? (
+          <div className="grid gap-4 md:grid-cols-3">
+            {Array.from({ length: 3 }).map((_, i) => (
+              <Skeleton key={i} className="h-36" />
+            ))}
+          </div>
+        ) : status ? (
+          <StatusOverview status={status} />
+        ) : null
+      )}
 
       {/* Manual Trigger */}
-      <TriggerSection />
+      {(showAll || section === 'trigger') && <TriggerSection />}
 
-      {/* Latest Predictions */}
-      <PredictionResultsSection />
+      {/* Latest Predictions + Accuracy */}
+      {(showAll || section === 'results') && (
+        <>
+          <PredictionResultsSection />
+          <AccuracySection />
+        </>
+      )}
 
-      {/* Accuracy */}
-      <AccuracySection />
+      {/* Performance Tracking + Signal Quality + Signal Dashboard */}
+      {(showAll || section === 'performance') && (
+        <>
+          <PerformanceSection />
+          <SignalQualitySection />
+          <SignalDashboardSection />
+        </>
+      )}
 
-      {/* Performance Tracking */}
-      <PerformanceSection />
-
-      {/* Signal Quality (IC Decay, Turnover, Sectors) — collapsible */}
-      <SignalQualitySection />
-
-      {/* Signal Dashboard (Holdings Change, Sector Allocation, Attribution) — collapsible */}
-      <SignalDashboardSection />
-
-      {/* Model History (collapsible) */}
-      <ModelHistorySection />
+      {/* Model History */}
+      {(showAll || section === 'models') && <ModelHistorySection />}
 
       {/* Backtest */}
-      <BacktestPanel />
+      {(showAll || section === 'backtest') && <BacktestPanel />}
 
-      {/* RD-Agent Section (collapsible) */}
-      <Card>
-        <CardHeader
-          className="pb-2 cursor-pointer"
-          onClick={() => setShowRDAgent(prev => !prev)}
-        >
-          <CardTitle className="flex items-center gap-2 text-base">
-            {showRDAgent ? <ChevronDown className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />}
-            <Brain className="h-4 w-4" />
-            {td(t, 'predictions.rdAgent')}
-          </CardTitle>
-          <CardDescription className="text-xs">{td(t, 'predictions.rdAgentDesc')}</CardDescription>
-        </CardHeader>
-        {showRDAgent && (
-          <CardContent>
-            <RDAgent />
-          </CardContent>
-        )}
-      </Card>
+      {/* RD-Agent */}
+      {(showAll || section === 'rdagent') && <RDAgent />}
     </div>
   )
 }
