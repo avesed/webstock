@@ -273,14 +273,15 @@ async def run_in_executor(
             timeout,
         )
         raise
-    except Exception:
+    except Exception as exc:
         elapsed = time.monotonic() - start
-        logger.error(
-            "Executor[%s]: %s failed after %.2fs",
+        logger.warning(
+            "Executor[%s]: %s failed after %.2fs — %s: %s",
             pool.value,
             func_name,
             elapsed,
-            exc_info=True,
+            type(exc).__name__,
+            str(exc)[:200],
         )
         raise
 
