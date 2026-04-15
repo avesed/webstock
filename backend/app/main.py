@@ -261,6 +261,11 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     # Check if stock knowledge base needs initial build
     await _maybe_seed_stock_knowledge_base()
 
+    # Seed NewsForge proxy-enabled flag into Redis so Celery workers can
+    # read it synchronously without hitting asyncpg from a fresh event loop.
+    from app.services.newsforge_proxy import seed_proxy_enabled_from_db
+    await seed_proxy_enabled_from_db()
+
     yield
 
     # Shutdown

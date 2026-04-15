@@ -247,12 +247,24 @@ async def update_newsforge_config(
 
     await db.commit()
 
-    # Invalidate the proxy-enabled TTL cache so the change takes effect
-    # immediately rather than waiting up to 30 seconds.
-    from app.services.newsforge_proxy import invalidate_proxy_enabled_cache
+    # Recompute the effective proxy_enabled flag from the fresh DB state and
+    # write it to Redis. Celery workers read Redis synchronously, so this is
+    # what makes the PATCH take effect across processes without an
+    # asyncio.run() call inside the worker (which previously caused
+    # "attached to a different loop" errors).
+    from app.services.newsforge_proxy import (
+        _compute_proxy_enabled_from_db,
+        invalidate_proxy_enabled_cache,
+        write_proxy_enabled_to_redis,
+    )
+    effective = await _compute_proxy_enabled_from_db()
+    await write_proxy_enabled_to_redis(effective)
     invalidate_proxy_enabled_cache()
 
-    logger.info("NewsForge integration config updated")
+    logger.info(
+        "NewsForge integration config updated (proxy_enabled effective=%s)",
+        effective,
+    )
 
     return await get_newsforge_config(db)
 
