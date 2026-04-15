@@ -19,6 +19,7 @@ import {
   Newspaper,
   ToggleLeft,
   Eye,
+  Plug,
   type LucideIcon,
 } from 'lucide-react'
 
@@ -53,6 +54,7 @@ export const adminRouteGroups: AdminRouteGroup[] = [
           { path: 'providers', icon: Server, labelKey: 'tabs.settProviders' },
           { path: 'models', icon: Cpu, labelKey: 'tabs.settModels' },
           { path: 'news', icon: Newspaper, labelKey: 'tabs.settNews' },
+          { path: 'integrations', icon: Plug, labelKey: 'tabs.settIntegrations' },
         ],
       },
       { path: 'features', icon: ToggleLeft, labelKey: 'tabs.features' },

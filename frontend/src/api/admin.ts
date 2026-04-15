@@ -31,6 +31,31 @@ import type {
   CategoryBreakdownItem,
 } from '@/types'
 
+// NewsForge integration types
+export interface IntegrationConfig {
+  newsforge_url: string
+  newsforge_api_key_set: boolean
+  newsforge_push_enabled: boolean
+  newsforge_webhook_secret_set: boolean
+  newsforge_proxy_enabled: boolean
+}
+
+export interface IntegrationConfigUpdate {
+  newsforge_url?: string
+  newsforge_api_key?: string
+  newsforge_push_enabled?: boolean
+  newsforge_webhook_secret?: string
+  newsforge_proxy_enabled?: boolean
+}
+
+export interface IntegrationStats {
+  total_pushed: number
+  total_duplicates: number
+  total_errors: number
+  last_push_at: string | null
+  last_sync_at: string | null
+}
+
 // Backend API format (has separate langgraph section + modelAssignments)
 interface BackendSystemConfig {
   llm: {
@@ -532,6 +557,56 @@ export const adminApi = {
       '/admin/knowledge-base/fundamentals/collect-all'
     )
     return response.data
+  },
+
+  // NewsForge integration
+  getIntegrationConfig: async (): Promise<IntegrationConfig> => {
+    const response = await apiClient.get<IntegrationConfig>('/admin/integrations/newsforge')
+    return response.data
+  },
+
+  updateIntegrationConfig: async (data: IntegrationConfigUpdate): Promise<IntegrationConfig> => {
+    const response = await apiClient.patch<IntegrationConfig>('/admin/integrations/newsforge', data)
+    return response.data
+  },
+
+  testIntegration: async (): Promise<{ connected: boolean; error?: string }> => {
+    const response = await apiClient.post<{ connected: boolean; error?: string }>('/admin/integrations/newsforge/test')
+    return response.data
+  },
+
+  getIntegrationStats: async (): Promise<IntegrationStats> => {
+    const response = await apiClient.get<IntegrationStats>('/admin/integrations/newsforge/stats')
+    return response.data
+  },
+
+  exportNews: async (params?: { since?: string; market?: string; limit?: number }): Promise<void> => {
+    const response = await apiClient.get('/admin/integrations/export-news', {
+      params,
+      responseType: 'blob',
+      timeout: 300000, // 5 minutes for large exports
+    })
+    // Extract filename from Content-Disposition header or use default
+    const disposition = response.headers['content-disposition']
+    let filename = `webstock-news-export-${new Date().toISOString().slice(0, 10).replace(/-/g, '')}.json`
+    if (disposition) {
+      const match = disposition.match(/filename="?([^"]+)"?/)
+      if (match) filename = match[1]
+    }
+    // Trigger browser download
+    const url = window.URL.createObjectURL(new Blob([response.data]))
+    const a = document.createElement('a')
+    try {
+      a.href = url
+      a.download = filename
+      document.body.appendChild(a)
+      a.click()
+    } finally {
+      window.URL.revokeObjectURL(url)
+      if (a.parentNode) {
+        document.body.removeChild(a)
+      }
+    }
   },
 }
 

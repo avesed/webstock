@@ -32,6 +32,7 @@ const AdminUsersPage = lazy(() => import('@/pages/admin/UserManagementPage'))
 const SettProvidersPage = lazy(() => import('@/pages/admin/settings/ProvidersPage'))
 const SettModelsPage = lazy(() => import('@/pages/admin/settings/ModelsPage'))
 const SettNewsPage = lazy(() => import('@/pages/admin/settings/NewsPage'))
+const SettIntegrationsPage = lazy(() => import('@/pages/admin/settings/IntegrationsPage'))
 const SettFeaturesPage = lazy(() => import('@/pages/admin/settings/FeaturesPage'))
 const MonitorOverviewPage = lazy(() => import('@/pages/admin/monitor/OverviewPage'))
 const MonitorFilterPage = lazy(() => import('@/pages/admin/monitor/FilterPage'))
@@ -195,6 +196,7 @@ function App() {
           <Route path="settings/providers" element={<SettProvidersPage />} />
           <Route path="settings/models" element={<SettModelsPage />} />
           <Route path="settings/news" element={<SettNewsPage />} />
+          <Route path="settings/integrations" element={<SettIntegrationsPage />} />
           <Route path="features" element={<SettFeaturesPage />} />
           <Route path="monitor" element={<Navigate to="overview" replace />} />
           <Route path="monitor/overview" element={<MonitorOverviewPage />} />

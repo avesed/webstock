@@ -11,6 +11,7 @@ from app.api.v1.admin.rss_feeds import router as rss_feeds_router
 from app.api.v1.admin.llm_costs import router as llm_costs_router
 from app.api.v1.admin.knowledge_base import router as knowledge_base_router
 from app.api.v1.admin.predictions import router as predictions_router
+from app.api.v1.admin.integrations import router as integrations_router
 
 router = APIRouter(prefix="/admin", tags=["Admin"], dependencies=[Depends(require_admin)])
 
@@ -21,3 +22,4 @@ router.include_router(rss_feeds_router)
 router.include_router(llm_costs_router)
 router.include_router(knowledge_base_router)
 router.include_router(predictions_router)
+router.include_router(integrations_router)

@@ -66,6 +66,12 @@ def process_news_article(
         processing_path: Routing decision from Layer 1 (always 'full_analysis')
         score_details: Dimension scores, reasoning, and critical flag from scoring
     """
+    from app.services.newsforge_proxy import is_newsforge_proxy_enabled_sync
+
+    if is_newsforge_proxy_enabled_sync():
+        logger.info("NewsForge proxy enabled, skipping local news processing for news_id=%s", news_id)
+        return {"skipped": True, "reason": "newsforge_proxy"}
+
     try:
         return run_async_task(
             _process_news_article_async,
@@ -150,6 +156,12 @@ def batch_fetch_content(self, articles: List[Dict[str, Any]]):
                   title, summary, source, published_at, content_source,
                   content_score, processing_path, score_details
     """
+    from app.services.newsforge_proxy import is_newsforge_proxy_enabled_sync
+
+    if is_newsforge_proxy_enabled_sync():
+        logger.info("NewsForge proxy enabled, skipping local batch content fetch")
+        return {"skipped": True, "reason": "newsforge_proxy"}
+
     try:
         return run_async_task(_batch_fetch_content_async, articles)
     except Exception as e:

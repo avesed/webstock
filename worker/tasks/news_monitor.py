@@ -78,6 +78,12 @@ def monitor_news(self):
 
     This task is registered with Celery Beat schedule.
     """
+    from app.services.newsforge_proxy import is_newsforge_proxy_enabled_sync
+
+    if is_newsforge_proxy_enabled_sync():
+        logger.info("NewsForge proxy enabled, skipping local news monitoring")
+        return {"skipped": True, "reason": "newsforge_proxy"}
+
     try:
         return run_async_task(_monitor_news_async)
     except Exception as e:
@@ -963,6 +969,12 @@ def retry_score_articles(self, articles_data: list):
         articles_data: List of article dicts with url, title, summary,
             source, symbol, market, published_at.
     """
+    from app.services.newsforge_proxy import is_newsforge_proxy_enabled_sync
+
+    if is_newsforge_proxy_enabled_sync():
+        logger.info("NewsForge proxy enabled, skipping local news scoring retry")
+        return {"skipped": True, "reason": "newsforge_proxy"}
+
     try:
         return run_async_task(_retry_score_async, articles_data, self.request.retries)
     except _ScoringPartialTimeout as e:
@@ -1279,6 +1291,12 @@ def analyze_important_news(self, news_id: str):
     Args:
         news_id: UUID of the news article to analyze
     """
+    from app.services.newsforge_proxy import is_newsforge_proxy_enabled_sync
+
+    if is_newsforge_proxy_enabled_sync():
+        logger.info("NewsForge proxy enabled, skipping local news analysis")
+        return {"skipped": True, "reason": "newsforge_proxy"}
+
     try:
         return run_async_task(_analyze_news_async, news_id)
     except Exception as e:

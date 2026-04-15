@@ -6,18 +6,25 @@ These endpoints are kept for backward compatibility during transition.
 These endpoints are designed for inter-service communication (e.g.,
 qlib-service -> main backend) and are secured via a shared token
 in the X-Internal-Token header rather than JWT user authentication.
+
+The NewsForge callback endpoint uses HMAC signature verification
+(X-NewsForge-Signature) instead of the internal token.
 """
 
+import hashlib
 import hmac
+import json
 import logging
 from datetime import date
 from typing import Any, Optional
 
-from fastapi import APIRouter, Depends, Header, HTTPException, status
+from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
+from sqlalchemy import update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
-from app.db.database import get_db
+from app.db.database import AsyncSessionLocal, get_db
+from app.models.news import News
 from app.schemas.base import CamelModel
 from app.services.daily_bar_service import DailyBarService
 from app.services.hsi_constituents import get_hsi_constituents
@@ -248,3 +255,90 @@ async def _get_cn_symbols() -> list[str]:
     except Exception as exc:
         logger.warning("Failed to load CN symbols from stock list: %s", exc)
     return list(_CN_FALLBACK_SYMBOLS)
+
+
+# ---------------------------------------------------------------------------
+# NewsForge webhook callback
+# ---------------------------------------------------------------------------
+
+
+@router.post(
+    "/newsforge/callback",
+    summary="NewsForge webhook callback",
+    description="Receives article.published events from NewsForge when articles "
+    "finish processing. Validates HMAC signature and triggers immediate "
+    "result pull and DB update.",
+)
+async def newsforge_callback(request: Request):
+    """Receive webhook callback from NewsForge.
+
+    Validates HMAC signature (X-NewsForge-Signature) and processes
+    article.published events by pulling enriched results and updating
+    the local News table.
+    """
+    signature = request.headers.get("X-NewsForge-Signature", "")
+    event_type = request.headers.get("X-NewsForge-Event", "")
+    body = await request.body()
+
+    webhook_secret = settings.NEWSFORGE_WEBHOOK_SECRET
+
+    if not webhook_secret:
+        raise HTTPException(status_code=503, detail="Webhook secret not configured")
+
+    expected = "sha256=" + hmac.new(
+        webhook_secret.encode(), body, hashlib.sha256
+    ).hexdigest()
+    if not hmac.compare_digest(signature, expected):
+        raise HTTPException(status_code=401, detail="Invalid signature")
+
+    if event_type != "article.published":
+        return {"status": "ignored", "event": event_type}
+
+    payload = json.loads(body)
+    data = payload.get("data", {})
+    article_id = data.get("article_id")
+
+    if not article_id:
+        return {"status": "ignored", "reason": "no article_id"}
+
+    # Pull enriched result from NewsForge and update local DB
+    try:
+        from app.services.newsforge_client import (
+            NewsForgeClient,
+            map_newsforge_to_webstock,
+        )
+
+        client = NewsForgeClient()
+        results = await client.get_results(article_ids=[article_id])
+
+        if not results:
+            logger.warning("No results from NewsForge for article %s", article_id)
+            return {"status": "no_results"}
+
+        nf_article = results[0]
+        external_id = nf_article.get("external_id")
+        if not external_id:
+            return {"status": "no_external_id"}
+
+        # Map and update
+        updates = map_newsforge_to_webstock(nf_article)
+        if updates:
+            async with AsyncSessionLocal() as session:
+                # external_id is the WebStock news UUID
+                await session.execute(
+                    update(News)
+                    .where(News.id == external_id)
+                    .values(**updates)
+                )
+                await session.commit()
+            logger.info(
+                "Updated news %s from NewsForge article %s", external_id, article_id
+            )
+
+        return {"status": "updated", "external_id": external_id}
+
+    except Exception:
+        logger.exception(
+            "Failed to process NewsForge callback for %s", article_id
+        )
+        raise HTTPException(status_code=500, detail="Callback processing failed")

@@ -81,6 +81,15 @@ class NewsConsumer:
         from app.db.redis import init_redis
         await init_redis()
 
+        # Proxy guard: skip local LLM processing when NewsForge handles it
+        from app.services.newsforge_proxy import is_newsforge_proxy_enabled
+        if await is_newsforge_proxy_enabled():
+            logger.info(
+                "NewsForge proxy enabled, news_consumer will not start "
+                "(pipeline processing is delegated to NewsForge)"
+            )
+            return
+
         # Pre-compile the LangGraph pipeline (singleton)
         from app.agents.langgraph.workflows.news_pipeline import get_news_pipeline
         get_news_pipeline()

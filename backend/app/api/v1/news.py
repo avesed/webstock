@@ -8,6 +8,7 @@ from typing import List, Optional
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
+import httpx
 from sqlalchemy import delete, select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -37,6 +38,7 @@ from app.schemas.news import (
     TrendingNewsResponse,
 )
 from app.services.news_service import get_news_service
+from app.services.newsforge_proxy import is_newsforge_proxy_enabled, NewsForgeProxy
 
 logger = logging.getLogger(__name__)
 
@@ -145,6 +147,26 @@ async def get_market_news(
 
     Use show_all=true to include deleted/failed/blocked articles (for admin view).
     """
+    if await is_newsforge_proxy_enabled():
+        try:
+            proxy = NewsForgeProxy()
+            return await proxy.get_market_news(
+                page=page,
+                page_size=page_size,
+                market=market,
+                search=search,
+                sentiment_tag=sentiment_tag,
+                filter_status=filter_status,
+                content_status=content_status,
+                show_all=show_all,
+            )
+        except Exception:
+            logger.exception("NewsForge proxy failed for /news/market, returning 503")
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="NewsForge proxy is unavailable",
+            )
+
     from sqlalchemy import desc
 
     # Base query: filter by content status
@@ -228,13 +250,24 @@ async def get_trending_news(
 
     - **market**: Optional market filter (US, HK, SH, SZ)
     """
+    if await is_newsforge_proxy_enabled():
+        try:
+            proxy = NewsForgeProxy()
+            return await proxy.get_trending(market=market)
+        except Exception:
+            logger.exception("NewsForge proxy failed for /news/trending, returning 503")
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="NewsForge proxy is unavailable",
+            )
+
     # Load user with settings
     from sqlalchemy.orm import selectinload
     result = await db.execute(
         select(User).where(User.id == current_user.id).options(selectinload(User.settings))
     )
     user = result.scalar_one_or_none()
-    
+
     news_service = await get_news_service()
     news = await news_service.get_trending_news(market=market, user=user)
 
@@ -279,6 +312,38 @@ async def get_news_feed(
     - **page**: Page number (1-indexed)
     - **page_size**: Number of items per page (max 100)
     """
+    if await is_newsforge_proxy_enabled():
+        # Still need watchlist symbols to filter the feed
+        symbol_query = (
+            select(WatchlistItem.symbol)
+            .join(Watchlist)
+            .where(Watchlist.user_id == current_user.id)
+            .distinct()
+        )
+        result = await db.execute(symbol_query)
+        symbols = [row[0] for row in result.fetchall()]
+
+        if not symbols:
+            return NewsFeedResponse(
+                news=[], total=0, page=page, page_size=page_size, has_more=False,
+            )
+
+        try:
+            proxy = NewsForgeProxy()
+            return await proxy.get_feed(
+                symbols=symbols,
+                page=page,
+                page_size=page_size,
+                search=search,
+                sentiment_tag=sentiment_tag,
+            )
+        except Exception:
+            logger.exception("NewsForge proxy failed for /news/feed, returning 503")
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="NewsForge proxy is unavailable",
+            )
+
     from sqlalchemy import desc, or_, cast, literal
     from sqlalchemy.dialects.postgresql import JSONB
 
@@ -550,6 +615,22 @@ async def get_sentiment_timeline(
     - **symbol**: Stock symbol (e.g., AAPL, 0700.HK, 600519.SS)
     - **days**: Number of days to look back (7-90, default 30)
     """
+    if await is_newsforge_proxy_enabled():
+        try:
+            proxy = NewsForgeProxy()
+            return await proxy.get_sentiment_timeline(
+                symbol=symbol.strip().upper(), days=days,
+            )
+        except Exception:
+            logger.exception(
+                "NewsForge proxy failed for /%s/sentiment-timeline, returning 503",
+                symbol,
+            )
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="NewsForge proxy is unavailable",
+            )
+
     from datetime import timedelta
     from sqlalchemy import text
 
@@ -641,6 +722,28 @@ async def get_news_article(
     _rate_limit: None = Depends(CONTENT_RATE_LIMIT),
 ):
     """Get a single news article by ID."""
+    if await is_newsforge_proxy_enabled():
+        try:
+            proxy = NewsForgeProxy()
+            return await proxy.get_article(news_id)
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code == 404:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail="News article not found",
+                )
+            logger.exception("NewsForge proxy failed for /news/article/%s", news_id)
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="NewsForge proxy is unavailable",
+            )
+        except Exception:
+            logger.exception("NewsForge proxy failed for /news/article/%s", news_id)
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="NewsForge proxy is unavailable",
+            )
+
     try:
         news_uuid = UUID(news_id)
     except ValueError:
@@ -684,6 +787,42 @@ async def stream_news_analysis(
     Rate limit: 10/min per user. SSE reconnections (lastEventId != "0-0")
     bypass rate limit via news_analysis_stream_rate_limit dependency.
     """
+    if await is_newsforge_proxy_enabled():
+        # Proxy SSE stream from NewsForge
+        import asyncio
+
+        from fastapi.responses import StreamingResponse
+
+        try:
+            proxy = NewsForgeProxy()
+            upstream_resp = await proxy.stream_analysis(news_id)
+
+            async def _proxy_sse():
+                try:
+                    async for chunk in upstream_resp.aiter_bytes():
+                        yield chunk
+                finally:
+                    await upstream_resp.aclose()
+
+            return StreamingResponse(
+                _proxy_sse(),
+                media_type="text/event-stream",
+                headers={
+                    "Cache-Control": "no-cache",
+                    "Connection": "keep-alive",
+                    "X-Accel-Buffering": "no",
+                },
+            )
+        except Exception:
+            logger.exception(
+                "NewsForge proxy failed for /news/article/%s/stream/analysis",
+                news_id,
+            )
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="NewsForge proxy is unavailable",
+            )
+
     import asyncio
 
     from fastapi.responses import StreamingResponse
@@ -770,6 +909,17 @@ async def get_stock_news(
 
     - **symbol**: Stock symbol (e.g., AAPL, 0700.HK, 600519.SS)
     """
+    if await is_newsforge_proxy_enabled():
+        try:
+            proxy = NewsForgeProxy()
+            return await proxy.get_symbol_news(symbol=symbol.strip().upper())
+        except Exception:
+            logger.exception("NewsForge proxy failed for /news/%s, returning 503", symbol)
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="NewsForge proxy is unavailable",
+            )
+
     symbol = symbol.strip().upper()
 
     # Auto-append exchange suffix for bare 6-digit A-share codes

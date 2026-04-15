@@ -136,6 +136,11 @@ class Settings(BaseSettings):
     AI_GATEWAY_URL: str = "http://ai-gateway:8004"
     USE_AI_GATEWAY: bool = False  # Feature flag: route LLM calls through ai-gateway
 
+    # NewsForge integration
+    NEWSFORGE_URL: str = ""
+    NEWSFORGE_API_KEY: str = ""
+    NEWSFORGE_WEBHOOK_SECRET: str = ""
+
     # RSSHub
     RSSHUB_URL: str = "http://rsshub:1200"
     RSSHUB_ACCESS_KEY: str = ""

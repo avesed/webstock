@@ -41,6 +41,12 @@ class Settings(BaseSettings):
     # Qlib service URL (for triggering data sync after collection)
     QLIB_SERVICE_URL: str = "http://data-processor:8005"
 
+    # NewsForge integration
+    NEWSFORGE_URL: str = ""  # e.g., "http://newsforge:8000"
+    NEWSFORGE_API_KEY: str = ""  # X-API-Key for NewsForge internal API
+    NEWSFORGE_PUSH_ENABLED: bool = False
+    NEWSFORGE_PUSH_BATCH_SIZE: int = 50
+
     # Server
     HOST: str = "0.0.0.0"
     PORT: int = 8003

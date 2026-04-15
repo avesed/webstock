@@ -134,3 +134,80 @@ async def get_trending_cn_news() -> ApiResponse[List[NewsArticle]]:
         source="akshare",
         elapsed_ms=elapsed_ms,
     )
+
+
+@router.post(
+    "/push-to-newsforge",
+    response_model=ApiResponse,
+    summary="Push collected news to NewsForge",
+)
+async def push_to_newsforge(
+    symbols: Optional[str] = Query(None, description="Comma-separated symbols to push news for"),
+    category: str = Query("general", description="News category for general news"),
+    include_trending_cn: bool = Query(True, description="Include trending CN news"),
+) -> ApiResponse:
+    """Manually trigger a push of collected news to NewsForge.
+
+    Collects news from all configured providers and pushes to NewsForge
+    for LLM processing (classification, entity extraction, etc.).
+    """
+    from app.core.cache import get_redis
+    from app.services.newsforge_push_service import NewsForgePushService
+
+    push_service = NewsForgePushService()
+    if not push_service.enabled:
+        return ApiResponse(success=False, error="NewsForge push is not enabled")
+
+    start = time.monotonic()
+    all_articles = []
+
+    # Collect general news
+    general = await _news_service.get_general_news(category=category)
+    all_articles.extend(general)
+
+    # Collect trending CN news
+    if include_trending_cn:
+        try:
+            cn_news = await _news_service.get_trending_cn_news()
+            all_articles.extend(cn_news)
+        except Exception:
+            logger.warning("Failed to fetch trending CN news for push", exc_info=True)
+
+    # Collect news for specific symbols
+    if symbols:
+        for sym in symbols.split(","):
+            sym = sym.strip()
+            if sym:
+                try:
+                    sym_news = await _news_service.get_company_news(symbol=sym)
+                    all_articles.extend(sym_news)
+                except Exception:
+                    logger.warning("Failed to fetch news for %s", sym, exc_info=True)
+
+    # Push to NewsForge
+    redis = await get_redis()
+    result = await push_service.push_articles(all_articles, redis=redis)
+
+    elapsed_ms = int((time.monotonic() - start) * 1000)
+
+    return ApiResponse(success=True, data=result, elapsed_ms=elapsed_ms)
+
+
+@router.get(
+    "/newsforge-status",
+    response_model=ApiResponse,
+    summary="Get NewsForge push statistics",
+)
+async def newsforge_push_status() -> ApiResponse:
+    """Get statistics about news articles pushed to NewsForge."""
+    from app.core.cache import get_redis
+    from app.services.newsforge_push_service import NewsForgePushService
+
+    push_service = NewsForgePushService()
+    redis = await get_redis()
+    stats = await push_service.get_push_stats(redis)
+
+    return ApiResponse(success=True, data={
+        "enabled": push_service.enabled,
+        **stats,
+    })

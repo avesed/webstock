@@ -76,6 +76,12 @@ def monitor_rss_feeds(self):
 
     Uses global Celery time limits (4min soft / 5min hard).
     """
+    from app.services.newsforge_proxy import is_newsforge_proxy_enabled_sync
+
+    if is_newsforge_proxy_enabled_sync():
+        logger.info("NewsForge proxy enabled, skipping local RSS feed monitoring")
+        return {"skipped": True, "reason": "newsforge_proxy"}
+
     try:
         return run_async_task(_monitor_rss_feeds_async)
     except ConnectionError as e:
