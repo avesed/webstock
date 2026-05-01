@@ -65,32 +65,60 @@ def _map_article(nf: dict[str, Any]) -> dict[str, Any]:
 
     Field names are returned in snake_case; CamelModel handles camelCase
     serialization automatically.
+
+    Key mappings:
+    - ``finance_metadata.related_symbols`` → ``related_entities`` (stock tickers)
+    - ``entities`` → merged into ``related_entities`` (generic entities)
+    - ``finance_metadata.symbols`` → ``symbol`` (primary query symbol)
     """
     fm = nf.get("finance_metadata") or {}
 
-    # Symbol: take first from symbols list, or fall back to top-level
-    symbols = fm.get("symbols") or []
-    symbol = symbols[0] if symbols else nf.get("symbol", "")
+    # Related symbols from finance_analyzer (stock ticker associations)
+    related_syms = fm.get("related_symbols") or []
+    # Primary symbol: prefer first related_symbol with direct relevance,
+    # then fall back to finance_metadata.symbols, then top-level symbol.
+    primary_symbol = ""
+    for rs in related_syms:
+        if isinstance(rs, dict) and rs.get("relevance") == "direct" and rs.get("symbol"):
+            primary_symbol = rs["symbol"]
+            break
+    if not primary_symbol:
+        fm_symbols = fm.get("symbols") or []
+        primary_symbol = fm_symbols[0] if fm_symbols else nf.get("symbol", "")
 
-    # Market: NewsForge uses lowercase (us), WebStock uses uppercase (US)
     market = (fm.get("market") or nf.get("market") or "").upper()
 
-    # Entities: NewsForge {name, type, confidence} -> WebStock {entity, type, score}
-    nf_entities = nf.get("entities") or []
-    ws_entities = []
-    for e in nf_entities:
-        if isinstance(e, dict) and e.get("name"):
-            ws_entities.append({
-                "entity": e["name"],
-                "type": e.get("type", "org"),
-                "score": e.get("confidence", 0.5),
-            })
+    # Build entities: stock tickers from related_symbols + generic from entities
+    ws_entities: list[dict[str, Any]] = []
+    seen_names: set[str] = set()
 
-    # Value score -> content_score (0-100 to 0-300)
+    for rs in related_syms:
+        if isinstance(rs, dict) and rs.get("symbol"):
+            name = rs["symbol"]
+            if name not in seen_names:
+                seen_names.add(name)
+                ws_entities.append({
+                    "entity": name,
+                    "type": "stock",
+                    "score": 0.9 if rs.get("relevance") == "direct" else 0.5,
+                    "name": rs.get("name", ""),
+                    "market": rs.get("market", ""),
+                })
+
+    for e in (nf.get("entities") or []):
+        if isinstance(e, dict) and e.get("name"):
+            name = e["name"]
+            if name not in seen_names:
+                seen_names.add(name)
+                ws_entities.append({
+                    "entity": name,
+                    "type": e.get("type", "org"),
+                    "score": e.get("confidence", 0.5),
+                })
+
     value_score = nf.get("value_score")
     content_score = round(value_score * 3) if value_score is not None else None
 
-    # Parse published_at safely
     pub_raw = nf.get("published_at")
     if isinstance(pub_raw, str):
         try:
@@ -106,9 +134,9 @@ def _map_article(nf: dict[str, Any]) -> dict[str, Any]:
 
     return {
         "id": str(nf.get("id", "")),
-        "symbol": symbol,
-        "title": nf.get("title", ""),
-        "summary": fm.get("investment_summary") or nf.get("summary"),
+        "symbol": primary_symbol,
+        "title": nf.get("title_zh") or nf.get("title", ""),
+        "summary": fm.get("investment_summary") or nf.get("ai_summary") or nf.get("summary"),
         "source": nf.get("source_name") or nf.get("source", ""),
         "url": nf.get("url", ""),
         "published_at": published_at,
@@ -119,10 +147,10 @@ def _map_article(nf: dict[str, Any]) -> dict[str, Any]:
         "detailed_summary": nf.get("detailed_summary"),
         "ai_analysis": nf.get("ai_analysis"),
         "related_entities": ws_entities or None,
-        "industry_tags": fm.get("industry_tags"),
-        "event_tags": fm.get("event_tags"),
+        "industry_tags": fm.get("industry_tags") or fm.get("sectors"),
+        "event_tags": fm.get("event_tags") or nf.get("tags"),
         "content_score": content_score,
-        "processing_path": "newsforge_proxy",
+        "processing_path": nf.get("processing_path", "newsforge_proxy"),
         "score_details": None,
         "content_status": nf.get("content_status"),
         "filter_status": None,
