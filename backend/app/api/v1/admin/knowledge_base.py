@@ -46,11 +46,11 @@ _SP_QUEUED_TTL = 14400
 _FUND_MARKETS = ("cn", "us", "hk")
 _FUND_PROGRESS_KEY_TEMPLATE = "kb:fundamentals:{market}:progress"
 
-CLEARABLE_SOURCE_TYPES = {"news", "analysis", "report"}
+CLEARABLE_SOURCE_TYPES = {"analysis", "report"}
 REBUILDABLE_SOURCE_TYPES = {
-    "stock_profile", "stock_profile_sync", "news", "analysis", "report",
+    "stock_profile", "stock_profile_sync", "analysis", "report",
 }
-RETRYABLE_SOURCE_TYPES = {"news", "report"}
+RETRYABLE_SOURCE_TYPES = {"report"}
 
 # Lock key pattern matching daily_bar_tasks.py
 _LOCK_KEY_TEMPLATE = "kb:daily_bars:{market}:lock"
@@ -597,14 +597,6 @@ async def rebuild_knowledge_base(
             "taskId": result.id,
         }
 
-    if source_type == "news":
-        from worker.tasks.embedding_tasks import rebuild_news_embeddings
-        result = rebuild_news_embeddings.delay()
-        return {
-            "message": "News embedding rebuild started",
-            "taskId": result.id,
-        }
-
     if source_type == "analysis":
         # Analysis embeddings cannot be recovered (no stored content to re-embed),
         # so just delete them directly.
@@ -627,7 +619,7 @@ async def rebuild_knowledge_base(
         }
 
     if source_type == "report":
-        from worker.tasks.embedding_tasks import rebuild_report_embeddings
+        from worker.tasks.maintenance_tasks import rebuild_report_embeddings
         result = rebuild_report_embeddings.delay()
         return {
             "message": "Report embedding rebuild started",
@@ -661,21 +653,6 @@ async def retry_failed_embeddings(
             detail=f"Retry is only supported for: {', '.join(sorted(RETRYABLE_SOURCE_TYPES))}",
         )
 
-    if source_type == "news":
-        # Count failed news for response
-        row = await db.execute(
-            text("SELECT COUNT(*) as cnt FROM news WHERE content_status = 'embedding_failed'")
-        )
-        failed_count = row.scalar() or 0
-
-        from worker.tasks.embedding_tasks import retry_failed_news_embeddings
-        result = retry_failed_news_embeddings.delay()
-        return {
-            "message": f"Retrying {failed_count} failed news embeddings",
-            "taskId": result.id,
-            "failedCount": failed_count,
-        }
-
     if source_type == "report":
         # Count completed reports without embeddings
         row = await db.execute(text("""
@@ -688,7 +665,7 @@ async def retry_failed_embeddings(
         """))
         failed_count = row.scalar() or 0
 
-        from worker.tasks.embedding_tasks import retry_failed_report_embeddings
+        from worker.tasks.maintenance_tasks import retry_failed_report_embeddings
         result = retry_failed_report_embeddings.delay()
         return {
             "message": f"Retrying {failed_count} failed report embeddings",

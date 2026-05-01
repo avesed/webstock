@@ -3,10 +3,8 @@
 from __future__ import annotations
 
 import logging
-import uuid as uuid_mod
 from typing import Any, Dict, List, Optional
 
-from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.skills.base import BaseSkill, SkillDefinition, SkillParameter, SkillResult
@@ -33,51 +31,8 @@ async def _enrich_news_results(
     db: AsyncSession,
     results: List[Any],
 ) -> List[Dict[str, Any]]:
-    """Enrich RAG results whose source_type is 'news' with News table metadata.
-
-    Non-news results pass through with the base ``to_dict()`` representation.
-    """
-    from app.models.news import News
-
-    # Separate news vs non-news results
-    news_source_ids: List[str] = []
-    for r in results:
-        if r.source_type == "news":
-            try:
-                uuid_mod.UUID(r.source_id)
-                news_source_ids.append(r.source_id)
-            except (ValueError, AttributeError):
-                pass
-
-    # Batch-fetch News rows
-    news_metadata: Dict[str, News] = {}
-    if news_source_ids:
-        uuids = [uuid_mod.UUID(sid) for sid in news_source_ids]
-        rows = (await db.execute(select(News).where(News.id.in_(uuids)))).scalars().all()
-        news_metadata = {str(row.id): row for row in rows}
-
-    enriched: List[Dict[str, Any]] = []
-    for r in results:
-        base = r.to_dict()
-
-        news_row = news_metadata.get(r.source_id) if r.source_type == "news" else None
-        if news_row:
-            base["title"] = news_row.title
-            base["source"] = news_row.source
-            base["published_at"] = (
-                news_row.published_at.isoformat() if news_row.published_at else None
-            )
-            base["url"] = news_row.url
-            base["sentiment_tag"] = news_row.sentiment_tag
-            base["content_score"] = news_row.content_score
-            base["investment_summary"] = news_row.investment_summary
-            base["detailed_summary"] = news_row.detailed_summary
-            base["industry_tags"] = news_row.industry_tags or []
-            base["event_tags"] = news_row.event_tags or []
-
-        enriched.append(base)
-
-    return enriched
+    """Convert RAG results to dicts. News enrichment is handled by NewsForge."""
+    return [r.to_dict() for r in results]
 
 
 class SearchKnowledgeBaseSkill(BaseSkill):

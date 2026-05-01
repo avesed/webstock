@@ -2,30 +2,10 @@
 
 from datetime import datetime
 from typing import List, Optional
-from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, Field
 
 from app.schemas.base import CamelModel
-
-
-class NewsBase(CamelModel):
-    """Base schema for news article."""
-
-    symbol: str = Field(..., min_length=1, max_length=20)
-    title: str = Field(..., min_length=1, max_length=500)
-    summary: Optional[str] = Field(None, max_length=5000)
-    source: str = Field(..., min_length=1, max_length=100)
-    url: str = Field(..., max_length=1024)
-    published_at: datetime
-    market: str = Field(..., min_length=1, max_length=10)
-
-
-class NewsCreate(NewsBase):
-    """Schema for creating news (internal use)."""
-
-    sentiment_score: Optional[float] = Field(None, ge=-1.0, le=1.0)
-    ai_analysis: Optional[str] = None
 
 
 class NewsResponse(CamelModel):
@@ -98,82 +78,6 @@ class TrendingNewsResponse(BaseModel):
     news: List[NewsResponse]
     market: Optional[str] = None
     fetched_at: datetime
-
-
-# News Alert Schemas
-class NewsAlertBase(CamelModel):
-    """Base schema for news alert."""
-
-    symbol: Optional[str] = Field(None, max_length=20)
-    keywords: List[str] = Field(default_factory=list, max_length=20)
-    is_active: bool = True
-
-
-class NewsAlertCreate(NewsAlertBase):
-    """Schema for creating a news alert."""
-
-    pass
-
-
-class NewsAlertUpdate(BaseModel):
-    """Schema for updating a news alert."""
-
-    symbol: Optional[str] = Field(None, max_length=20)
-    keywords: Optional[List[str]] = Field(None, max_length=20)
-    is_active: Optional[bool] = None
-
-
-class NewsAlertResponse(NewsAlertBase):
-    """Response schema for news alert."""
-
-    id: UUID
-    user_id: int
-    created_at: datetime
-
-
-class NewsAlertListResponse(BaseModel):
-    """Response schema for list of news alerts."""
-
-    alerts: List[NewsAlertResponse]
-    total: int
-
-
-class MessageResponse(BaseModel):
-    """Simple message response."""
-
-    message: str
-
-
-class NewsFullContentResponse(CamelModel):
-    """Response schema for news full content."""
-
-    id: str
-    title: str
-    full_content: Optional[str] = None
-    content_status: str
-    language: Optional[str] = None
-    authors: Optional[List[str]] = None
-    keywords: Optional[List[str]] = None
-    word_count: int = 0
-    is_fetching: bool = False
-    fetched_at: Optional[datetime] = None
-    error: Optional[str] = None
-    investment_summary: Optional[str] = None  # 1句话概况
-    detailed_summary: Optional[str] = None    # 完整细节总结
-    ai_analysis: Optional[str] = None         # Markdown分析报告
-
-
-class BatchFetchRequest(CamelModel):
-    """Request schema for batch content fetching."""
-
-    news_ids: List[str] = Field(..., min_length=1, max_length=50)
-
-
-class BatchFetchResponse(CamelModel):
-    """Response schema for batch content fetching."""
-
-    queued: int
-    message: str
 
 
 class SentimentTimelineItemResponse(CamelModel):

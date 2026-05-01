@@ -94,13 +94,9 @@ def _register_all_skills(registry: SkillRegistry) -> None:
     # Computation skills
     from app.skills.computation.technical_indicators import CalculateTechnicalIndicatorsSkill
     from app.skills.computation.history_summary import CalculateHistorySummarySkill
-    from app.skills.computation.news_scoring import ScoreNewsArticlesSkill
 
     # News skills
     from app.skills.news.get_news import GetNewsSkill
-    from app.skills.news.fetch_global_news import FetchGlobalNewsSkill
-    from app.skills.news.fetch_full_content import FetchFullContentSkill
-    from app.skills.news.deep_filter import DeepFilterNewsSkill
 
     # User data skills
     from app.skills.user_data.portfolio import GetPortfolioSkill
@@ -154,12 +150,8 @@ def _register_all_skills(registry: SkillRegistry) -> None:
         # Computation
         CalculateTechnicalIndicatorsSkill,
         CalculateHistorySummarySkill,
-        ScoreNewsArticlesSkill,
         # News
         GetNewsSkill,
-        FetchGlobalNewsSkill,
-        FetchFullContentSkill,
-        DeepFilterNewsSkill,
         # User data
         GetPortfolioSkill,
         GetWatchlistSkill,

@@ -1,27 +1,55 @@
-"""Celery tasks for generating document embeddings.
+"""Celery tasks for general maintenance (non-news).
 
-These tasks are dispatched asynchronously after content is created or updated
-(e.g. analysis reports, news articles) to make them searchable via RAG.
-Each task chunks the input text, calls the embedding API, and stores the
-resulting vectors in the document_embeddings table.
+Includes:
+- LLM usage record cleanup
+- Document embedding tasks (analysis reports, generated reports)
 """
 
 import logging
 from typing import Any, Dict
 
 from worker.celery_app import celery_app
-
-# Use Celery-safe database utilities (avoids event loop conflicts)
+from worker.task_helpers import run_async_task
 from app.db.task_session import get_task_session
 
 logger = logging.getLogger(__name__)
 
+
+# ---------------------------------------------------------------------------
+# LLM usage record cleanup
+# ---------------------------------------------------------------------------
+
+
+@celery_app.task(name="worker.tasks.maintenance_tasks.cleanup_old_usage_records")
+def cleanup_old_usage_records():
+    """Clean up old LLM usage records (>90 days)."""
+    try:
+        return run_async_task(_cleanup_old_usage_records_async)
+    except Exception as e:
+        logger.exception("cleanup_old_usage_records failed: %s", e)
+        raise
+
+
+async def _cleanup_old_usage_records_async() -> Dict[str, Any]:
+    """Async implementation of LLM usage records cleanup."""
+    from app.services.llm_cost_service import LlmCostService
+
+    async with get_task_session() as db:
+        deleted = await LlmCostService.cleanup_old_records(db, retention_days=90)
+        await db.commit()
+
+    logger.info("用量清理完成：删除%d条", deleted)
+    return {"deleted": deleted}
+
+
+# ---------------------------------------------------------------------------
+# Document embedding tasks
+# ---------------------------------------------------------------------------
+
 # Redis lock keys to prevent concurrent rebuild/retry tasks
 _LOCK_KEY_PREFIX = "kb:embedding_task_lock:"
 _LOCK_TTL = {
-    "rebuild_news": 7200,
     "rebuild_report": 3600,
-    "retry_news": 3600,
     "retry_report": 3600,
 }
 
@@ -54,8 +82,7 @@ def _release_embedding_lock(task_name: str) -> None:
 
 @celery_app.task(bind=True, max_retries=3)
 def embed_analysis_report(self, report_data: Dict[str, Any]):
-    """
-    Generate embeddings for an AI analysis report.
+    """Generate embeddings for an AI analysis report.
 
     Called after an analysis is completed to make it searchable via RAG.
 
@@ -67,8 +94,6 @@ def embed_analysis_report(self, report_data: Dict[str, Any]):
             "content": str,
         }
     """
-    from worker.task_helpers import run_async_task
-
     try:
         return run_async_task(
             _embed_document_async,
@@ -83,42 +108,14 @@ def embed_analysis_report(self, report_data: Dict[str, Any]):
 
 
 @celery_app.task(bind=True, max_retries=3)
-def embed_news_article(self, news_id: str, content: str, symbol: str = None):
-    """
-    Generate embeddings for a news article.
-
-    Args:
-        news_id: UUID of the news article
-        content: Text content to embed (title + summary)
-        symbol: Associated stock symbol
-    """
-    from worker.task_helpers import run_async_task
-
-    try:
-        return run_async_task(
-            _embed_document_async,
-            source_type="news",
-            source_id=news_id,
-            content=content,
-            symbol=symbol,
-        )
-    except Exception as e:
-        logger.exception("Embedding task failed for news %s: %s", news_id, e)
-        raise self.retry(exc=e, countdown=30 * (2 ** self.request.retries))
-
-
-@celery_app.task(bind=True, max_retries=3)
 def embed_report(self, report_id: str, content: str, symbol: str = None):
-    """
-    Generate embeddings for a generated report.
+    """Generate embeddings for a generated report.
 
     Args:
         report_id: UUID of the report
         content: Full report text
         symbol: Associated stock symbol (if report is symbol-specific)
     """
-    from worker.task_helpers import run_async_task
-
     try:
         return run_async_task(
             _embed_document_async,
@@ -133,70 +130,13 @@ def embed_report(self, report_id: str, content: str, symbol: str = None):
 
 
 # ---------------------------------------------------------------------------
-# Retry & rebuild tasks
+# Retry & rebuild tasks (report only; news managed by NewsForge)
 # ---------------------------------------------------------------------------
 
 
 @celery_app.task(bind=True, max_retries=1, time_limit=3600, soft_time_limit=3500)
-def retry_failed_news_embeddings(self):
-    """
-    Retry embedding for all news articles whose content_status is 'embedding_failed'.
-
-    For each failed article, constructs embed text preferring detailed_summary
-    (with title prefix), falling back to title + summary, then dispatches an
-    individual embed_news_article task.
-
-    Returns:
-        dict with "dispatched" count.
-    """
-    if not _acquire_embedding_lock("retry_news"):
-        logger.info("[RetryFailedNews] Already running, skipping")
-        return {"skipped": True, "reason": "already_running"}
-
-    from worker.task_helpers import run_async_task
-
-    async def _retry():
-        from sqlalchemy import text
-        async with get_task_session() as db:
-            rows = await db.execute(text(
-                "SELECT id, symbol, title, summary, detailed_summary "
-                "FROM news WHERE content_status = 'embedding_failed'"
-            ))
-            articles = rows.fetchall()
-
-        dispatched = 0
-        for row in articles:
-            news_id = str(row.id)
-            # Prefer detailed_summary, fallback to title + summary
-            parts = []
-            if row.title:
-                parts.append(row.title)
-            if row.detailed_summary:
-                parts.append(row.detailed_summary)
-            elif row.summary:
-                parts.append(row.summary)
-            content = "\n\n".join(parts)
-            if not content.strip():
-                continue
-            embed_news_article.delay(news_id, content, row.symbol)
-            dispatched += 1
-
-        logger.info("嵌入重试：news 派发%d个任务", dispatched)
-        return {"dispatched": dispatched}
-
-    try:
-        return run_async_task(_retry)
-    except Exception as e:
-        logger.exception("retry_failed_news_embeddings failed: %s", e)
-        raise self.retry(exc=e, countdown=60)
-    finally:
-        _release_embedding_lock("retry_news")
-
-
-@celery_app.task(bind=True, max_retries=1, time_limit=3600, soft_time_limit=3500)
 def retry_failed_report_embeddings(self):
-    """
-    Retry embedding for completed reports that are missing from document_embeddings.
+    """Retry embedding for completed reports missing from document_embeddings.
 
     Queries reports with status='completed' that have no corresponding entry in
     document_embeddings, extracts text from the JSONB content field, and dispatches
@@ -208,8 +148,6 @@ def retry_failed_report_embeddings(self):
     if not _acquire_embedding_lock("retry_report"):
         logger.info("[RetryFailedReports] Already running, skipping")
         return {"skipped": True, "reason": "already_running"}
-
-    from worker.task_helpers import run_async_task
 
     async def _retry():
         import json
@@ -233,7 +171,6 @@ def retry_failed_report_embeddings(self):
                 content_data = row.content
                 if isinstance(content_data, str):
                     content_data = json.loads(content_data)
-                # Extract text from the content dict
                 text_parts = [row.title] if row.title else []
                 if isinstance(content_data, dict):
                     for key, val in content_data.items():
@@ -264,74 +201,9 @@ def retry_failed_report_embeddings(self):
         _release_embedding_lock("retry_report")
 
 
-@celery_app.task(bind=True, max_retries=1, time_limit=7200, soft_time_limit=7100)
-def rebuild_news_embeddings(self):
-    """
-    Delete all news embeddings and re-embed all news with useful content.
-
-    Steps:
-    1. DELETE all document_embeddings where source_type='news'
-    2. SELECT all news with content_status IN ('fetched', 'embedded', 'embedding_failed')
-    3. For each, construct content and dispatch embed_news_article task
-
-    Returns:
-        dict with "deleted" and "dispatched" counts.
-    """
-    if not _acquire_embedding_lock("rebuild_news"):
-        logger.info("[RebuildNewsEmbeddings] Already running, skipping")
-        return {"skipped": True, "reason": "already_running"}
-
-    from worker.task_helpers import run_async_task
-
-    async def _rebuild():
-        from sqlalchemy import text
-        async with get_task_session() as db:
-            result = await db.execute(text(
-                "DELETE FROM document_embeddings WHERE source_type = 'news'"
-            ))
-            deleted = result.rowcount
-            await db.commit()
-            logger.info("嵌入重建：news 删除%d条", deleted)
-
-        async with get_task_session() as db:
-            rows = await db.execute(text(
-                "SELECT id, symbol, title, summary, detailed_summary "
-                "FROM news WHERE content_status IN ('fetched', 'embedded', 'embedding_failed')"
-            ))
-            articles = rows.fetchall()
-
-        dispatched = 0
-        for row in articles:
-            news_id = str(row.id)
-            parts = []
-            if row.title:
-                parts.append(row.title)
-            if row.detailed_summary:
-                parts.append(row.detailed_summary)
-            elif row.summary:
-                parts.append(row.summary)
-            content = "\n\n".join(parts)
-            if not content.strip():
-                continue
-            embed_news_article.delay(news_id, content, row.symbol)
-            dispatched += 1
-
-        logger.info("嵌入重建：news 派发%d个任务", dispatched)
-        return {"deleted": deleted, "dispatched": dispatched}
-
-    try:
-        return run_async_task(_rebuild)
-    except Exception as e:
-        logger.exception("rebuild_news_embeddings failed: %s", e)
-        raise self.retry(exc=e, countdown=60)
-    finally:
-        _release_embedding_lock("rebuild_news")
-
-
 @celery_app.task(bind=True, max_retries=1, time_limit=3600, soft_time_limit=3500)
 def rebuild_report_embeddings(self):
-    """
-    Delete all report embeddings and re-embed all completed reports.
+    """Delete all report embeddings and re-embed all completed reports.
 
     Steps:
     1. DELETE all document_embeddings where source_type='report'
@@ -344,8 +216,6 @@ def rebuild_report_embeddings(self):
     if not _acquire_embedding_lock("rebuild_report"):
         logger.info("[RebuildReportEmbeddings] Already running, skipping")
         return {"skipped": True, "reason": "already_running"}
-
-    from worker.task_helpers import run_async_task
 
     async def _rebuild():
         import json
@@ -413,8 +283,7 @@ async def _embed_document_async(
     content: str,
     symbol: str = None,
 ) -> Dict[str, Any]:
-    """
-    Async implementation: chunk text, generate embeddings, store in DB.
+    """Async implementation: chunk text, generate embeddings, store in DB.
 
     Steps:
     1. Validate content is non-empty
@@ -460,7 +329,7 @@ async def _embed_document_async(
         api_key=embed_config.api_key, base_url=embed_config.base_url,
     )
 
-    # P0-4: Check that at least one embedding succeeded before replacing old data
+    # Check that at least one embedding succeeded before replacing old data
     valid_pairs = [
         (i, chunk, emb)
         for i, (chunk, emb) in enumerate(zip(chunks, embeddings))
@@ -480,7 +349,7 @@ async def _embed_document_async(
             "chunks_total": len(chunks),
         }
 
-    # P0-3: Use PostgreSQL advisory lock to serialise concurrent re-embed
+    # Use PostgreSQL advisory lock to serialise concurrent re-embed
     # of the same (source_type, source_id) pair.
     lock_key = int.from_bytes(
         hashlib.md5(f"{source_type}:{source_id}".encode()).digest()[:8],
@@ -548,24 +417,6 @@ async def _embed_document_async(
             stored_count,
             len(chunks),
         )
-
-    # If this is a news embedding (possibly retried), update content_status
-    if source_type == "news" and stored_count > 0:
-        try:
-            async with get_task_session() as status_db:
-                await status_db.execute(
-                    text(
-                        "UPDATE news SET content_status = 'embedded' "
-                        "WHERE id = :nid AND content_status = 'embedding_failed'"
-                    ),
-                    {"nid": source_id},
-                )
-                await status_db.commit()
-        except Exception as status_err:
-            logger.warning(
-                "Failed to update content_status for %s: %s",
-                source_id, status_err,
-            )
 
     return {
         "status": "success",

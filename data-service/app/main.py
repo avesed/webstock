@@ -3,7 +3,6 @@
 This microservice provides a unified, stateless API for all external market data
 sources used by WebStock:
 - Stock quotes, history, info, financials (yfinance, akshare, tiingo, tushare)
-- News articles (finnhub, akshare)
 - Content extraction (trafilatura, playwright, tavily, polygon)
 - Market indices, forex rates, HSI constituents
 - Stock lists and profiles for knowledge base
@@ -100,7 +99,6 @@ from app.api.stock import router as stock_router  # noqa: E402
 from app.api.market import router as market_router  # noqa: E402
 from app.api.analysis import router as analysis_router  # noqa: E402
 from app.api.reference import router as reference_router  # noqa: E402
-from app.api.news import router as news_router  # noqa: E402
 from app.api.content import router as content_router  # noqa: E402
 from app.api.internal import router as internal_router  # noqa: E402
 from app.api.collection import router as collection_router  # noqa: E402
@@ -110,7 +108,6 @@ app.include_router(stock_router)
 app.include_router(market_router)
 app.include_router(analysis_router)
 app.include_router(reference_router)
-app.include_router(news_router)
 app.include_router(content_router)
 app.include_router(internal_router)
 app.include_router(collection_router)

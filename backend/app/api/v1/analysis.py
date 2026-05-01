@@ -311,7 +311,7 @@ async def get_full_analysis(
 
         # Dispatch embedding for RAG search (best-effort)
         try:
-            from worker.tasks.embedding_tasks import embed_analysis_report
+            from worker.tasks.maintenance_tasks import embed_analysis_report
             for agent_type in ["fundamental", "technical", "sentiment", "news"]:
                 agent_result = result.get(agent_type)
                 if agent_result and agent_result.success:

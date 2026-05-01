@@ -57,22 +57,18 @@ class GetNewsSkill(BaseSkill):
         if not isinstance(limit, int) or limit < 1:
             limit = 10
 
-        from app.services.news_service import get_news_service
+        from app.services.newsforge_proxy import NewsForgeProxy
 
-        news_service = await get_news_service()
-        articles = await news_service.get_news_by_symbol(symbol)
-
-        if not articles:
-            return SkillResult(
-                success=True,
-                data=[],
-                metadata={"symbol": symbol, "article_count": 0},
-            )
-
-        limited = articles[:limit]
+        try:
+            proxy = NewsForgeProxy()
+            articles = await proxy.get_symbol_news(symbol, limit=limit)
+            data = [a.model_dump() if hasattr(a, "model_dump") else a for a in articles]
+        except Exception as e:
+            logger.warning("NewsForge fetch failed for %s: %s", symbol, e)
+            data = []
 
         return SkillResult(
             success=True,
-            data=limited,
-            metadata={"symbol": symbol, "article_count": len(limited)},
+            data=data,
+            metadata={"symbol": symbol, "article_count": len(data)},
         )

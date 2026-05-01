@@ -546,24 +546,25 @@ class ReportGenerator:
     async def _gather_news_summary(
         self, symbols: List[str]
     ) -> List[NewsSummary]:
-        """Gather news summary for all symbols."""
-        from app.services.news_service import get_news_service
+        """Gather news summary for all symbols via NewsForge."""
+        from app.services.newsforge_proxy import NewsForgeProxy
 
         try:
-            news_service = await get_news_service()
+            proxy = NewsForgeProxy()
             news_summaries = []
 
             for symbol in symbols:
                 try:
-                    news = await news_service.get_news_by_symbol(symbol)
+                    articles = await proxy.get_symbol_news(symbol, limit=10)
+                    news = [a.model_dump() if hasattr(a, "model_dump") else a for a in articles]
 
                     positive_count = 0
                     negative_count = 0
                     neutral_count = 0
                     headlines = []
 
-                    for article in news[:10]:  # Limit to recent 10 articles
-                        headlines.append(article.get("title", "")[:100])
+                    for article in news[:10]:
+                        headlines.append((article.get("title") or "")[:100])
 
                         sentiment = article.get("sentiment_score")
                         if sentiment is not None:

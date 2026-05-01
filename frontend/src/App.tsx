@@ -31,13 +31,9 @@ const AdminLayout = lazy(() => import('@/pages/admin/AdminLayout'))
 const AdminUsersPage = lazy(() => import('@/pages/admin/UserManagementPage'))
 const SettProvidersPage = lazy(() => import('@/pages/admin/settings/ProvidersPage'))
 const SettModelsPage = lazy(() => import('@/pages/admin/settings/ModelsPage'))
-const SettNewsPage = lazy(() => import('@/pages/admin/settings/NewsPage'))
 const SettIntegrationsPage = lazy(() => import('@/pages/admin/settings/IntegrationsPage'))
 const SettFeaturesPage = lazy(() => import('@/pages/admin/settings/FeaturesPage'))
 const MonitorOverviewPage = lazy(() => import('@/pages/admin/monitor/OverviewPage'))
-const MonitorFilterPage = lazy(() => import('@/pages/admin/monitor/FilterPage'))
-const MonitorPipelinePage = lazy(() => import('@/pages/admin/monitor/PipelinePage'))
-const AdminRssPage = lazy(() => import('@/pages/admin/RssFeedsPage'))
 const AdminCostsPage = lazy(() => import('@/pages/admin/CostTrackingPage'))
 const AdminKnowledgePage = lazy(() => import('@/pages/admin/KnowledgeBasePage'))
 const PredStatusPage = lazy(() => import('@/pages/admin/predictions/StatusPage'))
@@ -195,16 +191,9 @@ function App() {
           <Route path="settings" element={<Navigate to="providers" replace />} />
           <Route path="settings/providers" element={<SettProvidersPage />} />
           <Route path="settings/models" element={<SettModelsPage />} />
-          <Route path="settings/news" element={<SettNewsPage />} />
           <Route path="settings/integrations" element={<SettIntegrationsPage />} />
           <Route path="features" element={<SettFeaturesPage />} />
-          <Route path="monitor" element={<Navigate to="overview" replace />} />
-          <Route path="monitor/overview" element={<MonitorOverviewPage />} />
-          <Route path="monitor/filter" element={<MonitorFilterPage />} />
-          <Route path="monitor/pipeline" element={<MonitorPipelinePage />} />
-          <Route path="filter" element={<Navigate to="/admin/monitor/filter" replace />} />
-          <Route path="pipeline" element={<Navigate to="/admin/monitor/pipeline" replace />} />
-          <Route path="rss" element={<AdminRssPage />} />
+          <Route path="monitor" element={<MonitorOverviewPage />} />
           <Route path="costs" element={<AdminCostsPage />} />
           <Route path="knowledge" element={<AdminKnowledgePage />} />
           <Route path="predictions" element={<Navigate to="status" replace />} />

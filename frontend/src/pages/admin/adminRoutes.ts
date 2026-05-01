@@ -2,9 +2,6 @@ import {
   Users,
   Settings,
   Activity,
-  Filter,
-  Rss,
-  GitBranch,
   DollarSign,
   Database,
   TrendingUp,
@@ -16,9 +13,7 @@ import {
   Play,
   Server,
   Cpu,
-  Newspaper,
   ToggleLeft,
-  Eye,
   Plug,
   type LucideIcon,
 } from 'lucide-react'
@@ -53,27 +48,11 @@ export const adminRouteGroups: AdminRouteGroup[] = [
         children: [
           { path: 'providers', icon: Server, labelKey: 'tabs.settProviders' },
           { path: 'models', icon: Cpu, labelKey: 'tabs.settModels' },
-          { path: 'news', icon: Newspaper, labelKey: 'tabs.settNews' },
           { path: 'integrations', icon: Plug, labelKey: 'tabs.settIntegrations' },
         ],
       },
       { path: 'features', icon: ToggleLeft, labelKey: 'tabs.features' },
-      {
-        path: 'monitor',
-        icon: Activity,
-        labelKey: 'tabs.monitor',
-        children: [
-          { path: 'overview', icon: Eye, labelKey: 'tabs.monOverview' },
-          { path: 'filter', icon: Filter, labelKey: 'tabs.monFilter' },
-          { path: 'pipeline', icon: GitBranch, labelKey: 'tabs.monPipeline' },
-        ],
-      },
-    ],
-  },
-  {
-    groupKey: 'sidebar.content',
-    items: [
-      { path: 'rss', icon: Rss, labelKey: 'tabs.rss' },
+      { path: 'monitor', icon: Activity, labelKey: 'tabs.monitor' },
     ],
   },
   {

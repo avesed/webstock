@@ -1,17 +1,16 @@
 """News sentiment feature aggregation.
 
-Queries the news table (via asyncpg) to compute per-symbol daily
-sentiment features for the ML prediction pipeline. Features include
-rolling averages, article counts, and sentiment volatility.
+Fetches per-symbol daily sentiment aggregates from NewsForge's internal
+API and computes rolling features for the ML prediction pipeline.
 
 Results cached in Redis for 24 hours.
 """
 
 import hashlib
 import logging
-from datetime import date
 from typing import Optional
 
+import httpx
 import msgpack
 import pandas as pd
 import redis.asyncio as aioredis
@@ -37,29 +36,6 @@ SENTIMENT_FEATURE_COLUMNS = [
     "has_news_7d",
     "has_news_30d",
 ]
-
-# Query raw daily aggregates from news table.
-# We fetch 60 extra days before start_date to have enough data
-# for the 30-day rolling window.
-_RAW_AGGREGATE_SQL = """
-    SELECT
-        symbol,
-        DATE(published_at) as date,
-        AVG(sentiment_score) as sentiment_avg,
-        COUNT(*) as article_count,
-        AVG(CASE WHEN sentiment_tag = 'bullish' THEN 1.0
-                 WHEN sentiment_tag = 'bearish' THEN -1.0
-                 ELSE 0.0 END) as bullish_ratio,
-        AVG(content_score) as content_score_avg
-    FROM news
-    WHERE filter_status IN ('keep', 'useful')
-      AND symbol IS NOT NULL
-      AND symbol = ANY($1::text[])
-      AND published_at >= $2::date - INTERVAL '60 days'
-      AND published_at < $3::date + INTERVAL '1 day'
-    GROUP BY symbol, DATE(published_at)
-    ORDER BY symbol, date
-"""
 
 
 def _build_cache_key(symbols: list[str], start_date: str, end_date: str) -> str:
@@ -153,42 +129,68 @@ class SentimentService:
         start_date: str,
         end_date: str,
     ) -> pd.DataFrame:
-        """Query news table for daily sentiment aggregates via asyncpg."""
-        from app.core.settings_cache import settings_cache
+        """Fetch daily sentiment aggregates from NewsForge API."""
+        settings = get_settings()
+        newsforge_url = (getattr(settings, "NEWSFORGE_URL", "") or "").rstrip("/")
+        newsforge_key = getattr(settings, "NEWSFORGE_API_KEY", "") or ""
 
-        pool = settings_cache.pool
-        if not pool:
-            logger.warning("DB pool not available for sentiment query")
+        if not newsforge_url or not newsforge_key:
+            logger.warning("NewsForge URL/API key not configured for sentiment query")
             return pd.DataFrame()
 
+        # Request 60 extra days for rolling window computation
+        from datetime import date as date_type, timedelta
         try:
-            start = date.fromisoformat(start_date)
-            end = date.fromisoformat(end_date)
+            start = date_type.fromisoformat(start_date)
+            end = date_type.fromisoformat(end_date)
         except ValueError as e:
-            logger.error(
-                "Invalid date format for sentiment query: "
-                "start_date=%r, end_date=%r: %s",
-                start_date, end_date, e,
-            )
+            logger.error("Invalid date format: start=%r, end=%r: %s", start_date, end_date, e)
             return pd.DataFrame()
 
+        lookback_start = (start - timedelta(days=60)).isoformat()
+
         try:
-            async with pool.acquire(timeout=10) as conn:
-                rows = await conn.fetch(
-                    _RAW_AGGREGATE_SQL, symbols, start, end
+            async with httpx.AsyncClient(timeout=30) as client:
+                resp = await client.get(
+                    f"{newsforge_url}/api/internal/sentiment/batch",
+                    headers={"X-API-Key": newsforge_key},
+                    params={
+                        "symbols": ",".join(symbols),
+                        "start_date": lookback_start,
+                        "end_date": end_date,
+                    },
                 )
+                resp.raise_for_status()
+                data = resp.json()
         except Exception as e:
-            logger.error("Failed to query news sentiment aggregates: %s", e)
+            logger.error("NewsForge sentiment batch request failed: %s", e)
             return pd.DataFrame()
+
+        rows = []
+        for symbol_key, symbol_data in data.items():
+            timeline = symbol_data.get("timeline") or []
+            for entry in timeline:
+                total = entry.get("total", 0)
+                if total == 0:
+                    continue
+                bullish = entry.get("bullish", 0)
+                bearish = entry.get("bearish", 0)
+                rows.append({
+                    "symbol": symbol_key,
+                    "date": entry.get("date"),
+                    "sentiment_avg": entry.get("avg_score", 0.0),
+                    "article_count": float(total),
+                    "bullish_ratio": (bullish - bearish) / total if total > 0 else 0.0,
+                    "content_score_avg": entry.get("avg_value_score", 0.0),
+                })
 
         if not rows:
-            logger.debug("No news data found for %d symbols", len(symbols))
+            logger.debug("No sentiment data from NewsForge for %d symbols", len(symbols))
             return pd.DataFrame()
 
-        df = pd.DataFrame([dict(r) for r in rows])
+        df = pd.DataFrame(rows)
         df["date"] = pd.to_datetime(df["date"])
 
-        # 将数值列转换为 float (asyncpg 可能返回 Decimal)
         for col in ("sentiment_avg", "article_count", "bullish_ratio", "content_score_avg"):
             if col in df.columns:
                 df[col] = pd.to_numeric(df[col], errors="coerce")

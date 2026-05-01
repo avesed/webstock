@@ -20,7 +20,6 @@ from app.models.market import (
     IndexBar,
     IndexData,
 )
-from app.models.news import NewsArticle
 from app.models.reference import (
     StockListItem,
     StockListResult,
@@ -58,8 +57,6 @@ __all__ = [
     "InstitutionalData",
     "FundHoldings",
     "SectorIndustry",
-    # news
-    "NewsArticle",
     # content
     "ContentResult",
     # reference

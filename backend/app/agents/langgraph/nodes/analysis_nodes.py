@@ -37,7 +37,6 @@ from app.schemas.agent_analysis import (
     FundamentalMetrics,
     KeyInsight,
     NewsAnalysisResult,
-    NewsItem,
     SentimentAnalysisResult,
     SentimentLevel,
     SentimentSource,
@@ -50,10 +49,6 @@ from app.schemas.agent_analysis import (
 from app.services.token_service import count_tokens
 from app.skills.base import SkillResult
 from sqlalchemy import select
-from app.db.task_session import get_task_session
-from app.models.news import News
-from app.services.rag import get_index_service, SearchResult
-from app.services.rag.embedding import get_embedding_config_from_db
 
 logger = logging.getLogger(__name__)
 
@@ -381,14 +376,6 @@ async def _execute_agent_skills(
                             results[n] = SkillResult(success=False, error=str(r))
                         else:
                             results[n] = r
-
-    elif agent_type == "news":
-        news_result = results.get("get_news")
-        if news_result and news_result.success and news_result.data:
-            scoring_skill = registry.get("score_news_articles")
-            if scoring_skill:
-                scored = await scoring_skill.safe_execute(articles=news_result.data)
-                results["score_news_articles"] = scored
 
     logger.debug(
         "Agent %s skills completed: %d/%d succeeded",
@@ -1125,137 +1112,13 @@ Please analyze the market sentiment for this stock and output results in JSON fo
 # =============================================================================
 
 
-async def _search_news_knowledge(
-    symbol: str,
-    market: str,
-    limit: int = 8,
-) -> List[Dict[str, Any]]:
-    """Search RAG knowledge base for news related to the symbol.
-
-    Uses pgvector + trigram hybrid search with freshness decay to find
-    semantically relevant news from the pipeline DB, then enriches
-    results with structured metadata from the news table.
-
-    Returns list of enriched article dicts, or empty list on failure.
-    """
-    start_time = time.time()
-    try:
-        async with get_task_session() as db:
-            # Get embedding model config (full provider resolution)
-            try:
-                embed_config = await get_embedding_config_from_db(db)
-            except ValueError as e:
-                logger.warning(f"RAG news search skipped - no embedding model configured: {e}")
-                return []
-
-            index_service = get_index_service()
-
-            # Build search query combining symbol with investment context
-            query_text = f"{symbol} recent news investment market impact"
-
-            # Generate query embedding
-            query_embedding = await index_service.generate_embedding(
-                query_text,
-                model=embed_config.model,
-                api_key=embed_config.api_key,
-                base_url=embed_config.base_url,
-            )
-            if not query_embedding:
-                logger.warning(f"RAG news search: failed to generate embedding for {symbol}")
-                return []
-
-            # Hybrid search with source_type="news" filter
-            rag_results: List[SearchResult] = await index_service.search(
-                db=db,
-                query_embedding=query_embedding,
-                query_text=query_text,
-                symbol=symbol,
-                source_type="news",
-                top_k=limit,
-                embedding_model=embed_config.model,
-            )
-
-            if not rag_results:
-                logger.info(f"RAG news search: no results for {symbol}")
-                return []
-
-            # Collect unique source_ids for metadata lookup
-            source_ids = list({r.source_id for r in rag_results})
-
-            # Batch query News table for structured metadata
-            import uuid as uuid_mod
-            valid_uuids = []
-            for sid in source_ids:
-                try:
-                    valid_uuids.append(uuid_mod.UUID(sid))
-                except (ValueError, AttributeError):
-                    logger.debug(f"RAG news search: skipping non-UUID source_id: {sid}")
-                    continue
-
-            news_metadata = {}
-            if valid_uuids:
-                news_query = select(News).where(News.id.in_(valid_uuids))
-                result = await db.execute(news_query)
-                news_rows = result.scalars().all()
-                for row in news_rows:
-                    news_metadata[str(row.id)] = row
-
-            # Merge RAG results with news metadata
-            enriched = []
-            for r in rag_results:
-                article = {
-                    "chunk_text": r.chunk_text,
-                    "relevance_score": round(r.score, 3),
-                    "source_id": r.source_id,
-                }
-                news_row = news_metadata.get(r.source_id)
-                if news_row:
-                    article["title"] = news_row.title
-                    article["source"] = news_row.source
-                    article["published_at"] = (
-                        news_row.published_at.isoformat() if news_row.published_at else None
-                    )
-                    article["sentiment_tag"] = news_row.sentiment_tag
-                    article["content_score"] = news_row.content_score
-                    article["investment_summary"] = news_row.investment_summary
-                    article["detailed_summary"] = news_row.detailed_summary
-                    article["industry_tags"] = news_row.industry_tags or []
-                    article["event_tags"] = news_row.event_tags or []
-                    article["symbol"] = news_row.symbol
-                else:
-                    # RAG result without news metadata - use chunk text as fallback
-                    article["title"] = r.chunk_text[:80] if r.chunk_text else "Unknown"
-                    article["source"] = "knowledge_base"
-
-                enriched.append(article)
-
-            elapsed_ms = int((time.time() - start_time) * 1000)
-            logger.info(
-                f"RAG news search for {symbol}: {len(rag_results)} chunks, "
-                f"{len(news_metadata)} metadata matches, {len(enriched)} enriched "
-                f"in {elapsed_ms}ms"
-            )
-            return enriched
-
-    except Exception as e:
-        elapsed_ms = int((time.time() - start_time) * 1000)
-        logger.warning(f"RAG news search failed for {symbol} in {elapsed_ms}ms: {e}", exc_info=True)
-        return []
-
-
 def _build_news_data_prompt(
     symbol: str,
     market: str,
     skill_results: Dict[str, SkillResult],
     language: str,
-    rag_articles: Optional[List[Dict[str, Any]]] = None,
 ) -> str:
-    """Build data section for news analysis prompt.
-
-    If rag_articles is provided (from pipeline DB via RAG search),
-    uses the enriched data with pre-analyzed metadata.
-    Otherwise falls back to raw news from external API skills.
-    """
+    """Build data section for news analysis prompt using NewsForge articles."""
     sections = []
 
     # Stock context (always include if available)
@@ -1273,81 +1136,11 @@ def _build_news_data_prompt(
 - Change: {ctx.get('change_percent', 'N/A')}%
 """)
 
-    # Use RAG articles if available (enriched pipeline data)
-    if rag_articles:
-        if language == "zh":
-            sections.append("## 新闻文章（来自分析管线知识库）")
-        else:
-            sections.append("## News Articles (from analysis pipeline knowledge base)")
-
-        for i, article in enumerate(rag_articles):
-            title = article.get("title", "No title")
-            source = article.get("source", "Unknown")
-            published = article.get("published_at", "")
-            sentiment = article.get("sentiment_tag", "")
-            score = article.get("content_score", "")
-            investment_summary = article.get("investment_summary", "")
-            detailed_summary = article.get("detailed_summary", "")
-            chunk_text = article.get("chunk_text", "")
-            industry_tags = ", ".join(article.get("industry_tags", []))
-            event_tags = ", ".join(article.get("event_tags", []))
-            relevance = article.get("relevance_score", 0)
-
-            if language == "zh":
-                entry = f"### {i+1}. {title} (相关度: {relevance:.2f})\n"
-                entry += f"- 来源: {source}"
-                if published:
-                    entry += f" | 时间: {published}"
-                if sentiment:
-                    entry += f" | 情绪: {sentiment}"
-                if score:
-                    entry += f" | 评分: {score}/300"
-                entry += "\n"
-                if investment_summary:
-                    entry += f"- 投资概况: {investment_summary}\n"
-                if detailed_summary:
-                    entry += f"- 详细摘要: {detailed_summary[:500]}\n"
-                elif chunk_text:
-                    entry += f"- 检索内容: {chunk_text[:300]}\n"
-                if industry_tags:
-                    entry += f"- 行业标签: {industry_tags}\n"
-                if event_tags:
-                    entry += f"- 事件标签: {event_tags}\n"
-            else:
-                entry = f"### {i+1}. {title} (relevance: {relevance:.2f})\n"
-                entry += f"- Source: {source}"
-                if published:
-                    entry += f" | Published: {published}"
-                if sentiment:
-                    entry += f" | Sentiment: {sentiment}"
-                if score:
-                    entry += f" | Score: {score}/300"
-                entry += "\n"
-                if investment_summary:
-                    entry += f"- Investment Summary: {investment_summary}\n"
-                if detailed_summary:
-                    entry += f"- Detailed Summary: {detailed_summary[:500]}\n"
-                elif chunk_text:
-                    entry += f"- Retrieved Content: {chunk_text[:300]}\n"
-                if industry_tags:
-                    entry += f"- Industry Tags: {industry_tags}\n"
-                if event_tags:
-                    entry += f"- Event Tags: {event_tags}\n"
-
-            sections.append(entry)
-
-        return "\n".join(sections)
-
-    # Fallback: use raw news from external API skills
-    scored_result = skill_results.get("score_news_articles") if skill_results else None
-    if scored_result and scored_result.success and scored_result.data:
-        articles = scored_result.data
+    news_result = skill_results.get("get_news") if skill_results else None
+    if news_result and news_result.success and news_result.data:
+        articles = news_result.data
     else:
-        news_result = skill_results.get("get_news") if skill_results else None
-        if news_result and news_result.success and news_result.data:
-            articles = news_result.data
-        else:
-            articles = []
+        articles = []
 
     if not articles:
         if language == "zh":
@@ -1386,11 +1179,7 @@ async def news_node(state: AnalysisState) -> Dict[str, Any]:
     News analysis node.
 
     Analyzes recent news articles and their potential impact on the stock.
-
-    Data sourcing strategy:
-    1. First, search RAG knowledge base for pipeline-analyzed news
-    2. If RAG returns >= 3 results, use enriched pipeline data
-    3. Otherwise, fallback to external API via skills
+    Fetches news from NewsForge via the get_news skill.
     """
     start_time = time.time()
     symbol = state["symbol"]
@@ -1414,51 +1203,11 @@ async def news_node(state: AnalysisState) -> Dict[str, Any]:
 Analyze the given news articles and evaluate their potential impact on the stock price.
 Output results in JSON format."""
 
-        # 2. Try RAG knowledge base first
-        rag_articles = await _search_news_knowledge(symbol, market)
-        data_source = "rag" if len(rag_articles) >= 3 else "api"
-
-        if data_source == "rag":
-            logger.info(
-                f"News agent using RAG data for {symbol}: {len(rag_articles)} articles"
-            )
-            # Build prompt with RAG data; pass empty skill_results for quote context
-            # We still want get_stock_quote for price context
-            skill_results = {}
-            sd = state.get("shared_data")
-            quote_from_cache = False
-            if sd:
-                quote_cache_key = _make_cache_key("get_stock_quote", {"symbol": symbol})
-                cached_quote = sd.get(quote_cache_key)
-                if cached_quote is not None:
-                    skill_results["get_stock_quote"] = cached_quote
-                    quote_from_cache = True
-
-            if not quote_from_cache:
-                try:
-                    from app.skills.registry import get_skill_registry
-                    registry = get_skill_registry()
-                    quote_skill = registry.get("get_stock_quote")
-                    if quote_skill:
-                        quote_result = await quote_skill.safe_execute(timeout=10.0, symbol=symbol)
-                        skill_results["get_stock_quote"] = quote_result
-                except Exception as e:
-                    logger.debug(f"Quote fetch for news context failed: {e}")
-
-            data_section = _build_news_data_prompt(
-                symbol, market, skill_results, language, rag_articles=rag_articles
-            )
-        else:
-            if rag_articles:
-                logger.info(
-                    f"RAG returned only {len(rag_articles)} articles for {symbol}, "
-                    f"falling back to external API"
-                )
-            # 3. Fallback to external API via skills
-            skill_results = await _execute_agent_skills("news", symbol, market, shared_data=state.get("shared_data"))
-            data_section = _build_news_data_prompt(
-                symbol, market, skill_results, language
-            )
+        # 2. Fetch news from NewsForge via skills
+        skill_results = await _execute_agent_skills("news", symbol, market, shared_data=state.get("shared_data"))
+        data_section = _build_news_data_prompt(
+            symbol, market, skill_results, language
+        )
 
         # 4. Build prompt
         if language == "zh":

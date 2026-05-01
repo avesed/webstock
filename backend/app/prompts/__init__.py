@@ -26,10 +26,6 @@ from app.prompts.chat_prompt import (
     CHAT_SYSTEM_PROMPT_EN,
     CHAT_SYSTEM_PROMPT_ZH,
 )
-from app.prompts.news_filter_prompt import (
-    NEWS_FILTER_SYSTEM_PROMPT,
-    NEWS_FILTER_USER_PROMPT,
-)
 from app.prompts.loader import (
     load_instructions,
     load_instructions_cached,
@@ -61,9 +57,6 @@ __all__ = [
     "build_chat_system_prompt",
     "CHAT_SYSTEM_PROMPT_EN",
     "CHAT_SYSTEM_PROMPT_ZH",
-    # News filter prompts
-    "NEWS_FILTER_SYSTEM_PROMPT",
-    "NEWS_FILTER_USER_PROMPT",
     # Prompt loader utilities
     "load_instructions",
     "load_instructions_cached",

@@ -60,12 +60,7 @@ from app.schemas.watchlist import (
 )
 from app.schemas.news import (
     NewsResponse,
-    NewsCreate,
     NewsFeedResponse,
-    NewsAlertCreate,
-    NewsAlertUpdate,
-    NewsAlertResponse,
-    NewsAlertListResponse,
     NewsAnalysisResponse,
     TrendingNewsResponse,
 )
@@ -168,12 +163,7 @@ __all__ = [
     "SynthesisResult",
     # News schemas
     "NewsResponse",
-    "NewsCreate",
     "NewsFeedResponse",
-    "NewsAlertCreate",
-    "NewsAlertUpdate",
-    "NewsAlertResponse",
-    "NewsAlertListResponse",
     "NewsAnalysisResponse",
     "TrendingNewsResponse",
     # Portfolio schemas

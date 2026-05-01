@@ -182,7 +182,7 @@ async def _resolve_tickers(entities: List[Dict[str, Any]]) -> List[Dict[str, Any
         return []
 
     try:
-        from app.services.news_layer3_analysis_service import resolve_entity_tickers
+        from app.utils.entity_resolution import resolve_entity_tickers
         from app.services.stock_list_service import get_stock_list_service
 
         stock_list_svc = await get_stock_list_service()

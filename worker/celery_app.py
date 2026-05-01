@@ -21,16 +21,11 @@ celery_app = Celery(
     backend=CELERY_RESULT_BACKEND,
     include=[
         "worker.tasks",
-        "worker.tasks.news_monitor",
         "worker.tasks.price_monitor",
         "worker.tasks.report_generator",
         "worker.tasks.key_rotation",
-        "worker.tasks.embedding_tasks",
-        "worker.tasks.full_content_tasks",
-        # stock_list_tasks + daily_bar_tasks removed during StockPulse migration:
-        # both control planes now live in the StockPulse admin UI.
+        "worker.tasks.maintenance_tasks",
         "worker.tasks.backtest_cleanup",
-        "worker.tasks.rss_monitor",
         "worker.tasks.qlib_sync",
         "worker.tasks.stock_profile_tasks",
         "worker.tasks.session_cleanup",
@@ -48,18 +43,8 @@ celery_app.conf.update(
     timezone="UTC",
     enable_utc=True,
 
-    # Task routing
-    # - scraping queue: I/O-bound tasks (HTTP fetching with controlled concurrency)
-    # - default queue: lightweight tasks that must stay responsive
-    # NOTE: process_news_article, analyze_important_news, retry_score_articles
-    # are now dispatched to the standalone asyncio news-consumer via Redis LIST
-    # (see worker/news_queue.py). Celery task definitions are kept for admin
-    # manual trigger / fallback use.
     task_routes={
-        "worker.tasks.full_content_tasks.batch_fetch_content": {"queue": "scraping"},
-        "worker.tasks.full_content_tasks.cleanup_expired_news": {"queue": "default"},
-        "worker.tasks.full_content_tasks.cleanup_pipeline_events": {"queue": "default"},
-        "worker.tasks.full_content_tasks.cleanup_old_usage_records": {"queue": "default"},
+        "worker.tasks.maintenance_tasks.cleanup_old_usage_records": {"queue": "default"},
         "worker.tasks.qlib_sync.sync_qlib_market": {"queue": "default"},
     },
 
@@ -96,10 +81,6 @@ celery_app.conf.update(
             "task": "worker.tasks.cleanup_stuck_discussions",
             "schedule": crontab(minute="*/10"),  # Every 10 minutes
         },
-        "monitor-news": {
-            "task": "worker.tasks.news_monitor.monitor_news",
-            "schedule": crontab(minute="*/15"),  # Every 15 minutes
-        },
         "monitor-prices": {
             "task": "worker.tasks.price_monitor.monitor_prices",
             "schedule": crontab(minute="*"),  # Every minute
@@ -120,14 +101,6 @@ celery_app.conf.update(
             "task": "worker.tasks.report_generator.cleanup_old_reports",
             "schedule": crontab(hour=5, minute=0),  # Daily at 5:00 AM
         },
-        "cleanup-news-content": {
-            "task": "worker.tasks.full_content_tasks.cleanup_expired_news",
-            "schedule": crontab(hour=4, minute=0),  # Daily at 4:00 AM
-        },
-        "cleanup-pipeline-events": {
-            "task": "worker.tasks.full_content_tasks.cleanup_pipeline_events",
-            "schedule": crontab(hour=4, minute=30),  # Daily at 4:30 AM (after news cleanup)
-        },
         # "update-stock-list": Stock list collection is owned by StockPulse
         # APScheduler now. The webstock Celery task and its admin UI
         # trigger were removed during the StockPulse migration.
@@ -136,12 +109,8 @@ celery_app.conf.update(
             "schedule": crontab(hour=5, minute=15),  # Daily at 5:15 AM UTC
         },
         "cleanup-old-usage-records": {
-            "task": "worker.tasks.full_content_tasks.cleanup_old_usage_records",
+            "task": "worker.tasks.maintenance_tasks.cleanup_old_usage_records",
             "schedule": crontab(hour=5, minute=0),  # Daily at 5:00 AM UTC
-        },
-        "monitor-rss-feeds": {
-            "task": "worker.tasks.rss_monitor.monitor_rss_feeds",
-            "schedule": crontab(minute="*/5"),
         },
         # Daily bar collection: ownership moved to StockPulse APScheduler
         # during the StockPulse migration. The thin daily_bar_tasks proxies

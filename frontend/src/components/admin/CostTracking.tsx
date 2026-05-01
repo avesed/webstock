@@ -799,7 +799,7 @@ export default function CostTracking() {
                 ? `${startDate} — ${endDate || t('costs.endDate')}`
                 : summary.periodDays === 1
                   ? t('costs.daysToday')
-                  : `${summary.periodDays} ${t('filter.days')}`}
+                  : `${summary.periodDays} ${t('costs.days')}`}
               icon={<DollarSign className="h-4 w-4 text-muted-foreground" />}
             />
             <StatCard

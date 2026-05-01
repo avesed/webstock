@@ -256,7 +256,7 @@ async def _generate_report_async(report_id: str) -> Dict[str, Any]:
             # Dispatch embedding for RAG search
             if report.status == ReportStatus.COMPLETED.value and report.content:
                 try:
-                    from worker.tasks.embedding_tasks import embed_report
+                    from worker.tasks.maintenance_tasks import embed_report
                     embed_text = _extract_report_text(report.content)
                     if embed_text:
                         embed_report.delay(

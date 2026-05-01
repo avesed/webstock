@@ -11,20 +11,6 @@ from app.services.currency_service import (
     get_supported_currencies,
 )
 from app.services.data_aggregator import DataAggregator, get_data_aggregator
-from app.services.news_layer3_analysis_service import (
-    NewsLayer3AnalysisService,
-    get_news_layer3_analysis_service,
-    DeepFilterResult,
-    get_news_llm_settings,
-)
-from app.services.filter_stats_service import (
-    FilterStatsService,
-    get_filter_stats_service,
-)
-from app.services.news_storage_service import (
-    NewsStorageService,
-    get_news_storage_service,
-)
 from app.services.portfolio_service import PortfolioService
 from app.services.settings_service import (
     LangGraphConfig,
@@ -63,17 +49,6 @@ __all__ = [
     # Data aggregator
     "DataAggregator",
     "get_data_aggregator",
-    # News Layer 3 analysis
-    "NewsLayer3AnalysisService",
-    "get_news_layer3_analysis_service",
-    "DeepFilterResult",
-    "get_news_llm_settings",
-    # Filter stats
-    "FilterStatsService",
-    "get_filter_stats_service",
-    # News storage
-    "NewsStorageService",
-    "get_news_storage_service",
     # Portfolio
     "PortfolioService",
     # Settings
