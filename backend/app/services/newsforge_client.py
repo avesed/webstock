@@ -1,8 +1,6 @@
-"""NewsForge client -- pulls enriched article results from NewsForge.
+"""NewsForge client -- sync watched symbols and fetch sentiment data.
 
-Used by the main WebStock backend to retrieve processed news articles
-that were pushed by the data-service. Supports both polling and
-webhook-triggered pulls.
+Config priority: DB ``integration_settings`` → env vars.
 """
 from __future__ import annotations
 
@@ -25,6 +23,35 @@ class NewsForgeClient:
         settings = get_settings()
         self._base_url = (settings.NEWSFORGE_URL or "").rstrip("/")
         self._api_key = settings.NEWSFORGE_API_KEY or ""
+        self._config_loaded = bool(self._base_url and self._api_key)
+
+    async def _ensure_config(self) -> None:
+        """Load config from DB if env vars are missing."""
+        if self._config_loaded:
+            return
+        try:
+            from sqlalchemy import text as sa_text
+            from app.db.task_session import get_task_session
+
+            async with get_task_session() as db:
+                result = await db.execute(
+                    sa_text("SELECT value FROM integration_settings WHERE key = :key"),
+                    {"key": "integration.newsforge.url"},
+                )
+                row = result.first()
+                if row and row[0]:
+                    self._base_url = row[0].rstrip("/")
+
+                result = await db.execute(
+                    sa_text("SELECT value FROM integration_settings WHERE key = :key"),
+                    {"key": "integration.newsforge.api_key"},
+                )
+                row = result.first()
+                if row and row[0]:
+                    self._api_key = row[0]
+        except Exception:
+            logger.debug("Failed to load NewsForge config from DB", exc_info=True)
+        self._config_loaded = True
 
     def _get_client(self, timeout: int = 60) -> httpx.AsyncClient:
         if self._client is None or self._client.is_closed:
@@ -48,6 +75,7 @@ class NewsForgeClient:
 
     async def test_connection(self) -> dict[str, Any]:
         """Test connection to NewsForge API."""
+        await self._ensure_config()
         if not self.enabled:
             return {"connected": False, "error": "Not configured"}
         try:
@@ -79,6 +107,7 @@ class NewsForgeClient:
         auto-detection will treat them as US tickers and akshare/tushare
         won't run.
         """
+        await self._ensure_config()
         if not self.enabled or not symbols:
             return {"received": 0, "upserted": 0}
 
@@ -100,6 +129,7 @@ class NewsForgeClient:
         self, symbols: list[str], days: int = 30
     ) -> dict[str, Any]:
         """Get batch sentiment data from NewsForge."""
+        await self._ensure_config()
         if not self.enabled or not symbols:
             return {}
 

@@ -45,19 +45,20 @@ def _market_hint_for(symbol: str) -> str | None:
 
 
 async def _aggregate_watched_symbols() -> list[dict]:
-    """Build the watched-symbols payload from the watchlists table.
+    """Build the watched-symbols payload from watchlists + portfolio holdings.
 
     Returns a list of {symbol, market, last_viewed_at} dicts, one per
-    distinct (symbol, market). `last_viewed_at` uses the most recent
-    `watchlist_items.added_at` across all users that have the symbol —
-    a coarse proxy for active interest until per-user view tracking
-    is added.
+    distinct symbol. Merges watchlist items and portfolio holdings,
+    keeping the most recent timestamp for each symbol.
     """
     from app.db.task_session import get_task_session
     from app.models.watchlist import WatchlistItem
+    from app.models.portfolio import Holding
+
+    merged: dict[str, datetime | None] = {}
 
     async with get_task_session() as session:
-        # Per-symbol most-recent added_at, across all users
+        # Watchlist symbols
         stmt = (
             select(
                 WatchlistItem.symbol,
@@ -65,14 +66,30 @@ async def _aggregate_watched_symbols() -> list[dict]:
             )
             .group_by(WatchlistItem.symbol)
         )
-        rows = (await session.execute(stmt)).all()
+        for row in (await session.execute(stmt)).all():
+            sym = (row.symbol or "").strip().upper()
+            if sym:
+                merged[sym] = row.last_viewed_at
+
+        # Portfolio holdings
+        stmt = (
+            select(
+                Holding.symbol,
+                func.max(Holding.updated_at).label("last_updated"),
+            )
+            .group_by(Holding.symbol)
+        )
+        for row in (await session.execute(stmt)).all():
+            sym = (row.symbol or "").strip().upper()
+            if not sym:
+                continue
+            existing = merged.get(sym)
+            ts = row.last_updated
+            if existing is None or (ts and (existing is None or ts > existing)):
+                merged[sym] = ts
 
     payload: list[dict] = []
-    for row in rows:
-        sym = (row.symbol or "").strip().upper()
-        if not sym:
-            continue
-        last_viewed = row.last_viewed_at
+    for sym, last_viewed in merged.items():
         if last_viewed and last_viewed.tzinfo is None:
             last_viewed = last_viewed.replace(tzinfo=timezone.utc)
         payload.append({
@@ -84,10 +101,11 @@ async def _aggregate_watched_symbols() -> list[dict]:
 
 
 async def _sync_to_newsforge() -> dict:
-    """Run one sync iteration: aggregate watchlists → POST to NewsForge."""
+    """Run one sync iteration: aggregate watchlists + holdings → POST to NewsForge."""
     from app.services.newsforge_client import NewsForgeClient
 
     client = NewsForgeClient()
+    await client._ensure_config()
     if not client.enabled:
         logger.debug("NewsForge client not configured, skipping watched-symbol sync")
         return {"skipped": True, "reason": "newsforge_disabled"}
