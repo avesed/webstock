@@ -742,246 +742,23 @@ async def clear_embeddings(
 
 
 # ---------------------------------------------------------------------------
-# POST /knowledge-base/daily-bars/{market}/collect
+# Daily bar collect/rebuild routes — REMOVED during StockPulse migration
 # ---------------------------------------------------------------------------
-
-
-@router.post(
-    "/knowledge-base/daily-bars/{market}/collect",
-    summary="Collect daily bars for a market",
-    description="Dispatch a Celery task to collect daily OHLCV bars for the specified market.",
-)
-async def collect_daily_bars(
-    market: str,
-    current_user: User = Depends(require_admin),
-) -> Dict[str, Any]:
-    """Trigger daily bar collection for a single market."""
-
-    if market not in VALID_MARKETS:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Invalid market '{market}'. Must be one of: {', '.join(sorted(VALID_MARKETS))}",
-        )
-
-    # Pre-check lock to give immediate feedback instead of silent no-op
-    lock_ttl = await _check_market_lock(market)
-    if lock_ttl is not None:
-        raise HTTPException(
-            status_code=409,
-            detail=f"Market {market} has a task already running (lock TTL: {lock_ttl}s). "
-                   f"Wait for it to finish or force-unlock via the admin panel.",
-        )
-
-    from worker.tasks.daily_bar_tasks import collect_market_daily_bars
-    result = collect_market_daily_bars.delay(market)
-
-    running = await _get_running_markets(exclude=market)
-    msg = f"Daily bar collection started for market={market}"
-    resp: Dict[str, Any] = {"message": msg, "taskId": result.id}
-    if running:
-        await _mark_market_queued(market)
-        resp["queued"] = True
-        resp["runningMarkets"] = running
-        resp["message"] = msg + f" (queued behind: {', '.join(running)})"
-    return resp
-
-
-# ---------------------------------------------------------------------------
-# POST /knowledge-base/daily-bars/collect-all
-# ---------------------------------------------------------------------------
-
-
-@router.post(
-    "/knowledge-base/daily-bars/collect-all",
-    summary="Collect daily bars for all markets",
-    description="Dispatch Celery tasks to collect daily OHLCV bars for all 4 markets.",
-)
-async def collect_all_daily_bars(
-    current_user: User = Depends(require_admin),
-) -> Dict[str, Any]:
-    """Trigger daily bar collection for all markets (chained sequentially)."""
-
-    from celery import chain as celery_chain
-
-    from worker.tasks.daily_bar_tasks import collect_market_daily_bars
-
-    markets_to_run: List[str] = []
-    skipped: List[str] = []
-    for market in sorted(VALID_MARKETS):
-        lock_ttl = await _check_market_lock(market)
-        if lock_ttl is not None:
-            skipped.append(market)
-        else:
-            markets_to_run.append(market)
-
-    if not markets_to_run:
-        raise HTTPException(
-            status_code=409,
-            detail=f"All markets are locked: {', '.join(skipped)}. "
-                   f"Wait for running tasks to finish or force-unlock.",
-        )
-
-    # Chain tasks sequentially: with dedicated concurrency=1 worker,
-    # parallel dispatch would just queue them anyway. Chain makes the
-    # order explicit and avoids lock contention between tasks.
-    task_chain = celery_chain(
-        *(collect_market_daily_bars.si(m) for m in markets_to_run)
-    )
-    result = task_chain.apply_async()
-
-    msg = f"Daily bar collection chained for {', '.join(markets_to_run)}"
-    if skipped:
-        msg += f" (skipped locked: {', '.join(skipped)})"
-
-    return {
-        "message": msg,
-        "taskId": result.id,
-        "markets": markets_to_run,
-        "skipped": skipped,
-    }
-
-
-# ---------------------------------------------------------------------------
-# POST /knowledge-base/daily-bars/{market}/rebuild
-# ---------------------------------------------------------------------------
-
-
-@router.post(
-    "/knowledge-base/daily-bars/{market}/rebuild",
-    summary="Rebuild daily bars for a market",
-    description="Delete all existing daily bars for the market, then re-collect from scratch.",
-)
-async def rebuild_daily_bars(
-    market: str,
-    current_user: User = Depends(require_admin),
-) -> Dict[str, Any]:
-    """Trigger a full rebuild (delete + re-collect) for a single market."""
-
-    if market not in VALID_MARKETS:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Invalid market '{market}'. Must be one of: {', '.join(sorted(VALID_MARKETS))}",
-        )
-
-    # Pre-check lock to give immediate feedback instead of silent no-op
-    lock_ttl = await _check_market_lock(market)
-    if lock_ttl is not None:
-        raise HTTPException(
-            status_code=409,
-            detail=f"Market {market} has a task already running (lock TTL: {lock_ttl}s). "
-                   f"Wait for it to finish or force-unlock via the admin panel.",
-        )
-
-    logger.info("Admin %s requested daily bar rebuild for market=%s", current_user.email, market)
-
-    from worker.tasks.daily_bar_tasks import rebuild_market_daily_bars
-    result = rebuild_market_daily_bars.delay(market)
-
-    running = await _get_running_markets(exclude=market)
-    msg = f"Daily bar rebuild started for market={market}"
-    resp: Dict[str, Any] = {"message": msg, "taskId": result.id}
-    if running:
-        await _mark_market_queued(market)
-        resp["queued"] = True
-        resp["runningMarkets"] = running
-        resp["message"] = msg + f" (queued behind: {', '.join(running)})"
-    return resp
-
-
-# ---------------------------------------------------------------------------
-# POST /knowledge-base/daily-bars/rebuild-all
-# ---------------------------------------------------------------------------
-
-
-@router.post(
-    "/knowledge-base/daily-bars/rebuild-all",
-    summary="Rebuild daily bars for all markets",
-    description="Delete and re-collect daily OHLCV bars for all 4 markets.",
-)
-async def rebuild_all_daily_bars(
-    current_user: User = Depends(require_admin),
-) -> Dict[str, Any]:
-    """Trigger a full rebuild for all markets (chained sequentially)."""
-
-    logger.info("Admin %s requested daily bar rebuild for all markets", current_user.email)
-
-    from celery import chain as celery_chain
-
-    from worker.tasks.daily_bar_tasks import rebuild_market_daily_bars
-
-    markets_to_run: List[str] = []
-    skipped: List[str] = []
-    for market in sorted(VALID_MARKETS):
-        lock_ttl = await _check_market_lock(market)
-        if lock_ttl is not None:
-            skipped.append(market)
-        else:
-            markets_to_run.append(market)
-
-    if not markets_to_run:
-        raise HTTPException(
-            status_code=409,
-            detail=f"All markets are locked: {', '.join(skipped)}. "
-                   f"Wait for running tasks to finish or force-unlock.",
-        )
-
-    task_chain = celery_chain(
-        *(rebuild_market_daily_bars.si(m) for m in markets_to_run)
-    )
-    result = task_chain.apply_async()
-
-    msg = f"Daily bar rebuild chained for {', '.join(markets_to_run)}"
-    if skipped:
-        msg += f" (skipped locked: {', '.join(skipped)})"
-
-    return {
-        "message": msg,
-        "taskId": result.id,
-        "markets": markets_to_run,
-        "skipped": skipped,
-    }
-
-
-# ---------------------------------------------------------------------------
-# POST /knowledge-base/daily-bars/{market}/unlock
-# ---------------------------------------------------------------------------
-
-
-@router.post(
-    "/knowledge-base/daily-bars/{market}/unlock",
-    summary="Force-unlock a market's daily bar lock",
-    description="Remove a stale Redis lock for the specified market. Use when a previous task crashed.",
-)
-async def unlock_daily_bars(
-    market: str,
-    current_user: User = Depends(require_admin),
-) -> Dict[str, Any]:
-    """Force-release a stale per-market lock and revoke the running task."""
-
-    if market not in VALID_MARKETS:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Invalid market '{market}'. Must be one of: {', '.join(sorted(VALID_MARKETS))}",
-        )
-
-    revoked_task_id = await _force_release_market_lock(market)
-
-    # Also unlock on data-service side
-    try:
-        from app.services.data_service_client import get_data_service_client
-        client = await get_data_service_client()
-        await client.unlock_daily_bars(market)
-    except Exception as e:
-        logger.warning("Failed to unlock data-service for %s: %s", market, e)
-
-    if revoked_task_id:
-        logger.warning(
-            "Admin %s force-released daily bar lock for market=%s, revoked task=%s",
-            current_user.email, market, revoked_task_id,
-        )
-        return {"message": f"Lock released and task terminated for market={market}"}
-    else:
-        return {"message": f"No lock held for market={market}"}
+#
+# The following endpoints used to dispatch Celery thin-proxy tasks that
+# triggered daily bar collection on the embedded data-service:
+#
+#   POST /knowledge-base/daily-bars/{market}/collect
+#   POST /knowledge-base/daily-bars/collect-all
+#   POST /knowledge-base/daily-bars/{market}/rebuild
+#   POST /knowledge-base/daily-bars/rebuild-all
+#   POST /knowledge-base/daily-bars/{market}/unlock
+#
+# Daily bar ownership was moved to StockPulse's APScheduler during the
+# StockPulse migration: the admin UI on StockPulse drives all collection,
+# rebuild, and lock-recovery flows. The corresponding webstock Celery tasks
+# (``worker.tasks.daily_bar_tasks``) and their associated locks were
+# deleted at the same time.
 
 
 # ---------------------------------------------------------------------------
@@ -1262,24 +1039,11 @@ async def collect_all_fundamentals(
     }
 
 
-# ---------------------------------------------------------------------------
-# POST /knowledge-base/stock-list/update
-# ---------------------------------------------------------------------------
-
-
-@router.post(
-    "/knowledge-base/stock-list/update",
-    summary="Update stock list",
-    description="Dispatch a Celery task to refresh the stock list from Finnhub and AKShare.",
-)
-async def trigger_stock_list_update(
-    current_user: User = Depends(require_admin),
-) -> Dict[str, Any]:
-    """Trigger stock list update task."""
-    logger.info("Admin %s triggered stock list update", current_user.email)
-    from worker.tasks.stock_list_tasks import update_stock_list
-    result = update_stock_list.delay()
-    return {"message": "Stock list update started", "taskId": result.id}
+# NOTE: ``trigger_stock_list_update`` route was removed during the
+# StockPulse migration. Stock list collection is owned by StockPulse's
+# APScheduler now; admins refresh the universe through the StockPulse admin
+# UI. The Celery task ``worker.tasks.stock_list_tasks.update_stock_list``
+# was deleted as part of the same migration.
 
 
 # ---------------------------------------------------------------------------

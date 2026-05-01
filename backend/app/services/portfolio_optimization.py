@@ -1,7 +1,7 @@
 """Portfolio optimization service using PyPortfolioOpt.
 
 Runs in the main backend process (not qlib-service) since it's lightweight
-and stateless. Fetches daily close prices via the data-service.
+and stateless. Fetches daily close prices via StockPulse.
 
 All computation is offloaded to a thread via asyncio.to_thread() to avoid
 blocking the event loop.
@@ -34,18 +34,18 @@ class PortfolioOptimizationService:
         symbols: List[str],
         lookback_days: int = 252,
     ) -> pd.DataFrame:
-        """Fetch daily close prices via data-service for all symbols.
+        """Fetch daily close prices via StockPulse for all symbols.
 
         Uses asyncio.gather with a semaphore for parallel fetching.
         Returns a DataFrame with dates as index and symbols as columns.
         """
-        from app.services.data_service_client import get_data_service_client
+        from app.services.stockpulse_client import get_stockpulse_client
         from app.services.stock_types import detect_market
 
         end_date = date.today()
         start_date = end_date - timedelta(days=int(lookback_days * 1.5))
 
-        client = await get_data_service_client()
+        client = await get_stockpulse_client()
         semaphore = asyncio.Semaphore(_FETCH_CONCURRENCY)
 
         async def _fetch_one(symbol: str) -> Tuple[str, Optional[pd.Series]]:

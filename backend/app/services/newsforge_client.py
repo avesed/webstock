@@ -117,6 +117,40 @@ class NewsForgeClient:
             raise
         return resp.json()
 
+    async def sync_watched_symbols(
+        self,
+        symbols: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        """Sync this consumer's full watchlist of symbols to NewsForge.
+
+        Each item: {"symbol": str, "market": str | None, "last_viewed_at": ISO str | None}
+
+        Idempotent — caller sends the full current set on every sync.
+        NewsForge upserts by (symbol, market) and uses `last_viewed_at` for
+        StockPulse hot/warm/cold tiering.
+
+        IMPORTANT: bare 6-digit A-share codes (e.g. "600519") MUST come with
+        an explicit `market` of "sh" or "sz" — otherwise StockPulse's
+        auto-detection will treat them as US tickers and akshare/tushare
+        won't run.
+        """
+        if not self.enabled or not symbols:
+            return {"received": 0, "upserted": 0}
+
+        url = f"{self._base_url}/api/internal/watched-symbols/sync"
+        payload = {"symbols": symbols}
+        client = self._get_client()
+        resp = await client.post(url, headers=self._headers(), json=payload)
+        try:
+            resp.raise_for_status()
+        except httpx.HTTPStatusError as e:
+            logger.error(
+                "NewsForge API error (HTTP %d) %s: %s",
+                e.response.status_code, url, e.response.text[:200],
+            )
+            raise
+        return resp.json()
+
     async def get_sentiment_batch(
         self, symbols: list[str], days: int = 30
     ) -> dict[str, Any]:

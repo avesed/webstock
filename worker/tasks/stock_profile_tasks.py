@@ -604,112 +604,23 @@ async def _collect_market_async(market: str) -> Dict[str, Any]:
 
 
 async def _sync_concepts_async() -> Dict[str, Any]:
-    """Daily incremental concept board sync."""
-    from app.db.task_session import get_task_session
-    from app.services.rag import get_index_service
-    from app.services.rag.embedding import get_embedding_config_from_db
-    from app.services.stock_profile_service import get_stock_profile_service
+    """Daily incremental concept board sync.
 
-    svc = get_stock_profile_service()
+    TODO: removed in StockPulse migration. The implementation depended on
+    ``StockProfileService.collect_cn_concept_mapping``, which in turn called
+    the data-service control endpoint ``/v1/reference/cn-concept-mapping``.
+    Both have been deleted because control plane responsibilities for CN
+    concept-board collection now live in the StockPulse admin UI. This task
+    is kept as a no-op so the existing Celery beat schedule does not throw
+    ``AttributeError``; once StockPulse exposes a public read endpoint for
+    pre-collected concept mappings the sync can be re-implemented on top of
+    ``StockPulseClient``.
+    """
     stats: Dict[str, Any] = {"changed": 0, "new": 0, "embedded": 0, "errors": 0}
-
-    # 1. Fetch current concept mapping
-    current_mapping = await svc.collect_cn_concept_mapping()
-    if not current_mapping:
-        logger.warning("[StockProfileTask] Empty concept mapping, aborting sync")
-        return stats
-
-    # 2. Load previous mapping from Redis
-    old_mapping = await _load_concept_cache()
-
-    # 3. Find changed stocks
-    changed_codes: Set[str] = set()
-    new_codes: Set[str] = set()
-
-    for code, concepts in current_mapping.items():
-        old_concepts = old_mapping.get(code)
-        if old_concepts is None:
-            new_codes.add(code)
-        elif set(concepts) != set(old_concepts):
-            changed_codes.add(code)
-
-    stats["changed"] = len(changed_codes)
-    stats["new"] = len(new_codes)
-
-    codes_to_update = changed_codes | new_codes
-    if not codes_to_update:
-        logger.info("[StockProfileTask] No concept changes detected, skipping embed")
-        await _save_concept_cache(current_mapping)
-        return stats
-
-    logger.debug(
-        "[StockProfileTask] Concept changes: %d changed, %d new stocks to re-embed",
-        len(changed_codes), len(new_codes),
+    logger.warning(
+        "[StockProfileTask] Concept board sync is a no-op after StockPulse "
+        "migration; control plane moved to StockPulse admin UI."
     )
-
-    # 4. Build minimal profiles for changed stocks (concepts only, no full info fetch)
-    from app.services.stock_list_service import get_stock_list_service
-    from app.services.stock_profile_service import StockProfile
-
-    stock_list_svc = await get_stock_list_service()
-    profiles = []
-    for code in codes_to_update:
-        concepts = current_mapping.get(code, [])
-        if code.startswith(("6", "9")):
-            suffix, market = ".SS", "sh"
-        elif code.startswith(("0", "2", "3")):
-            suffix, market = ".SZ", "sz"
-        else:
-            suffix, market = ".SS", "sh"
-
-        symbol = f"{code}{suffix}"
-
-        # Try to get name from stock list
-        name_zh = ""
-        if stock_list_svc and stock_list_svc.is_loaded:
-            results = stock_list_svc.search(code, limit=1)
-            if results and results[0].get("symbol") == symbol:
-                name_zh = results[0].get("name_zh", "")
-
-        profiles.append(StockProfile(
-            symbol=symbol,
-            name=name_zh,
-            name_zh=name_zh,
-            market=market,
-            concepts=concepts,
-        ))
-
-    # 5. Embed changed profiles
-    async with get_task_session() as db:
-        embed_config = await get_embedding_config_from_db(db)
-
-    index_service = get_index_service()
-    embedded_count, error_count = await _batch_embed_profiles(
-        profiles, index_service, embed_config,
-    )
-    stats["embedded"] = embedded_count
-    stats["errors"] = error_count
-
-    # 6. Update Redis cache
-    await _save_concept_cache(current_mapping)
-
-    logger.info(
-        "知识库：概念同步完成 %d更新 %d嵌入 %d错误",
-        len(codes_to_update), embedded_count, error_count,
-    )
-
-    # Rebuild counter so stats endpoint reflects changes
-    await _rebuild_embedding_counter_async("stock_profile")
-
-    # Rebuild per-market counters for admin dashboard
-    try:
-        from app.api.v1.admin.knowledge_base import rebuild_stock_profile_market_counters
-        from app.db.task_session import get_task_session
-        async with get_task_session() as session:
-            await rebuild_stock_profile_market_counters(session)
-    except Exception as e:
-        logger.warning("[StockProfileTask] Failed to rebuild per-market counters: %s", e)
-
     return stats
 
 

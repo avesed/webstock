@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useMemo, type ReactNode } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { useTranslation } from 'react-i18next'
 import {
@@ -15,17 +15,28 @@ import {
   ArrowLeftRight,
   Wifi,
   WifiOff,
+  Database,
+  ExternalLink,
+  Activity,
+  HelpCircle,
 } from 'lucide-react'
 
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
+import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Separator } from '@/components/ui/separator'
-import { useToast } from '@/hooks'
+import { useToast, useFormatters } from '@/hooks'
 import { adminApi } from '@/api/admin'
-import type { IntegrationConfigUpdate } from '@/api/admin'
+import type {
+  IntegrationConfigUpdate,
+  StockPulseConfigUpdate,
+  StockPulseHealth,
+  StockPulseMarket,
+  StockPulseProvider,
+} from '@/api/admin'
 import { ToggleSwitch } from './shared'
 
 interface FormState {
@@ -475,9 +486,596 @@ export default function SettingsIntegrations() {
         </CardContent>
       </Card>
 
+      {/* StockPulse Integration */}
+      <StockPulseCard />
+
       {/* Export News */}
       <ExportNewsCard />
     </div>
+  )
+}
+
+interface StockPulseFormState {
+  stockpulse_url: string
+  stockpulse_api_key: string
+}
+
+function StockPulseCard() {
+  const { t } = useTranslation('admin')
+  const { t: tCommon } = useTranslation('common')
+  const queryClient = useQueryClient()
+  const { toast } = useToast()
+  const { formatRelativeTime } = useFormatters()
+
+  const [formData, setFormData] = useState<StockPulseFormState>({
+    stockpulse_url: '',
+    stockpulse_api_key: '',
+  })
+  const [hasChanges, setHasChanges] = useState(false)
+  const [showApiKey, setShowApiKey] = useState(false)
+
+  const { data: config, isLoading: configLoading } = useQuery({
+    queryKey: ['admin-stockpulse-config'],
+    queryFn: adminApi.getStockPulseConfig,
+  })
+
+  const healthEnabled = !!config?.stockpulse_url
+  const { data: health, isLoading: healthLoading } = useQuery({
+    queryKey: ['admin-stockpulse-health'],
+    queryFn: adminApi.getStockPulseHealth,
+    refetchInterval: 30_000,
+    enabled: healthEnabled,
+  })
+
+  useEffect(() => {
+    if (config) {
+      setFormData({
+        stockpulse_url: config.stockpulse_url,
+        stockpulse_api_key: '',
+      })
+      setHasChanges(false)
+    }
+  }, [config])
+
+  const updateMutation = useMutation({
+    mutationFn: adminApi.updateStockPulseConfig,
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['admin-stockpulse-config'] })
+      queryClient.invalidateQueries({ queryKey: ['admin-stockpulse-health'] })
+      toast({ title: t('settings.integrations.stockpulse.saved') })
+      // Clear API key field — never display the saved key
+      setFormData((prev) => ({ ...prev, stockpulse_api_key: '' }))
+      setHasChanges(false)
+    },
+    onError: () => {
+      toast({ title: tCommon('status.error'), variant: 'destructive' })
+    },
+  })
+
+  const testMutation = useMutation({
+    mutationFn: adminApi.testStockPulse,
+    onSuccess: (result) => {
+      if (result.connected) {
+        const latency = result.latency_ms
+        toast({
+          title:
+            typeof latency === 'number'
+              ? t('settings.integrations.stockpulse.connectedWithLatency', { latency })
+              : t('settings.integrations.stockpulse.connected'),
+        })
+      } else {
+        toast({
+          title: t('settings.integrations.stockpulse.connectionFailed'),
+          description: result.error,
+          variant: 'destructive',
+        })
+      }
+    },
+    onError: () => {
+      toast({
+        title: t('settings.integrations.stockpulse.connectionFailed'),
+        variant: 'destructive',
+      })
+    },
+  })
+
+  const handleChange = useCallback(
+    (field: keyof StockPulseFormState, value: string) => {
+      setFormData((prev) => ({ ...prev, [field]: value }))
+      setHasChanges(true)
+    },
+    []
+  )
+
+  const handleSave = () => {
+    const payload: StockPulseConfigUpdate = {
+      stockpulse_url: formData.stockpulse_url,
+    }
+    // Only send API key if user typed a new value
+    if (formData.stockpulse_api_key) {
+      payload.stockpulse_api_key = formData.stockpulse_api_key
+    }
+    updateMutation.mutate(payload)
+  }
+
+  if (configLoading) {
+    return (
+      <Card>
+        <CardContent className="flex items-center justify-center h-32">
+          <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
+        </CardContent>
+      </Card>
+    )
+  }
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle className="flex items-center gap-2">
+          <Database className="h-5 w-5" />
+          {t('settings.integrations.stockpulse.title')}
+        </CardTitle>
+        <CardDescription>
+          {t('settings.integrations.stockpulse.description')}
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-6">
+        {/* URL */}
+        <div className="space-y-2">
+          <Label htmlFor="stockpulse-url">
+            {t('settings.integrations.stockpulse.url')}
+          </Label>
+          <Input
+            id="stockpulse-url"
+            type="url"
+            placeholder={t('settings.integrations.stockpulse.urlPlaceholder')}
+            value={formData.stockpulse_url}
+            onChange={(e) => handleChange('stockpulse_url', e.target.value)}
+          />
+          <p className="text-xs text-muted-foreground">
+            {t('settings.integrations.stockpulse.urlHelp')}
+          </p>
+        </div>
+
+        <Separator />
+
+        {/* API Key */}
+        <div className="space-y-2">
+          <Label htmlFor="stockpulse-api-key">
+            {t('settings.integrations.stockpulse.apiKey')}
+          </Label>
+          <div className="flex items-center gap-2">
+            <div className="relative flex-1">
+              <Input
+                id="stockpulse-api-key"
+                type={showApiKey ? 'text' : 'password'}
+                placeholder={
+                  config?.stockpulse_api_key_set
+                    ? t('settings.integrations.stockpulse.apiKeyMasked')
+                    : t('settings.integrations.stockpulse.apiKeyPlaceholder')
+                }
+                value={formData.stockpulse_api_key}
+                onChange={(e) => handleChange('stockpulse_api_key', e.target.value)}
+              />
+              <button
+                type="button"
+                aria-label={
+                  showApiKey
+                    ? t('settings.integrations.stockpulse.hideApiKey')
+                    : t('settings.integrations.stockpulse.showApiKey')
+                }
+                className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
+                onClick={() => setShowApiKey((v) => !v)}
+              >
+                {showApiKey ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+              </button>
+            </div>
+          </div>
+          <p className="text-xs text-muted-foreground">
+            {config?.stockpulse_api_key_set ? (
+              <span className="flex items-center gap-1 text-green-600 dark:text-green-400">
+                <CheckCircle2 className="h-3 w-3" />
+                {t('settings.integrations.stockpulse.apiKeySet')}
+              </span>
+            ) : (
+              <span className="flex items-center gap-1 text-amber-600 dark:text-amber-400">
+                <XCircle className="h-3 w-3" />
+                {t('settings.integrations.stockpulse.apiKeyNotSet')}
+              </span>
+            )}
+          </p>
+          <p className="text-xs text-muted-foreground">
+            {t('settings.integrations.stockpulse.apiKeyHelp')}
+          </p>
+        </div>
+
+        <Separator />
+
+        {/* Action Buttons */}
+        <div className="flex flex-wrap items-center gap-3">
+          <Button
+            onClick={handleSave}
+            disabled={!hasChanges || updateMutation.isPending}
+          >
+            {updateMutation.isPending ? (
+              <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+            ) : (
+              <Save className="mr-2 h-4 w-4" />
+            )}
+            {updateMutation.isPending
+              ? t('settings.integrations.stockpulse.saving')
+              : t('settings.integrations.stockpulse.save')}
+          </Button>
+          <Button
+            variant="outline"
+            onClick={() => testMutation.mutate()}
+            disabled={testMutation.isPending || !healthEnabled}
+          >
+            {testMutation.isPending ? (
+              <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+            ) : (
+              <Plug className="mr-2 h-4 w-4" />
+            )}
+            {testMutation.isPending
+              ? t('settings.integrations.stockpulse.testing')
+              : t('settings.integrations.stockpulse.test')}
+          </Button>
+          {testMutation.isSuccess && (
+            <span className="flex items-center gap-1 text-sm">
+              {testMutation.data.connected ? (
+                <span className="flex items-center gap-1 text-green-600 dark:text-green-400">
+                  <CheckCircle2 className="h-4 w-4" />
+                  {t('settings.integrations.stockpulse.connected')}
+                </span>
+              ) : (
+                <span className="flex items-center gap-1 text-destructive">
+                  <XCircle className="h-4 w-4" />
+                  {t('settings.integrations.stockpulse.connectionFailed')}
+                </span>
+              )}
+            </span>
+          )}
+        </div>
+
+        {/* Not configured notice */}
+        {!healthEnabled && (
+          <Alert>
+            <HelpCircle className="h-4 w-4" />
+            <AlertTitle>{t('settings.integrations.stockpulse.notConfigured')}</AlertTitle>
+            <AlertDescription>
+              {t('settings.integrations.stockpulse.notConfiguredHelp')}
+            </AlertDescription>
+          </Alert>
+        )}
+
+        {/* Service Health Overview */}
+        {healthEnabled && (
+          <>
+            <Separator />
+            <StockPulseHealthOverview
+              health={health}
+              isLoading={healthLoading}
+              formatRelativeTime={formatRelativeTime}
+            />
+          </>
+        )}
+
+        {/* External Console Link */}
+        {healthEnabled && config?.stockpulse_url && (
+          <>
+            <Separator />
+            <div>
+              <a
+                href={config.stockpulse_url}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="inline-flex items-center gap-2 text-sm font-medium text-primary hover:underline"
+              >
+                <ExternalLink className="h-4 w-4" />
+                {t('settings.integrations.stockpulse.openConsole')}
+              </a>
+            </div>
+          </>
+        )}
+      </CardContent>
+    </Card>
+  )
+}
+
+interface StockPulseHealthOverviewProps {
+  readonly health: StockPulseHealth | undefined
+  readonly isLoading: boolean
+  readonly formatRelativeTime: (date: Date | string | number) => string
+}
+
+function StockPulseHealthOverview({
+  health,
+  isLoading,
+  formatRelativeTime,
+}: StockPulseHealthOverviewProps) {
+  const { t } = useTranslation('admin')
+
+  if (isLoading && !health) {
+    return (
+      <div className="flex items-center justify-center h-24">
+        <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
+      </div>
+    )
+  }
+
+  if (!health) {
+    return null
+  }
+
+  let statusInfo: { label: string; className: string; icon: ReactNode }
+  if (!health.connected) {
+    statusInfo = {
+      label: t('settings.integrations.stockpulse.statusDisconnected'),
+      className: 'bg-destructive/10 text-destructive border-destructive/30',
+      icon: <XCircle className="h-4 w-4" />,
+    }
+  } else if (health.status === 'healthy') {
+    statusInfo = {
+      label: t('settings.integrations.stockpulse.statusHealthy'),
+      className:
+        'bg-green-500/10 text-green-700 border-green-500/30 dark:text-green-400',
+      icon: <CheckCircle2 className="h-4 w-4" />,
+    }
+  } else if (health.status === 'degraded') {
+    statusInfo = {
+      label: t('settings.integrations.stockpulse.statusDegraded'),
+      className:
+        'bg-amber-500/10 text-amber-700 border-amber-500/30 dark:text-amber-400',
+      icon: <AlertTriangle className="h-4 w-4" />,
+    }
+  } else {
+    statusInfo = {
+      label: t('settings.integrations.stockpulse.statusUnknown'),
+      className: 'bg-muted text-muted-foreground border-border',
+      icon: <HelpCircle className="h-4 w-4" />,
+    }
+  }
+
+  return (
+    <div className="space-y-5">
+      {/* Service Status header */}
+      <div className="space-y-3">
+        <div className="flex items-center gap-2">
+          <Activity className="h-4 w-4 text-muted-foreground" />
+          <span className="text-sm font-medium">
+            {t('settings.integrations.stockpulse.serviceStatus')}
+          </span>
+        </div>
+        <div className="flex flex-wrap items-center gap-3">
+          <div
+            className={`inline-flex items-center gap-2 rounded-md border px-3 py-1.5 text-sm font-semibold ${statusInfo.className}`}
+          >
+            {statusInfo.icon}
+            {statusInfo.label}
+          </div>
+          {/* Connection error */}
+          {!health.connected && health.error && (
+            <span className="text-xs text-destructive">{health.error}</span>
+          )}
+        </div>
+        {health.connected && (
+          <div className="flex flex-wrap gap-2">
+            <ServiceIndicatorBadge
+              label={t('settings.integrations.stockpulse.redis')}
+              status={health.redis}
+            />
+            <ServiceIndicatorBadge
+              label={t('settings.integrations.stockpulse.database')}
+              status={health.database}
+            />
+            <ServiceIndicatorBadge
+              label={t('settings.integrations.stockpulse.executor')}
+              status={health.executor}
+            />
+          </div>
+        )}
+      </div>
+
+      {/* Providers */}
+      {health.connected && (
+        <div className="space-y-2">
+          <div className="flex items-center gap-2">
+            <Plug className="h-4 w-4 text-muted-foreground" />
+            <span className="text-sm font-medium">
+              {t('settings.integrations.stockpulse.providers')}
+            </span>
+          </div>
+          {health.providers.length === 0 ? (
+            <p className="text-xs text-muted-foreground">
+              {t('settings.integrations.stockpulse.noProviders')}
+            </p>
+          ) : (
+            <div className="space-y-1.5 rounded-md border divide-y">
+              {health.providers.map((provider) => (
+                <ProviderRow
+                  key={provider.name}
+                  provider={provider}
+                  formatRelativeTime={formatRelativeTime}
+                />
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Markets */}
+      {health.connected && (
+        <div className="space-y-2">
+          <div className="flex items-center gap-2">
+            <BarChart3 className="h-4 w-4 text-muted-foreground" />
+            <span className="text-sm font-medium">
+              {t('settings.integrations.stockpulse.markets')}
+            </span>
+          </div>
+          {health.markets.length === 0 ? (
+            <p className="text-xs text-muted-foreground">
+              {t('settings.integrations.stockpulse.noMarkets')}
+            </p>
+          ) : (
+            <div className="overflow-x-auto rounded-md border">
+              <table className="w-full text-sm">
+                <thead className="bg-muted/50 text-xs uppercase text-muted-foreground">
+                  <tr>
+                    <th className="px-3 py-2 text-left font-medium">
+                      {t('settings.integrations.stockpulse.market')}
+                    </th>
+                    <th className="px-3 py-2 text-left font-medium">
+                      {t('settings.integrations.stockpulse.lastCollection')}
+                    </th>
+                    <th className="px-3 py-2 text-right font-medium">
+                      {t('settings.integrations.stockpulse.totalBars')}
+                    </th>
+                    <th className="px-3 py-2 text-right font-medium">
+                      {t('settings.integrations.stockpulse.totalSymbols')}
+                    </th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {health.markets.map((market) => (
+                    <MarketRow
+                      key={market.market}
+                      market={market}
+                      formatRelativeTime={formatRelativeTime}
+                    />
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  )
+}
+
+function ServiceIndicatorBadge({
+  label,
+  status,
+}: {
+  readonly label: string
+  readonly status: string
+}) {
+  const normalized = status?.toLowerCase() ?? 'unknown'
+  let variant: 'default' | 'secondary' | 'destructive' | 'outline' = 'outline'
+  let className = ''
+  if (normalized === 'ok' || normalized === 'healthy') {
+    className =
+      'bg-green-500/10 text-green-700 border-green-500/30 dark:text-green-400'
+  } else if (normalized === 'down' || normalized === 'degraded' || normalized === 'error') {
+    variant = 'destructive'
+  } else {
+    variant = 'secondary'
+  }
+  return (
+    <Badge variant={variant} className={className}>
+      <span className="mr-1.5 font-medium">{label}:</span>
+      <span className="capitalize">{status || '—'}</span>
+    </Badge>
+  )
+}
+
+function ProviderRow({
+  provider,
+  formatRelativeTime,
+}: {
+  readonly provider: StockPulseProvider
+  readonly formatRelativeTime: (date: Date | string | number) => string
+}) {
+  const { t } = useTranslation('admin')
+  const status = provider.healthStatus?.toLowerCase() ?? 'unknown'
+
+  let StatusIcon = HelpCircle
+  let statusColor = 'text-muted-foreground'
+  let statusLabel = t('settings.integrations.stockpulse.statusUnknown')
+
+  if (status === 'healthy') {
+    StatusIcon = CheckCircle2
+    statusColor = 'text-green-600 dark:text-green-400'
+    statusLabel = t('settings.integrations.stockpulse.statusHealthy')
+  } else if (status === 'degraded') {
+    StatusIcon = AlertTriangle
+    statusColor = 'text-amber-600 dark:text-amber-400'
+    statusLabel = t('settings.integrations.stockpulse.statusDegraded')
+  } else if (status === 'down' || status === 'error') {
+    StatusIcon = XCircle
+    statusColor = 'text-destructive'
+    statusLabel = t('settings.integrations.stockpulse.statusDisconnected')
+  }
+
+  return (
+    <div className="flex flex-wrap items-center gap-3 px-3 py-2">
+      <div className="flex items-center gap-2 min-w-0 flex-1">
+        {provider.enabled ? (
+          <Wifi className="h-3.5 w-3.5 text-primary" />
+        ) : (
+          <WifiOff className="h-3.5 w-3.5 text-muted-foreground" />
+        )}
+        <span className="text-sm font-medium truncate">{provider.name}</span>
+      </div>
+      <span className={`inline-flex items-center gap-1 text-xs ${statusColor}`}>
+        <StatusIcon className="h-3.5 w-3.5" />
+        {statusLabel}
+      </span>
+      <span className="text-xs text-muted-foreground min-w-[5rem] text-right">
+        {provider.lastCheck
+          ? `${t('settings.integrations.stockpulse.healthCheck')}: ${formatRelativeTime(provider.lastCheck)}`
+          : t('settings.integrations.stockpulse.neverChecked')}
+      </span>
+      {provider.errorMessage && (
+        <span className="w-full text-xs text-destructive truncate">
+          {provider.errorMessage}
+        </span>
+      )}
+    </div>
+  )
+}
+
+function MarketRow({
+  market,
+  formatRelativeTime,
+}: {
+  readonly market: StockPulseMarket
+  readonly formatRelativeTime: (date: Date | string | number) => string
+}) {
+  const { t } = useTranslation('admin')
+
+  const collectionStaleness = useMemo(() => {
+    if (!market.lastCollectionAt) {
+      return { className: 'text-muted-foreground', text: t('settings.integrations.stockpulse.neverChecked') }
+    }
+    const ts = new Date(market.lastCollectionAt).getTime()
+    if (Number.isNaN(ts)) {
+      return { className: 'text-muted-foreground', text: '—' }
+    }
+    const ageMs = Date.now() - ts
+    const text = formatRelativeTime(market.lastCollectionAt)
+    if (ageMs > 24 * 60 * 60 * 1000) {
+      return { className: 'text-destructive font-medium', text }
+    }
+    if (ageMs > 60 * 60 * 1000) {
+      return { className: 'text-amber-600 dark:text-amber-400 font-medium', text }
+    }
+    return { className: 'text-foreground', text }
+  }, [market.lastCollectionAt, formatRelativeTime, t])
+
+  return (
+    <tr className="border-t">
+      <td className="px-3 py-2 font-medium uppercase">{market.market}</td>
+      <td className={`px-3 py-2 text-xs ${collectionStaleness.className}`}>
+        {collectionStaleness.text}
+      </td>
+      <td className="px-3 py-2 text-right tabular-nums">
+        {market.totalBars.toLocaleString()}
+      </td>
+      <td className="px-3 py-2 text-right tabular-nums">
+        {market.totalSymbols.toLocaleString()}
+      </td>
+    </tr>
   )
 }
 

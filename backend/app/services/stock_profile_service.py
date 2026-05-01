@@ -1,18 +1,24 @@
 """Stock profile data collection service for building a vectorized knowledge base.
 
 Collects enriched stock profiles (description, industry, concepts, main business)
-from the data-service microservice across CN/US/HK markets. Each profile is
-converted to an embedding-friendly text string via ``to_embedding_text()``.
+from the StockPulse external data platform across CN/US/HK markets. Each
+profile is converted to an embedding-friendly text string via
+``to_embedding_text()``.
 
-Uses **granular batch endpoints** in data-service (max 50 symbols per HTTP call)
+Uses **granular batch endpoints** in StockPulse (max 50 symbols per HTTP call)
 to avoid HTTP timeout issues with large markets:
-- CN: two-step — concept mapping (1 call) + stock info batches (N calls)
 - US/HK: batched yfinance collection (N calls of 50 symbols each)
 
-Data sources (handled by data-service):
-- A-shares (CN): akshare concept boards (inverted mapping) + individual stock info
+Data sources (handled by StockPulse):
 - US stocks: yfinance Ticker info (industry, sector, description)
 - HK stocks: yfinance Ticker info (major stocks only)
+
+NOTE: CN profile collection used to bootstrap from a concept-board mapping
+fetched via ``fetch_cn_concept_mapping`` on the data-service. That control
+endpoint was removed during the StockPulse migration — the StockPulse admin
+UI now owns concept-board collection and the resulting profiles are exposed
+through ``fetch_stock_profiles_batch`` directly. ``collect_cn_profiles`` is
+therefore a no-op and ``collect_cn_concept_mapping`` has been removed.
 """
 
 import asyncio
@@ -98,97 +104,30 @@ class StockProfileService:
     # -----------------------------------------------------------------------
 
     async def collect_cn_profiles(self) -> List[StockProfile]:
-        """Collect A-share profiles via data-service (granular batching).
+        """Collect A-share profiles.
 
-        Step 1: Fetch concept board → stock mapping (single HTTP call, ~200s).
-        Step 2: Batch fetch individual stock info (50 codes per call, ~40s each).
-        Merge concept data from step 1 into each profile.
+        TODO: removed in StockPulse migration. The previous implementation
+        bootstrapped from ``DataServiceClient.fetch_cn_concept_mapping``
+        (a control endpoint), which was deleted because the control plane
+        now lives in the StockPulse admin UI. CN profile coverage will
+        flow back into the knowledge base once StockPulse exposes a
+        listable inventory endpoint or once a CN-aware
+        ``_get_symbols_by_market("cn")`` source is wired up here.
         """
-        from app.services.data_service_client import get_data_service_client
-
-        logger.info("[StockProfile] Starting CN profile collection (granular)")
-        t0 = time.monotonic()
-
-        client = await get_data_service_client()
-
-        # Step 1: Get concept mapping
-        mapping = await client.fetch_cn_concept_mapping()
-        if not mapping:
-            logger.warning("[StockProfile] CN concept mapping returned no data")
-            return []
-
-        concepts_map = mapping.get("concepts", {})  # code -> [concept_names]
-        names_map = mapping.get("names", {})         # code -> name_zh
-
-        mapping_elapsed = time.monotonic() - t0
-        logger.info(
-            "[StockProfile] CN concept mapping: %d stocks in %.0fs, "
-            "starting batched info fetch",
-            len(concepts_map), mapping_elapsed,
+        logger.warning(
+            "[StockProfile] collect_cn_profiles is currently a no-op: "
+            "control plane for CN concept mapping moved to StockPulse "
+            "admin UI; falling back to empty profile set."
         )
-
-        # Step 2: Batch fetch individual stock info
-        codes = list(concepts_map.keys())
-        profiles: List[StockProfile] = []
-        failed_batches = 0
-
-        for i in range(0, len(codes), _BATCH_SIZE):
-            batch = codes[i : i + _BATCH_SIZE]
-            result = await client.fetch_stock_profiles_batch("cn", batch)
-            # Single retry on failure
-            if not result:
-                await asyncio.sleep(5.0)
-                result = await client.fetch_stock_profiles_batch("cn", batch)
-            if result:
-                for p in result.get("profiles", []):
-                    code = p.get("symbol", "").split(".")[0]
-                    profiles.append(_profile_from_dict(
-                        p,
-                        name_zh=p.get("name_zh") or names_map.get(code, ""),
-                        concepts=concepts_map.get(code, []),
-                    ))
-            else:
-                # Fallback: create concept-only profiles from mapping data
-                failed_batches += 1
-                logger.warning(
-                    "[StockProfile] CN batch %d-%d failed after retry, "
-                    "creating %d concept-only profiles",
-                    i, min(i + _BATCH_SIZE, len(codes)), len(batch),
-                )
-                for code in batch:
-                    profiles.append(StockProfile(
-                        symbol=code,
-                        name="",
-                        name_zh=names_map.get(code, ""),
-                        concepts=concepts_map.get(code, []),
-                    ))
-            # Log progress every 500 stocks
-            done = min(i + _BATCH_SIZE, len(codes))
-            if done % 500 < _BATCH_SIZE or done == len(codes):
-                logger.info(
-                    "[StockProfile] CN info: %d/%d codes processed, "
-                    "%d profiles so far",
-                    done, len(codes), len(profiles),
-                )
-            # Rate limit courtesy between batches
-            if i + _BATCH_SIZE < len(codes):
-                await asyncio.sleep(2.0)
-
-        elapsed = time.monotonic() - t0
-        logger.info(
-            "[StockProfile] CN collection complete: %d profiles in %.0fs "
-            "(failed_batches=%d)",
-            len(profiles), elapsed, failed_batches,
-        )
-        return profiles
+        return []
 
     # -----------------------------------------------------------------------
     # US stocks: batched yfinance collection
     # -----------------------------------------------------------------------
 
     async def collect_us_profiles(self) -> List[StockProfile]:
-        """Collect US stock profiles via data-service (granular batching)."""
-        from app.services.data_service_client import get_data_service_client
+        """Collect US stock profiles via StockPulse (granular batching)."""
+        from app.services.stockpulse_client import get_stockpulse_client
 
         logger.info("[StockProfile] Starting US profile collection (granular)")
         t0 = time.monotonic()
@@ -199,7 +138,7 @@ class StockProfileService:
             return []
         us_symbols = us_symbols[:5000]
 
-        client = await get_data_service_client()
+        client = await get_stockpulse_client()
         profiles: List[StockProfile] = []
         failed_batches = 0
 
@@ -243,8 +182,8 @@ class StockProfileService:
     # -----------------------------------------------------------------------
 
     async def collect_hk_profiles(self) -> List[StockProfile]:
-        """Collect HK stock profiles via data-service (granular batching)."""
-        from app.services.data_service_client import get_data_service_client
+        """Collect HK stock profiles via StockPulse (granular batching)."""
+        from app.services.stockpulse_client import get_stockpulse_client
 
         logger.info("[StockProfile] Starting HK profile collection (granular)")
         t0 = time.monotonic()
@@ -255,7 +194,7 @@ class StockProfileService:
             return []
         hk_symbols = hk_symbols[:500]
 
-        client = await get_data_service_client()
+        client = await get_stockpulse_client()
         profiles: List[StockProfile] = []
         failed_batches = 0
 
@@ -295,38 +234,18 @@ class StockProfileService:
         return profiles
 
     # -----------------------------------------------------------------------
-    # Concept board mapping (for daily sync) — now uses dedicated endpoint
+    # Concept board mapping
+    #
+    # TODO: removed in StockPulse migration. The previous
+    # ``collect_cn_concept_mapping`` method called the data-service control
+    # endpoint ``/v1/reference/cn-concept-mapping`` to fetch a full
+    # akshare-driven inversion of A-share concept boards. That control plane
+    # has been moved into the StockPulse admin UI; backend-side scheduled
+    # syncs no longer have a way to bootstrap the mapping. The concept-board
+    # daily-sync Celery task (`worker.tasks.stock_profile_tasks.sync_concept_boards`)
+    # should be reviewed and either removed or re-pointed at a future
+    # StockPulse public endpoint that exposes pre-collected concept data.
     # -----------------------------------------------------------------------
-
-    async def collect_cn_concept_mapping(self) -> Dict[str, List[str]]:
-        """Collect A-share stock -> concept board mapping only (no individual info).
-
-        Uses the dedicated ``/v1/reference/cn-concept-mapping`` endpoint which
-        is much faster than the full profile collection since it only does the
-        concept board inversion step (~200s vs hours).
-
-        Returns:
-            Dict mapping stock code (6-digit) to list of concept board names.
-        """
-        from app.services.data_service_client import get_data_service_client
-
-        logger.info("[StockProfile] Collecting CN concept mapping via data-service")
-        t0 = time.monotonic()
-
-        client = await get_data_service_client()
-        result = await client.fetch_cn_concept_mapping()
-
-        if not result:
-            logger.warning("[StockProfile] CN concept mapping returned no data")
-            return {}
-
-        concepts = result.get("concepts", {})
-        elapsed = time.monotonic() - t0
-        logger.info(
-            "[StockProfile] Concept mapping: %d stocks in %.0fs",
-            len(concepts), elapsed,
-        )
-        return concepts
 
     # -----------------------------------------------------------------------
     # Helpers

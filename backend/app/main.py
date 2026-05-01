@@ -18,6 +18,7 @@ from app.services.data_aggregator import cleanup_data_aggregator
 from app.services.data_service_client import close_data_service_client
 from app.services.qlib_client import close_qlib_client
 from app.services.stock_service import cleanup_stock_service
+from app.services.stockpulse_client import close_stockpulse_client
 
 os.environ.setdefault("LOG_TAG", "web")
 from worker.log_config import setup_logging  # noqa: E402
@@ -288,6 +289,11 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     logger.debug("Closing DataServiceClient...")
     await close_data_service_client()
     logger.debug("DataServiceClient closed")
+
+    # Close StockPulseClient
+    logger.debug("Closing StockPulseClient...")
+    await close_stockpulse_client()
+    logger.debug("StockPulseClient closed")
 
     # Close Qlib client
     logger.debug("Closing Qlib client...")

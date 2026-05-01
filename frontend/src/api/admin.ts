@@ -56,6 +56,50 @@ export interface IntegrationStats {
   last_sync_at: string | null
 }
 
+// StockPulse integration types
+export interface StockPulseConfig {
+  stockpulse_url: string
+  stockpulse_api_key_set: boolean
+}
+
+export interface StockPulseConfigUpdate {
+  stockpulse_url?: string
+  stockpulse_api_key?: string
+}
+
+export interface StockPulseTestResult {
+  connected: boolean
+  error?: string
+  latency_ms?: number
+}
+
+export interface StockPulseProvider {
+  name: string
+  enabled: boolean
+  healthStatus: string // "healthy" | "degraded" | "down" | "unknown"
+  lastCheck?: string // ISO datetime
+  errorMessage?: string
+}
+
+export interface StockPulseMarket {
+  market: string
+  lastCollectionAt?: string // ISO datetime
+  totalBars: number
+  totalSymbols: number
+}
+
+export interface StockPulseHealth {
+  connected: boolean
+  status: string // "healthy" | "degraded"
+  service: string
+  redis: string
+  database: string
+  executor: string
+  providers: StockPulseProvider[]
+  markets: StockPulseMarket[]
+  error?: string
+}
+
 // Backend API format (has separate langgraph section + modelAssignments)
 interface BackendSystemConfig {
   llm: {
@@ -478,31 +522,6 @@ export const adminApi = {
     return response.data
   },
 
-  collectDailyBars: async (market: string): Promise<{ message: string; taskId: string }> => {
-    const response = await apiClient.post<{ message: string; taskId: string }>(`/admin/knowledge-base/daily-bars/${market}/collect`)
-    return response.data
-  },
-
-  collectAllDailyBars: async (): Promise<{ message: string; taskId: string }> => {
-    const response = await apiClient.post<{ message: string; taskId: string }>('/admin/knowledge-base/daily-bars/collect-all')
-    return response.data
-  },
-
-  rebuildDailyBars: async (market: string): Promise<{ message: string; taskId: string }> => {
-    const response = await apiClient.post<{ message: string; taskId: string }>(`/admin/knowledge-base/daily-bars/${market}/rebuild`)
-    return response.data
-  },
-
-  rebuildAllDailyBars: async (): Promise<{ message: string; taskId: string }> => {
-    const response = await apiClient.post<{ message: string; taskId: string }>('/admin/knowledge-base/daily-bars/rebuild-all')
-    return response.data
-  },
-
-  unlockDailyBars: async (market: string): Promise<{ message: string }> => {
-    const response = await apiClient.post<{ message: string }>(`/admin/knowledge-base/daily-bars/${market}/unlock`)
-    return response.data
-  },
-
   syncQlib: async (market: string, full?: boolean): Promise<{ message: string; status: string }> => {
     const response = await apiClient.post<{ message: string; status: string }>(
       `/admin/knowledge-base/daily-bars/${market}/sync-qlib`,
@@ -540,11 +559,6 @@ export const adminApi = {
     return response.data
   },
 
-  updateStockList: async (): Promise<{ message: string; taskId: string }> => {
-    const response = await apiClient.post<{ message: string; taskId: string }>('/admin/knowledge-base/stock-list/update')
-    return response.data
-  },
-
   collectFundamentals: async (market: string): Promise<{ status: string; market: string }> => {
     const response = await apiClient.post<{ status: string; market: string }>(
       `/admin/knowledge-base/fundamentals/${market}/collect`
@@ -577,6 +591,27 @@ export const adminApi = {
 
   getIntegrationStats: async (): Promise<IntegrationStats> => {
     const response = await apiClient.get<IntegrationStats>('/admin/integrations/newsforge/stats')
+    return response.data
+  },
+
+  // StockPulse integration
+  getStockPulseConfig: async (): Promise<StockPulseConfig> => {
+    const response = await apiClient.get<StockPulseConfig>('/admin/integrations/stockpulse')
+    return response.data
+  },
+
+  updateStockPulseConfig: async (data: StockPulseConfigUpdate): Promise<StockPulseConfig> => {
+    const response = await apiClient.patch<StockPulseConfig>('/admin/integrations/stockpulse', data)
+    return response.data
+  },
+
+  testStockPulse: async (): Promise<StockPulseTestResult> => {
+    const response = await apiClient.post<StockPulseTestResult>('/admin/integrations/stockpulse/test')
+    return response.data
+  },
+
+  getStockPulseHealth: async (): Promise<StockPulseHealth> => {
+    const response = await apiClient.get<StockPulseHealth>('/admin/integrations/stockpulse/health')
     return response.data
   },
 

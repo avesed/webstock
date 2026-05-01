@@ -141,6 +141,10 @@ class Settings(BaseSettings):
     NEWSFORGE_API_KEY: str = ""
     NEWSFORGE_WEBHOOK_SECRET: str = ""
 
+    # StockPulse Integration (external data platform via X-API-Key)
+    STOCKPULSE_URL: str = ""
+    STOCKPULSE_API_KEY: str = ""
+
     # RSSHub
     RSSHUB_URL: str = "http://rsshub:1200"
     RSSHUB_ACCESS_KEY: str = ""

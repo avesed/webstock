@@ -52,9 +52,9 @@ class GetSectorIndustrySkill(BaseSkill):
         symbol = normalize_symbol(kwargs.get("symbol"))
         market = kwargs.get("market", "US")
 
-        from app.services.data_service_client import get_data_service_client
+        from app.services.stockpulse_client import get_stockpulse_client
 
-        client = await get_data_service_client()
+        client = await get_stockpulse_client()
         result = await client.get_sector_industry(symbol, market=market)
 
         if not result:

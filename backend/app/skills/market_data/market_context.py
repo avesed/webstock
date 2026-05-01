@@ -26,9 +26,9 @@ class GetMarketContextSkill(BaseSkill):
         )
 
     async def execute(self, **kwargs: Any) -> SkillResult:
-        from app.services.data_service_client import get_data_service_client
+        from app.services.stockpulse_client import get_stockpulse_client
 
-        client = await get_data_service_client()
+        client = await get_stockpulse_client()
         result = await client.get_market_context()
 
         if not result:

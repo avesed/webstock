@@ -275,6 +275,10 @@ services:
       - DATA_SERVICE_URL=http://data-service:8003
       - AI_GATEWAY_URL=http://ai-gateway:8004
       - USE_AI_GATEWAY=${USE_AI_GATEWAY:-false}
+      - STOCKPULSE_URL=${STOCKPULSE_URL:-}
+      - STOCKPULSE_API_KEY=${STOCKPULSE_API_KEY:-}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     volumes:
       - app_data:/app/data
       - ./nginx/ssl:/etc/nginx/ssl:ro

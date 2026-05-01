@@ -27,14 +27,15 @@ celery_app = Celery(
         "worker.tasks.key_rotation",
         "worker.tasks.embedding_tasks",
         "worker.tasks.full_content_tasks",
-        "worker.tasks.stock_list_tasks",
+        # stock_list_tasks + daily_bar_tasks removed during StockPulse migration:
+        # both control planes now live in the StockPulse admin UI.
         "worker.tasks.backtest_cleanup",
         "worker.tasks.rss_monitor",
-        "worker.tasks.daily_bar_tasks",
         "worker.tasks.qlib_sync",
         "worker.tasks.stock_profile_tasks",
         "worker.tasks.session_cleanup",
         "worker.tasks.ml_agent_tasks",
+        "worker.tasks.newsforge_sync",
     ],
 )
 
@@ -59,10 +60,6 @@ celery_app.conf.update(
         "worker.tasks.full_content_tasks.cleanup_expired_news": {"queue": "default"},
         "worker.tasks.full_content_tasks.cleanup_pipeline_events": {"queue": "default"},
         "worker.tasks.full_content_tasks.cleanup_old_usage_records": {"queue": "default"},
-        # Daily bar tasks: thin proxies that delegate to data-service.
-        # Kept on dedicated queue for admin UI backward compatibility.
-        "worker.tasks.daily_bar_tasks.collect_market_daily_bars": {"queue": "daily_bars"},
-        "worker.tasks.daily_bar_tasks.rebuild_market_daily_bars": {"queue": "daily_bars"},
         "worker.tasks.qlib_sync.sync_qlib_market": {"queue": "default"},
     },
 
@@ -131,8 +128,9 @@ celery_app.conf.update(
             "task": "worker.tasks.full_content_tasks.cleanup_pipeline_events",
             "schedule": crontab(hour=4, minute=30),  # Daily at 4:30 AM (after news cleanup)
         },
-        # "update-stock-list": Migrated to data-service APScheduler (Phase 7).
-        # Admin UI can still trigger via stock_list_tasks.update_stock_list.
+        # "update-stock-list": Stock list collection is owned by StockPulse
+        # APScheduler now. The webstock Celery task and its admin UI
+        # trigger were removed during the StockPulse migration.
         "cleanup-old-backtests": {
             "task": "worker.tasks.backtest_cleanup.cleanup_old_backtests",
             "schedule": crontab(hour=5, minute=15),  # Daily at 5:15 AM UTC
@@ -145,9 +143,9 @@ celery_app.conf.update(
             "task": "worker.tasks.rss_monitor.monitor_rss_feeds",
             "schedule": crontab(minute="*/5"),
         },
-        # Daily bar collection migrated to data-service APScheduler (Phase 7).
-        # Beat entries for collect-daily-bars-{cn,hk,us,metal} removed.
-        # Admin UI still dispatches tasks via daily_bar_tasks (thin proxies).
+        # Daily bar collection: ownership moved to StockPulse APScheduler
+        # during the StockPulse migration. The thin daily_bar_tasks proxies
+        # have been deleted; no beat entries remain on the webstock side.
         "sync-concept-boards": {
             "task": "worker.tasks.stock_profile_tasks.sync_concept_boards",
             "schedule": crontab(hour=6, minute=0, day_of_week="1-6"),  # Mon-Sat 6:00 AM UTC (skip Sunday)
@@ -174,6 +172,13 @@ celery_app.conf.update(
             "task": "worker.tasks.ml_agent_tasks.check_auto_tune",
             "schedule": crontab(hour=2, minute=0),  # Daily at 2:00 AM UTC
             "options": {"queue": "celery"},
+        },
+        # NewsForge watched-symbol sync — feeds NewsForge's StockPulse poller
+        # the full set of watchlist symbols across all users every 5 minutes.
+        # NewsForge's hot tier polls every 15 min, so 5 min sync stays ahead.
+        "sync-watched-symbols-to-newsforge": {
+            "task": "worker.tasks.newsforge_sync.sync_watched_symbols_to_newsforge",
+            "schedule": crontab(minute="*/5"),
         },
         # JWT Key Rotation - DISABLED by default
         # Manual rotation recommended: python worker/scripts/manage_keys.py rotate

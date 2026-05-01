@@ -108,16 +108,16 @@ async def get_exchange_rates(use_fallback: bool = True) -> Dict[str, Decimal]:
     except Exception as e:
         logger.warning(f"Failed to read exchange rates from cache: {e}")
 
-    # Fetch from data-service (which calls Finnhub Forex API)
+    # Fetch from StockPulse (which calls Finnhub Forex API)
     try:
-        from app.services.data_service_client import get_data_service_client
-        client = await get_data_service_client()
+        from app.services.stockpulse_client import get_stockpulse_client
+        client = await get_stockpulse_client()
         result = await client.get_forex_rates()
 
         if result and isinstance(result.get("rates"), dict):
             rates = result["rates"]
             if rates:
-                logger.info(f"Fetched exchange rates from data-service: {len(rates)} currencies")
+                logger.info(f"Fetched exchange rates from stockpulse: {len(rates)} currencies")
 
                 # Cache the rates
                 try:
@@ -128,9 +128,9 @@ async def get_exchange_rates(use_fallback: bool = True) -> Dict[str, Decimal]:
 
                 return {k: Decimal(str(v)) for k, v in rates.items()}
 
-        logger.warning("Empty rates response from data-service")
+        logger.warning("Empty rates response from stockpulse")
     except Exception as e:
-        logger.error(f"Failed to fetch exchange rates from data-service: {e}")
+        logger.error(f"Failed to fetch exchange rates from stockpulse: {e}")
 
     # Return fallback rates on failure
     if use_fallback:

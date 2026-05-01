@@ -93,8 +93,8 @@ class StockService:
         aggregator = await self._get_aggregator()
 
         async def fetch_quote() -> Optional[Dict[str, Any]]:
-            from app.services.data_service_client import get_data_service_client
-            client = await get_data_service_client()
+            from app.services.stockpulse_client import get_stockpulse_client
+            client = await get_stockpulse_client()
             return await client.get_quote(symbol, market=market.value)
 
         return await aggregator.get_data(
@@ -127,10 +127,10 @@ class StockService:
         Returns:
             Historical data as dict or None if unavailable
         """
-        from app.services.data_service_client import get_data_service_client
+        from app.services.stockpulse_client import get_stockpulse_client
 
         market = detect_market(symbol)
-        client = await get_data_service_client()
+        client = await get_stockpulse_client()
 
         params: Dict[str, Any] = {
             "period": period.value,
@@ -196,8 +196,8 @@ class StockService:
                     }
                 return None
 
-            from app.services.data_service_client import get_data_service_client
-            client = await get_data_service_client()
+            from app.services.stockpulse_client import get_stockpulse_client
+            client = await get_stockpulse_client()
             return await client.get_info(symbol, market=market.value)
 
         return await aggregator.get_data(
@@ -233,8 +233,8 @@ class StockService:
         aggregator = await self._get_aggregator()
 
         async def fetch_financials() -> Optional[Dict[str, Any]]:
-            from app.services.data_service_client import get_data_service_client
-            client = await get_data_service_client()
+            from app.services.stockpulse_client import get_stockpulse_client
+            client = await get_stockpulse_client()
             return await client.get_financials(symbol, market=market.value)
 
         return await aggregator.get_data(
@@ -271,8 +271,8 @@ class StockService:
         cache_key = hashlib.md5(f"{query}:{','.join(m.value for m in markets)}".encode()).hexdigest()[:12]
 
         async def fetch_search() -> List[Dict[str, Any]]:
-            from app.services.data_service_client import get_data_service_client
-            client = await get_data_service_client()
+            from app.services.stockpulse_client import get_stockpulse_client
+            client = await get_stockpulse_client()
             market_str = ",".join(m.value for m in markets)
             results = await client.search(query, markets=market_str)
             if not results:

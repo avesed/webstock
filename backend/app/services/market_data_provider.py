@@ -37,9 +37,9 @@ class MarketDataProvider:
         symbol: str,
     ) -> Optional[Dict[str, Any]]:
         """Get institutional holders for a stock (US/HK)."""
-        from app.services.data_service_client import get_data_service_client
+        from app.services.stockpulse_client import get_stockpulse_client
 
-        client = await get_data_service_client()
+        client = await get_stockpulse_client()
         return await client.get_institutional(symbol)
 
     # ============ Sector/Industry Info ============
@@ -49,9 +49,9 @@ class MarketDataProvider:
         symbol: str,
     ) -> Optional[Dict[str, Any]]:
         """Get sector and industry classification for a stock."""
-        from app.services.data_service_client import get_data_service_client
+        from app.services.stockpulse_client import get_stockpulse_client
 
-        client = await get_data_service_client()
+        client = await get_stockpulse_client()
         return await client.get_sector_industry(symbol)
 
     # ============ Analyst Ratings ============
@@ -61,9 +61,9 @@ class MarketDataProvider:
         symbol: str,
     ) -> Optional[Dict[str, Any]]:
         """Get analyst ratings and price targets for a stock."""
-        from app.services.data_service_client import get_data_service_client
+        from app.services.stockpulse_client import get_stockpulse_client
 
-        client = await get_data_service_client()
+        client = await get_stockpulse_client()
         return await client.get_analyst_ratings(symbol)
 
     async def get_technical_info(
@@ -71,9 +71,9 @@ class MarketDataProvider:
         symbol: str,
     ) -> Optional[Dict[str, Any]]:
         """Get technical indicator data (SMA, ADTV, beta, 52-week range)."""
-        from app.services.data_service_client import get_data_service_client
+        from app.services.stockpulse_client import get_stockpulse_client
 
-        client = await get_data_service_client()
+        client = await get_stockpulse_client()
         return await client.get_technical(symbol)
 
     # ============ Market Index Data ============
@@ -84,9 +84,9 @@ class MarketDataProvider:
         period: str = "5d",
     ) -> Optional[Dict[str, Any]]:
         """Get market index data."""
-        from app.services.data_service_client import get_data_service_client
+        from app.services.stockpulse_client import get_stockpulse_client
 
-        client = await get_data_service_client()
+        client = await get_stockpulse_client()
         result = await client.get_market_indices(period=period)
         if not result:
             return None
@@ -102,9 +102,9 @@ class MarketDataProvider:
         period: str = "5d",
     ) -> Dict[str, Optional[Dict[str, Any]]]:
         """Get all major market indices."""
-        from app.services.data_service_client import get_data_service_client
+        from app.services.stockpulse_client import get_stockpulse_client
 
-        client = await get_data_service_client()
+        client = await get_stockpulse_client()
         result = await client.get_market_indices(period=period)
         if not result:
             return {name: None for name in MARKET_INDICES}
@@ -118,10 +118,10 @@ class MarketDataProvider:
         quarter: Optional[str] = None,
     ) -> Optional[Dict[str, Any]]:
         """Get fund holdings for A-share stock."""
-        from app.services.data_service_client import get_data_service_client
+        from app.services.stockpulse_client import get_stockpulse_client
 
         code = symbol.replace(".SS", "").replace(".SZ", "")
-        client = await get_data_service_client()
+        client = await get_stockpulse_client()
         return await client.get_fund_holdings(code)
 
     # ============ Northbound Individual Stock Holding ============
@@ -132,10 +132,10 @@ class MarketDataProvider:
         days: int = 30,
     ) -> Optional[Dict[str, Any]]:
         """Get northbound holding for a specific A-share stock."""
-        from app.services.data_service_client import get_data_service_client
+        from app.services.stockpulse_client import get_stockpulse_client
 
         code = symbol.replace(".SS", "").replace(".SZ", "")
-        client = await get_data_service_client()
+        client = await get_stockpulse_client()
         return await client.get_northbound_holding(code, days=days)
 
     # ============ Northbound Capital Flow ============
@@ -146,9 +146,9 @@ class MarketDataProvider:
         days: int = 30,
     ) -> Optional[Dict[str, Any]]:
         """Get northbound capital flow history."""
-        from app.services.data_service_client import get_data_service_client
+        from app.services.stockpulse_client import get_stockpulse_client
 
-        client = await get_data_service_client()
+        client = await get_stockpulse_client()
         return await client.get_northbound_flow(direction, days=days)
 
     # ============ Industry Sector Data ============
@@ -156,24 +156,23 @@ class MarketDataProvider:
     async def get_industry_sector_list(self) -> Optional[Dict[str, Any]]:
         """Get list of all industry sectors with real-time data.
 
-        Note: This endpoint may not exist in data-service yet.
-        Returns None if unavailable.
+        Delegates to StockPulse's ``/api/v1/data/analysis/sector-list``
+        (akshare-backed).  Returns ``None`` when StockPulse is disabled or
+        the endpoint is unavailable.
         """
-        from app.services.data_service_client import get_data_service_client
+        from app.services.stockpulse_client import get_stockpulse_client
 
-        client = await get_data_service_client()
-        # Delegate to sector_industry with a special marker
-        # This maps to a data-service endpoint if available
-        return await client._request("GET", "/v1/analysis/industry-sectors")
+        client = await get_stockpulse_client()
+        return await client.get_sector_list()
 
     async def get_stock_industry_cn(
         self,
         symbol: str,
     ) -> Optional[Dict[str, Any]]:
         """Get industry information for A-share stock."""
-        from app.services.data_service_client import get_data_service_client
+        from app.services.stockpulse_client import get_stockpulse_client
 
-        client = await get_data_service_client()
+        client = await get_stockpulse_client()
         return await client.get_sector_industry(symbol, market="CN")
 
     async def get_sector_history(
@@ -185,22 +184,19 @@ class MarketDataProvider:
     ) -> Optional[Dict[str, Any]]:
         """Get historical data for an industry sector.
 
-        Note: This endpoint may not exist in data-service yet.
-        Returns None if unavailable.
+        Delegates to StockPulse's
+        ``/api/v1/data/analysis/sector-history/{sector_name}``
+        (akshare-backed).  Returns ``None`` when StockPulse is disabled or
+        the endpoint is unavailable.
         """
-        from app.services.data_service_client import get_data_service_client
+        from app.services.stockpulse_client import get_stockpulse_client
 
-        client = await get_data_service_client()
-        params = {
-            "sector_name": sector_name,
-            "period": period,
-        }
-        if start_date:
-            params["start_date"] = start_date
-        if end_date:
-            params["end_date"] = end_date
-        return await client._request(
-            "GET", "/v1/analysis/sector-history", params=params
+        client = await get_stockpulse_client()
+        return await client.get_sector_history(
+            sector_name,
+            period=period,
+            start_date=start_date,
+            end_date=end_date,
         )
 
     # ============ Hong Kong Stock History ============
@@ -211,9 +207,9 @@ class MarketDataProvider:
         days: int = 30,
     ) -> Optional[Dict[str, Any]]:
         """Get Hong Kong stock historical data."""
-        from app.services.data_service_client import get_data_service_client
+        from app.services.stockpulse_client import get_stockpulse_client
 
-        client = await get_data_service_client()
+        client = await get_stockpulse_client()
         return await client.get_history(
             symbol, period=f"{days}d", interval="1d", market="hk"
         )
@@ -222,9 +218,9 @@ class MarketDataProvider:
 
     async def get_market_context(self) -> Dict[str, Any]:
         """Get aggregated market context for sentiment analysis."""
-        from app.services.data_service_client import get_data_service_client
+        from app.services.stockpulse_client import get_stockpulse_client
 
-        client = await get_data_service_client()
+        client = await get_stockpulse_client()
         result = await client.get_market_context()
         if result:
             return result
@@ -236,7 +232,7 @@ class MarketDataProvider:
             "shenzhen_component": None,
             "northbound_summary": None,
             "fetched_at": None,
-            "source": "data-service",
+            "source": "stockpulse",
         }
 
 

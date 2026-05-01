@@ -38,7 +38,7 @@ from app.schemas.stock import (
     WilliamsRResponse,
 )
 from app.services.indicator_service import compute_indicator_series
-from app.services.data_service_client import get_data_service_client
+from app.services.stockpulse_client import get_stockpulse_client
 from app.services.stock_service import (
     HistoryInterval as ServiceInterval,
     HistoryPeriod as ServicePeriod,
@@ -887,7 +887,7 @@ async def get_latest_bars(
     )
     end_str = datetime.now(tz=timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
 
-    client = await get_data_service_client()
+    client = await get_stockpulse_client()
     try:
         result = await client.get_history(
             symbol,

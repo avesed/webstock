@@ -42,10 +42,9 @@ _client_lock = asyncio.Lock()
 # Timeout presets
 _DEFAULT_TIMEOUT = httpx.Timeout(30.0, connect=10.0)
 _MEDIUM_TIMEOUT = httpx.Timeout(60.0, connect=10.0)
-_LONG_TIMEOUT = httpx.Timeout(120.0, connect=10.0)
 _VERY_LONG_TIMEOUT = httpx.Timeout(300.0, connect=10.0)
-# CN concept mapping: ~400 boards × akshare API ≈ 15-20 min
-_CONCEPT_MAPPING_TIMEOUT = httpx.Timeout(1500.0, connect=10.0)
+# _LONG_TIMEOUT and _CONCEPT_MAPPING_TIMEOUT (with the heavy collection
+# helpers that used them) were removed during the StockPulse migration.
 
 
 class DataServiceClient:
@@ -379,253 +378,20 @@ class DataServiceClient:
         )
 
     # ==================================================================
-    # Reference endpoints (/v1/reference/...)
-    # ==================================================================
-
-    async def build_stock_list(self) -> Optional[Dict[str, Any]]:
-        """Trigger data-service to build the stock list and write to DB.
-
-        Data-service fetches ~37K symbols from Finnhub + AKShare, writes
-        directly to the ``stock_symbols`` PostgreSQL table, and sets Redis
-        ``stock_list:version``.  Returns summary with total count.
-
-        Uses very long timeout because the CN EastMoney API fetches ~5,800
-        A-shares in 58 paginated requests (~160s).
-        """
-        return await self._request(
-            "POST", "/v1/reference/stock-list",
-            timeout=_VERY_LONG_TIMEOUT,
-        )
-
-    async def collect_profiles(
-        self, market: str, *, symbols: Optional[List[str]] = None,
-    ) -> Optional[Dict[str, Any]]:
-        """Collect stock profiles for a given market (legacy monolithic)."""
-        body = {"symbols": symbols or []}
-        return await self._request(
-            "POST", f"/v1/reference/stock-profiles/{market}",
-            json=body,
-            timeout=_VERY_LONG_TIMEOUT,
-        )
-
-    async def fetch_cn_concept_mapping(self) -> Optional[Dict[str, Any]]:
-        """Fetch A-share concept board → stock mapping.
-
-        Returns dict with keys: concepts, names, count.
-        """
-        return await self._request(
-            "POST", "/v1/reference/cn-concept-mapping",
-            timeout=_CONCEPT_MAPPING_TIMEOUT,  # ~400 boards × akshare ≈ 15-20min
-        )
-
-    async def fetch_stock_profiles_batch(
-        self, market: str, symbols: List[str],
-    ) -> Optional[Dict[str, Any]]:
-        """Fetch stock profiles for a small batch (max 50 symbols).
-
-        Returns dict with keys: profiles, count, market.
-        """
-        return await self._request(
-            "POST", "/v1/reference/stock-profiles-batch",
-            json={"market": market, "symbols": symbols},
-            timeout=_MEDIUM_TIMEOUT,  # ≤50 symbols ≈ 20-40s
-        )
-
-    # ==================================================================
-    # Stock profile collection endpoints (/v1/collection/stock-profiles/...)
+    # Reference / collection / control endpoints — REMOVED during the
+    # StockPulse migration.
     #
-    # These endpoints return plain JSON (no ApiResponse envelope), so we
-    # use _collection_request() instead of _request().
+    # ``build_stock_list``, ``collect_profiles``, ``fetch_cn_concept_mapping``,
+    # ``fetch_stock_profiles_batch``, ``download_market_profiles``,
+    # ``download_concept_mapping``, ``trigger_profile_collection``,
+    # ``get_profile_collection_progress``, ``trigger_daily_bar_collection``,
+    # ``trigger_daily_bar_rebuild``, ``get_daily_bar_progress``, and
+    # ``unlock_daily_bars`` were deleted because their ownership moved to
+    # StockPulse's APScheduler + admin UI. The internal ``_collection_request``
+    # helper and the ``_CONCEPT_MAPPING_TIMEOUT`` preset that supported them
+    # were removed at the same time. Only the read-only news/content methods
+    # below and the ``health`` check remain on this client.
     # ==================================================================
-
-    async def _collection_request(
-        self,
-        method: str,
-        path: str,
-        *,
-        timeout: Optional[httpx.Timeout] = None,
-    ) -> Optional[Dict[str, Any]]:
-        """Execute an HTTP request for collection endpoints (no ApiResponse envelope).
-
-        Unlike ``_request()``, this returns the raw JSON body directly since
-        collection endpoints do not use the ``ApiResponse`` wrapper.
-        """
-        t0 = time.monotonic()
-        try:
-            extra_headers: Dict[str, str] = {}
-            rid = get_request_id()
-            if rid:
-                extra_headers["X-Request-ID"] = rid
-
-            resp = await self._client.request(
-                method, path, timeout=timeout, headers=extra_headers,
-            )
-            elapsed = time.monotonic() - t0
-            resp.raise_for_status()
-            body = resp.json()
-
-            logger.debug(
-                "data-service %s %s -> %d (%.2fs)",
-                method.upper(), path, resp.status_code, elapsed,
-            )
-            return body
-
-        except httpx.TimeoutException:
-            elapsed = time.monotonic() - t0
-            logger.error(
-                "data-service timeout: %s %s after %.2fs",
-                method.upper(), path, elapsed,
-            )
-            return None
-        except httpx.ConnectError:
-            elapsed = time.monotonic() - t0
-            logger.error(
-                "data-service unreachable: %s %s after %.2fs",
-                method.upper(), path, elapsed,
-            )
-            return None
-        except httpx.HTTPStatusError as e:
-            elapsed = time.monotonic() - t0
-            # 404 is expected for "no profiles available yet"
-            if e.response.status_code == 404:
-                logger.info(
-                    "data-service %s %s -> 404 (%.2fs)",
-                    method.upper(), path, elapsed,
-                )
-            else:
-                body_text = e.response.text[:300] if e.response else ""
-                logger.error(
-                    "data-service HTTP %d: %s %s (%.2fs) -- %s",
-                    e.response.status_code, method.upper(), path,
-                    elapsed, body_text,
-                )
-            return None
-        except Exception:
-            elapsed = time.monotonic() - t0
-            logger.exception(
-                "data-service unexpected error: %s %s (%.2fs)",
-                method.upper(), path, elapsed,
-            )
-            return None
-
-    async def download_market_profiles(
-        self, market: str,
-    ) -> Optional[List[Dict[str, Any]]]:
-        """Download pre-collected stock profiles from data-service.
-
-        The data-service collects profiles on its own schedule and saves
-        them to disk. This endpoint downloads the cached result.
-
-        Args:
-            market: ``'cn'``, ``'us'``, or ``'hk'``.
-
-        Returns:
-            List of profile dicts, or ``None`` if not available or on error.
-        """
-        result = await self._collection_request(
-            "GET",
-            f"/v1/collection/stock-profiles/{market}/download",
-            timeout=_LONG_TIMEOUT,  # large JSON payload for CN (~5K profiles)
-        )
-        if result is None:
-            return None
-        # The endpoint returns {market, count, profiles, metadata, ?concept_mapping}
-        profiles = result.get("profiles")
-        if isinstance(profiles, list):
-            return profiles
-        return None
-
-    async def download_concept_mapping(self) -> Optional[Dict[str, Any]]:
-        """Download pre-collected CN concept mapping from data-service.
-
-        Returns:
-            Dict with keys ``concepts`` and ``names``, or ``None`` on error.
-        """
-        result = await self._collection_request(
-            "GET",
-            "/v1/collection/stock-profiles/cn/concept-mapping/download",
-            timeout=_MEDIUM_TIMEOUT,
-        )
-        if result is None:
-            return None
-        # The endpoint returns {concepts, names, count}
-        if "concepts" in result:
-            return result
-        return None
-
-    async def trigger_profile_collection(
-        self, market: str,
-    ) -> Optional[Dict[str, Any]]:
-        """Trigger stock profile collection on data-service.
-
-        The collection runs asynchronously in the data-service. Use
-        ``get_profile_collection_progress`` to poll for completion.
-
-        Args:
-            market: ``'cn'``, ``'us'``, or ``'hk'``.
-
-        Returns:
-            Status dict with ``status``, ``market``, ``message`` keys,
-            or ``None`` on error.
-        """
-        return await self._collection_request(
-            "POST",
-            f"/v1/collection/stock-profiles/{market}/collect",
-            timeout=_DEFAULT_TIMEOUT,
-        )
-
-    async def get_profile_collection_progress(
-        self, market: str,
-    ) -> Optional[Dict[str, Any]]:
-        """Get stock profile collection progress from data-service.
-
-        Args:
-            market: ``'cn'``, ``'us'``, or ``'hk'``.
-
-        Returns:
-            Progress dict with ``market``, ``progress``, ``metadata``,
-            ``task_running`` keys, or ``None`` on error.
-        """
-        return await self._collection_request(
-            "GET",
-            f"/v1/collection/stock-profiles/{market}/progress",
-            timeout=_DEFAULT_TIMEOUT,
-        )
-
-    # ==================================================================
-    # Daily bar collection endpoints (/v1/collection/daily-bars/...)
-    #
-    # These endpoints return plain JSON (no ApiResponse envelope), so we
-    # use _collection_request() instead of _request().
-    # ==================================================================
-
-    async def trigger_daily_bar_collection(self, market: str) -> Optional[Dict[str, Any]]:
-        """Trigger daily bar collection on data-service."""
-        return await self._collection_request(
-            "POST", f"/v1/collection/daily-bars/{market}/collect",
-            timeout=_DEFAULT_TIMEOUT,
-        )
-
-    async def trigger_daily_bar_rebuild(self, market: str) -> Optional[Dict[str, Any]]:
-        """Trigger daily bar rebuild on data-service."""
-        return await self._collection_request(
-            "POST", f"/v1/collection/daily-bars/{market}/rebuild",
-            timeout=_DEFAULT_TIMEOUT,
-        )
-
-    async def get_daily_bar_progress(self, market: str) -> Optional[Dict[str, Any]]:
-        """Get daily bar collection progress from data-service."""
-        return await self._collection_request(
-            "GET", f"/v1/collection/daily-bars/{market}/progress",
-            timeout=_DEFAULT_TIMEOUT,
-        )
-
-    async def unlock_daily_bars(self, market: str) -> Optional[Dict[str, Any]]:
-        """Force-unlock daily bar collection on data-service."""
-        return await self._collection_request(
-            "POST", f"/v1/collection/daily-bars/{market}/unlock",
-            timeout=_DEFAULT_TIMEOUT,
-        )
 
     # ==================================================================
     # Health

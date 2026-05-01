@@ -659,6 +659,15 @@ class NewsConsumer:
         except Exception as e:
             logger.debug("关闭DataServiceClient: %s", e)
 
+        # StockPulseClient — even though news_consumer doesn't directly call
+        # StockPulse today, it shares the import graph and any future skill
+        # might wire it in.  Close defensively.
+        try:
+            from app.services.stockpulse_client import close_stockpulse_client
+            await close_stockpulse_client()
+        except Exception as e:
+            logger.debug("关闭StockPulseClient: %s", e)
+
         # Redis
         try:
             from app.db.redis import close_redis

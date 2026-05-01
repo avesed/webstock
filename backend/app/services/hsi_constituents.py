@@ -3,7 +3,7 @@ Hang Seng Index constituent stocks service.
 
 Provides HSI constituent list with fallback:
   1. Redis cache (24h TTL)
-  2. data-service API (akshare-based, via DataServiceClient)
+  2. StockPulse API (akshare-based, via StockPulseClient)
   3. Static hardcoded list (~82 constituents as of late 2025)
 """
 
@@ -54,8 +54,8 @@ class HSIConstituentService:
         if cached is not None:
             return cached
 
-        # Layer 1: data-service API
-        symbols = await self._fetch_from_data_service()
+        # Layer 1: StockPulse API
+        symbols = await self._fetch_from_stockpulse()
         if symbols:
             await self._save_to_cache(symbols)
             return symbols
@@ -95,21 +95,21 @@ class HSIConstituentService:
         except Exception as e:
             logger.warning("Failed to cache HSI constituents: %s", e)
 
-    async def _fetch_from_data_service(self) -> Optional[list[str]]:
-        """Fetch HSI constituents from data-service."""
+    async def _fetch_from_stockpulse(self) -> Optional[list[str]]:
+        """Fetch HSI constituents from StockPulse."""
         try:
-            from app.services.data_service_client import get_data_service_client
-            client = await get_data_service_client()
+            from app.services.stockpulse_client import get_stockpulse_client
+            client = await get_stockpulse_client()
             result = await client.get_hsi_constituents()
             if result and isinstance(result.get("symbols"), list):
                 symbols = result["symbols"]
                 logger.info(
-                    "Fetched %d HSI constituents from data-service",
+                    "Fetched %d HSI constituents from stockpulse",
                     len(symbols),
                 )
                 return symbols
         except Exception as e:
-            logger.warning("data-service HSI constituents failed: %s", e)
+            logger.warning("stockpulse HSI constituents failed: %s", e)
         return None
 
 

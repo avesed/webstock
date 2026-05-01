@@ -1,7 +1,7 @@
 import { useCallback, useRef, useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useTranslation } from 'react-i18next'
-import { Database, Newspaper, FileText, BookOpen, BarChart3, Loader2, RefreshCw, AlertCircle, AlertTriangle, Unlock, List, TrendingUp } from 'lucide-react'
+import { Database, Newspaper, FileText, BookOpen, BarChart3, Loader2, RefreshCw, AlertCircle, AlertTriangle, Unlock, List, TrendingUp, Info, ExternalLink } from 'lucide-react'
 
 import { adminApi, type KnowledgeBaseStatsResponse, type QlibSyncProgress } from '@/api/admin'
 import { getErrorMessage } from '@/api/client'
@@ -9,6 +9,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { Skeleton } from '@/components/ui/skeleton'
+import { Alert, AlertTitle, AlertDescription } from '@/components/ui/alert'
 import { useToast } from '@/hooks/useToast'
 
 // Dynamic i18n key helper -- bypasses strict key checking for runtime-constructed keys
@@ -156,12 +157,8 @@ function EmbeddingCard({
 
 function StockListCard({
   stockList,
-  actionLoading,
-  onAction,
 }: {
   stockList: KnowledgeBaseStats['stockList'] | null | undefined
-  actionLoading: string | null
-  onAction: (key: string, action: () => Promise<unknown>) => void
 }) {
   const { t } = useTranslation('admin')
 
@@ -207,23 +204,34 @@ function StockListCard({
               {t('knowledge.noData')}
             </div>
           )}
-
-          <div className="flex flex-wrap gap-2">
-            <Button
-              size="sm"
-              variant="outline"
-              disabled={actionLoading !== null}
-              onClick={() => onAction('update-stock-list', () => adminApi.updateStockList())}
-            >
-              {actionLoading === 'update-stock-list' ? (
-                <Loader2 className="h-3 w-3 animate-spin mr-1" />
-              ) : (
-                <RefreshCw className="h-3 w-3 mr-1" />
-              )}
-              {t('knowledge.update')}
-            </Button>
-          </div>
         </div>
+      </CardContent>
+    </Card>
+  )
+}
+
+function DataCollectionNoticeCard({ stockpulseUrl }: { stockpulseUrl: string | undefined }) {
+  const { t } = useTranslation('admin')
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle>{t('knowledge.dataCollection.title')}</CardTitle>
+        <CardDescription>{t('knowledge.dataCollection.description')}</CardDescription>
+      </CardHeader>
+      <CardContent>
+        <Alert>
+          <Info className="h-4 w-4" />
+          <AlertTitle>{t('knowledge.dataCollection.movedTitle')}</AlertTitle>
+          <AlertDescription>{t('knowledge.dataCollection.movedDescription')}</AlertDescription>
+        </Alert>
+        {stockpulseUrl && (
+          <Button asChild className="mt-4" variant="outline">
+            <a href={stockpulseUrl} target="_blank" rel="noopener noreferrer">
+              {t('knowledge.dataCollection.openConsole')}
+              <ExternalLink className="ml-2 h-4 w-4" />
+            </a>
+          </Button>
+        )}
       </CardContent>
     </Card>
   )
@@ -432,38 +440,6 @@ function DailyBarsCard({
               {t('knowledge.dailyBarsDesc')}
             </CardDescription>
           </div>
-          <div className="flex gap-2">
-            <Button
-              size="sm"
-              variant="outline"
-              disabled={actionLoading !== null}
-              onClick={() => onAction('collect-all', () => adminApi.collectAllDailyBars())}
-            >
-              {actionLoading === 'collect-all' ? (
-                <Loader2 className="h-3 w-3 animate-spin mr-1" />
-              ) : (
-                <RefreshCw className="h-3 w-3 mr-1" />
-              )}
-              {t('knowledge.collectAll')}
-            </Button>
-            <Button
-              size="sm"
-              variant="destructive"
-              disabled={actionLoading !== null}
-              onClick={() =>
-                onAction(
-                  'rebuild-all-bars',
-                  () => adminApi.rebuildAllDailyBars(),
-                  t('knowledge.rebuildBarsConfirmAll'),
-                )
-              }
-            >
-              {actionLoading === 'rebuild-all-bars' ? (
-                <Loader2 className="h-3 w-3 animate-spin mr-1" />
-              ) : null}
-              {t('knowledge.rebuildAll')}
-            </Button>
-          </div>
         </div>
       </CardHeader>
       <CardContent>
@@ -474,6 +450,7 @@ function DailyBarsCard({
             const lock = locks?.[market]
             const isLocked = lock?.locked === true
             const isQueued = !isLocked && lock?.queued === true
+            const isQlibSyncing = qlibProgress?.[market]?.status === 'syncing'
             return (
               <div key={market} className="space-y-2 rounded-md border p-3">
                 <div className="flex items-center justify-between">
@@ -491,101 +468,41 @@ function DailyBarsCard({
                     )}
                   </span>
                   <div className="flex gap-1">
-                    {isLocked ? (
-                      <Button
-                        size="sm"
-                        variant="ghost"
-                        className="h-7 px-2 text-xs text-orange-600 hover:text-orange-700"
-                        disabled={actionLoading !== null}
-                        onClick={() =>
-                          onAction(
-                            `unlock-${market}`,
-                            () => adminApi.unlockDailyBars(market),
-                            td(t, 'knowledge.unlockConfirm', { market: td(t, `knowledge.market_${market}`) }),
-                          )
-                        }
-                      >
-                        {actionLoading === `unlock-${market}` ? (
-                          <Loader2 className="h-3 w-3 animate-spin" />
-                        ) : (
-                          <><Unlock className="h-3 w-3 mr-1" />{t('knowledge.unlock')}</>
-                        )}
-                      </Button>
-                    ) : isQueued ? (
-                      <Loader2 className="h-3 w-3 animate-spin text-blue-500" />
-                    ) : (
-                      <>
-                        <Button
-                          size="sm"
-                          variant="ghost"
-                          className="h-7 px-2 text-xs"
-                          disabled={actionLoading !== null}
-                          onClick={() =>
-                            onAction(`collect-${market}`, () => adminApi.collectDailyBars(market))
-                          }
-                        >
-                          {actionLoading === `collect-${market}` ? (
-                            <Loader2 className="h-3 w-3 animate-spin" />
-                          ) : (
-                            t('knowledge.collect')
-                          )}
-                        </Button>
-                        <Button
-                          size="sm"
-                          variant="ghost"
-                          className="h-7 px-2 text-xs"
-                          disabled={actionLoading !== null || qlibProgress?.[market]?.status === 'syncing'}
-                          onClick={() =>
-                            onAction(`sync-qlib-${market}`, () => adminApi.syncQlib(market))
-                          }
-                        >
-                          {actionLoading === `sync-qlib-${market}` || qlibProgress?.[market]?.status === 'syncing' ? (
-                            <Loader2 className="h-3 w-3 animate-spin" />
-                          ) : (
-                            <RefreshCw className="h-3 w-3 mr-1" />
-                          )}
-                          {t('knowledge.syncQlib')}
-                        </Button>
-                        <Button
-                          size="sm"
-                          variant="ghost"
-                          className="h-7 px-2 text-xs text-destructive hover:text-destructive"
-                          disabled={actionLoading !== null || qlibProgress?.[market]?.status === 'syncing'}
-                          onClick={() =>
-                            onAction(
-                              `rebuild-qlib-${market}`,
-                              () => adminApi.syncQlib(market, true),
-                              td(t, 'knowledge.rebuildQlibConfirm', { market: td(t, `knowledge.market_${market}`) }),
-                            )
-                          }
-                        >
-                          {actionLoading === `rebuild-qlib-${market}` || qlibProgress?.[market]?.status === 'syncing' ? (
-                            <Loader2 className="h-3 w-3 animate-spin" />
-                          ) : (
-                            t('knowledge.rebuildQlib')
-                          )}
-                        </Button>
-                        <Button
-                          size="sm"
-                          variant="ghost"
-                          className="h-7 px-2 text-xs text-destructive hover:text-destructive"
-                          disabled={actionLoading !== null}
-                          onClick={() =>
-                            onAction(
-                              `rebuild-${market}`,
-                              () => adminApi.rebuildDailyBars(market),
-                              td(t, 'knowledge.rebuildBarsConfirm', { market: td(t, `knowledge.market_${market}`) }),
-                            )
-                          }
-                        >
-                          {actionLoading === `rebuild-${market}` ? (
-                            <Loader2 className="h-3 w-3 animate-spin" />
-                          ) : (
-                            t('knowledge.rebuildBars')
-                          )}
-                        </Button>
-                      </>
-                    )}
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      className="h-7 px-2 text-xs"
+                      disabled={actionLoading !== null || isQlibSyncing}
+                      onClick={() =>
+                        onAction(`sync-qlib-${market}`, () => adminApi.syncQlib(market))
+                      }
+                    >
+                      {actionLoading === `sync-qlib-${market}` || isQlibSyncing ? (
+                        <Loader2 className="h-3 w-3 animate-spin" />
+                      ) : (
+                        <RefreshCw className="h-3 w-3 mr-1" />
+                      )}
+                      {t('knowledge.syncQlib')}
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      className="h-7 px-2 text-xs text-destructive hover:text-destructive"
+                      disabled={actionLoading !== null || isQlibSyncing}
+                      onClick={() =>
+                        onAction(
+                          `rebuild-qlib-${market}`,
+                          () => adminApi.syncQlib(market, true),
+                          td(t, 'knowledge.rebuildQlibConfirm', { market: td(t, `knowledge.market_${market}`) }),
+                        )
+                      }
+                    >
+                      {actionLoading === `rebuild-qlib-${market}` || isQlibSyncing ? (
+                        <Loader2 className="h-3 w-3 animate-spin" />
+                      ) : (
+                        t('knowledge.rebuildQlib')
+                      )}
+                    </Button>
                   </div>
                 </div>
 
@@ -864,6 +781,13 @@ export default function KnowledgeBase() {
     },
   })
 
+  // StockPulse config (for "Open Console" link in data-collection notice)
+  const { data: stockpulseConfig } = useQuery({
+    queryKey: ['stockpulse-config'],
+    queryFn: () => adminApi.getStockPulseConfig(),
+  })
+  const stockpulseUrl = stockpulseConfig?.stockpulse_url
+
   const [actionLoading, setActionLoading] = useState<string | null>(null)
 
   const handleAction = useCallback(async (
@@ -1009,13 +933,12 @@ export default function KnowledgeBase() {
         <p className="text-muted-foreground text-sm">{t('knowledge.description')}</p>
       </div>
 
+      {/* Data Collection moved to StockPulse — notice + console link */}
+      <DataCollectionNoticeCard stockpulseUrl={stockpulseUrl} />
+
       {/* Embedding Knowledge Bases: 2x2 grid */}
       <div className="grid gap-4 md:grid-cols-2">
-        <StockListCard
-          stockList={stats?.stockList}
-          actionLoading={actionLoading}
-          onAction={handleAction}
-        />
+        <StockListCard stockList={stats?.stockList} />
         <EmbeddingCard
           title={t('knowledge.news')}
           description={t('knowledge.newsDesc')}
