@@ -261,7 +261,7 @@ class NewsForgeProxy:
         params: dict[str, Any] = {
             "page": page,
             "page_size": page_size,
-            "category": "finance",
+            "has_market_impact": "true",
         }
         if market:
             params["market"] = market.lower()
@@ -345,7 +345,7 @@ class NewsForgeProxy:
             "page": 1,
             "page_size": 20,
             "sort_by": "value_score",
-            "category": "finance",
+            "has_market_impact": "true",
         }
         if market:
             params["market"] = market.lower()
@@ -479,7 +479,7 @@ class NewsForgeProxy:
             "q": query,
             "limit": page_size,
             "offset": offset,
-            "category": "finance",
+            "has_market_impact": "true",
         }
         if market:
             params["market"] = market.lower()
