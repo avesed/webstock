@@ -145,4 +145,4 @@ async def _sync_to_newsforge() -> dict:
 )
 def sync_watched_symbols_to_newsforge() -> dict:
     """Celery task: sync watchlist symbols to NewsForge."""
-    return run_async_task(_sync_to_newsforge())
+    return run_async_task(_sync_to_newsforge)
