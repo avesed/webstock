@@ -2,7 +2,7 @@
 
 - run_ml_agent_session: Runs the initial agent loop (profile + LLM + training)
   asynchronously, dispatched by the API endpoint.
-- poll_ml_agent_tasks: Polls data-processor for completed training tasks
+- poll_ml_agent_tasks: Polls AlphaForge for completed training tasks
   and resumes suspended ML Agent sessions (every 30s).
 - cleanup_stuck_ml_agents: Marks suspended backtests older than 2h as failed
   and NULLs agent_conversation on old completed/failed backtests (daily).
@@ -100,7 +100,7 @@ def poll_ml_agent_tasks(self):
     """Poll for completed ML training tasks and resume agent sessions.
 
     Runs every 30s via beat. Scans Redis for ml_agent:pending:* keys,
-    checks data-processor task status, and resumes agent on completion.
+    checks AlphaForge task status, and resumes agent on completion.
     """
     run_async_task(_poll_pending_tasks)
 
@@ -152,7 +152,7 @@ async def _poll_pending_tasks():
             continue
 
         try:
-            # Query data-processor for task status
+            # Query AlphaForge for task status
             task_status = await client.ml_get_training_task(task_id)
             status = task_status.get("status", "unknown")
 
@@ -195,11 +195,11 @@ async def _poll_pending_tasks():
                 )
 
         except AlphaForgeServiceError as e:
-            # If task not found (404), data-processor likely restarted
+            # If task not found (404), AlphaForge likely restarted
             # and lost in-memory state. Mark the backtest as failed.
             if "404" in str(e) or "not found" in str(e).lower():
                 logger.warning(
-                    "ML Agent poll: task %s not found (data-processor may have restarted), "
+                    "ML Agent poll: task %s not found (AlphaForge may have restarted), "
                     "marking backtest %s as failed",
                     task_id,
                     backtest_id,
@@ -207,11 +207,11 @@ async def _poll_pending_tasks():
                 await redis.delete(key)
                 await _mark_failed(
                     backtest_id,
-                    f"Training task {task_id} lost (data-processor restart?)",
+                    f"Training task {task_id} lost (AlphaForge restart?)",
                 )
             else:
                 logger.warning(
-                    "ML Agent poll: data-processor error for task %s: %s",
+                    "ML Agent poll: AlphaForge error for task %s: %s",
                     task_id,
                     e,
                 )

@@ -606,11 +606,7 @@ async def _collect_market_async(market: str) -> Dict[str, Any]:
 async def _sync_concepts_async() -> Dict[str, Any]:
     """Daily incremental concept board sync.
 
-    TODO: removed in StockPulse migration. The implementation depended on
-    ``StockProfileService.collect_cn_concept_mapping``, which in turn called
-    the data-service control endpoint ``/v1/reference/cn-concept-mapping``.
-    Both have been deleted because control plane responsibilities for CN
-    concept-board collection now live in the StockPulse admin UI. This task
+    TODO: CN concept-board collection now lives in StockPulse. This task
     is kept as a no-op so the existing Celery beat schedule does not throw
     ``AttributeError``; once StockPulse exposes a public read endpoint for
     pre-collected concept mappings the sync can be re-implemented on top of
