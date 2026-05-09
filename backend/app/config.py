@@ -126,12 +126,6 @@ class Settings(BaseSettings):
     # Empty string disables the internal API (503 for all requests)
     INTERNAL_API_TOKEN: str = ""
 
-    # Data Service (external data provider microservice)
-    DATA_SERVICE_URL: str = "http://data-service:8003"
-
-    # Qlib Service
-    QLIB_SERVICE_URL: str = "http://data-processor:8005"
-
     # AI Gateway (LLM proxy microservice)
     AI_GATEWAY_URL: str = "http://ai-gateway:8004"
     USE_AI_GATEWAY: bool = False  # Feature flag: route LLM calls through ai-gateway

@@ -1,7 +1,7 @@
 """Qlib backtest creation skill for LLM agents and chat.
 
 Allows LLM agents to create backtests on behalf of users.  The skill
-proxies to qlib-service via the QlibClient and records the backtest
+proxies to AlphaForge via the AlphaForgeClient and records the backtest
 in the local PostgreSQL database.
 
 Because backtests are user-scoped and require DB access, the `execute()`

@@ -1,7 +1,6 @@
 """Market data provider service for institutional holdings, indices, and northbound flow.
 
-Delegates all data fetching to the data-service microservice via DataServiceClient.
-The data-service handles provider routing, caching, and rate limiting internally.
+Delegates all data fetching to StockPulse via StockPulseClient.
 """
 
 import asyncio
@@ -20,15 +19,7 @@ MARKET_INDICES = {
 
 
 class MarketDataProvider:
-    """
-    Provides market data via the data-service microservice.
-
-    Data Sources (handled by data-service):
-    - yfinance: Institutional holdings, sector/industry, market indices
-    - AKShare: A-share fund holdings, northbound flow, stock connect, sector data
-
-    All caching is handled by the data-service.
-    """
+    """Provides market data via StockPulse."""
 
     # ============ Institutional Holdings ============
 

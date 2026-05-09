@@ -106,13 +106,9 @@ class StockProfileService:
     async def collect_cn_profiles(self) -> List[StockProfile]:
         """Collect A-share profiles.
 
-        TODO: removed in StockPulse migration. The previous implementation
-        bootstrapped from ``DataServiceClient.fetch_cn_concept_mapping``
-        (a control endpoint), which was deleted because the control plane
-        now lives in the StockPulse admin UI. CN profile coverage will
-        flow back into the knowledge base once StockPulse exposes a
-        listable inventory endpoint or once a CN-aware
-        ``_get_symbols_by_market("cn")`` source is wired up here.
+        TODO: CN profile collection not yet implemented. Needs a
+        listable inventory endpoint from StockPulse or a CN-aware
+        ``_get_symbols_by_market("cn")`` source.
         """
         logger.warning(
             "[StockProfile] collect_cn_profiles is currently a no-op: "

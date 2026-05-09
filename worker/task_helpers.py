@@ -27,7 +27,6 @@ _SINGLETON_RESETS = [
     ("app.services.rag", "reset_index_service"),
     ("app.services.stock_list_service", "reset_stock_list_service_sync"),
     ("app.services.stock_profile_service", "reset_stock_profile_service_sync"),
-    ("app.services.data_service_client", "reset_data_service_client"),
     ("app.services.stockpulse_client", "reset_stockpulse_client"),
     ("app.services.alphaforge_client", "reset_alphaforge_client"),
     ("app.services.ai_gateway_client", "reset_ai_gateway_client"),
@@ -122,15 +121,6 @@ async def _close_async_clients():
             await redis_close()
     except Exception as e:
         logger.debug("Redis close: %s", e)
-
-    # DataServiceClient — close httpx.AsyncClient bound to current loop
-    try:
-        mod = importlib.import_module("app.services.data_service_client")
-        close_fn = getattr(mod, "close_data_service_client", None)
-        if close_fn:
-            await close_fn()
-    except Exception as e:
-        logger.debug("DataServiceClient close: %s", e)
 
     # StockPulseClient — close httpx.AsyncClient bound to current loop
     try:

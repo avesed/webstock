@@ -16,7 +16,6 @@ from app.db.redis import close_redis, init_redis
 from app.services.cache_service import cleanup_cache_service
 from app.services.data_aggregator import cleanup_data_aggregator
 from app.services.alphaforge_client import close_alphaforge_client
-from app.services.data_service_client import close_data_service_client
 from app.services.stock_service import cleanup_stock_service
 from app.services.stockpulse_client import close_stockpulse_client
 
@@ -181,11 +180,6 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     logger.debug("Cleaning up cache service...")
     await cleanup_cache_service()
     logger.debug("Cache service cleanup complete")
-
-    # Close DataServiceClient
-    logger.debug("Closing DataServiceClient...")
-    await close_data_service_client()
-    logger.debug("DataServiceClient closed")
 
     # Close StockPulseClient
     logger.debug("Closing StockPulseClient...")

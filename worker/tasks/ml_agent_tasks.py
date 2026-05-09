@@ -136,7 +136,7 @@ async def _poll_pending_tasks():
     try:
         client = await get_alphaforge_client()
     except Exception as e:
-        logger.warning("ML Agent poll: PredictionClient unavailable: %s", e)
+        logger.warning("ML Agent poll: AlphaForgeClient unavailable: %s", e)
         return
 
     for key in pending_keys:

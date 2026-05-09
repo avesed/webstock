@@ -1,30 +1,24 @@
 """HTTP client for the StockPulse external data platform.
 
 StockPulse is a standalone universal stock data platform deployed
-independently from WebStock. It exposes the same data endpoints as the
-internal data-service but uses ``X-API-Key`` based multi-consumer
-authentication instead of the shared ``X-Internal-Token``.
+independently from WebStock. Provides stock quotes, historical bars,
+fundamentals, and news via ``X-API-Key`` authentication.
 
 Connection: main backend → httpx → http://<stockpulse-host>:8010
 
 Design:
-- Drop-in replacement for ``DataServiceClient`` (data methods only).  Method
-  signatures and return types match the data-service client so callers can
-  swap the import without further changes.
-- Returns ``None`` on any failure (matching existing Provider behaviour) so
-  consumers that already handle ``Optional`` returns keep working without
-  added try/except.
+- Returns ``None`` on any failure so consumers that handle ``Optional``
+  returns keep working without added try/except.
 - Singleton instance via ``get_stockpulse_client()`` with asyncio.Lock.
-- Path prefix ``/api/v1/data/`` (StockPulse public namespace) instead of
-  ``/v1/`` (data-service internal namespace).
-- Auth header ``X-API-Key`` (StockPulse) instead of ``X-Internal-Token``.
+- Path prefix ``/api/v1/data/`` (StockPulse public namespace).
+- Auth header ``X-API-Key``.
 
 Configuration:
 - Reads ``STOCKPULSE_URL`` and ``STOCKPULSE_API_KEY`` from
   ``app.config.settings`` at construction time.
 - ``enabled`` property reports whether both URL and key are populated.
 
-Timeout strategy (mirrors data_service_client):
+Timeout strategy:
 - Default: 30s (quotes, info)
 - Medium: 60s (history, batch quotes, analysis, batched profiles)
 - Long: 120s (long-running operations)
@@ -52,7 +46,7 @@ logger = logging.getLogger(__name__)
 _client_instance: Optional["StockPulseClient"] = None
 _client_lock: Optional[asyncio.Lock] = None
 
-# Timeout presets — match DataServiceClient where overlap exists
+# Timeout presets
 _DEFAULT_TIMEOUT = httpx.Timeout(30.0, connect=10.0)
 _MEDIUM_TIMEOUT = httpx.Timeout(60.0, connect=10.0)
 _VERY_LONG_TIMEOUT = httpx.Timeout(300.0, connect=10.0)

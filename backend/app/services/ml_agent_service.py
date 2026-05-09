@@ -632,7 +632,7 @@ class MLAgentService:
     def _extract_task_id(tool_result: Dict[str, Any]) -> Optional[str]:
         """Extract task_id from a tool result.
 
-        ``tool_result["result"]`` is a raw dict from PredictionClient
+        ``tool_result["result"]`` is a raw dict from AlphaForgeClient
         containing ``{"task_id": "...", "status": "submitted"}``.
         """
         if "error" in tool_result:

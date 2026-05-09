@@ -25,7 +25,7 @@ logger = logging.getLogger(__name__)
 def _detect_market_code(symbol: str) -> str:
     """Detect market code string from symbol format.
 
-    Returns the market string expected by PredictionClient (us/hk/cn).
+    Returns the market string expected by AlphaForgeClient (us/hk/cn).
     CN covers both Shanghai (.SS) and Shenzhen (.SZ) markets since the
     prediction service groups them under a single 'cn' market.
     """
