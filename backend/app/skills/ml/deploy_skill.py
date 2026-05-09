@@ -78,12 +78,12 @@ class MLDeploySkill(BaseSkill):
             return SkillResult(success=False, error="effective_config must be a dict")
 
         try:
-            from app.services.prediction_client import (
-                PredictionServiceError,
-                get_prediction_client,
+            from app.services.alphaforge_client import (
+                AlphaForgeServiceError,
+                get_alphaforge_client,
             )
 
-            client = await get_prediction_client()
+            client = await get_alphaforge_client()
             result = await client.ml_deploy_config(
                 market=market,
                 backtest_id=backtest_id,
@@ -94,7 +94,7 @@ class MLDeploySkill(BaseSkill):
                 train_icir=train_icir,
             )
             return SkillResult(success=True, data=result)
-        except PredictionServiceError as e:
+        except AlphaForgeServiceError as e:
             logger.warning("ML deploy failed for %s: %s", market, e)
             return SkillResult(success=False, error=f"Deploy failed: {e}")
         except Exception as e:

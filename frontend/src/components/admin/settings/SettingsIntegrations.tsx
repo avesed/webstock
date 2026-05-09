@@ -33,6 +33,7 @@ import { adminApi } from '@/api/admin'
 import type {
   IntegrationConfigUpdate,
   StockPulseConfigUpdate,
+  AlphaForgeConfigUpdate,
   StockPulseHealth,
   StockPulseMarket,
   StockPulseProvider,
@@ -488,6 +489,9 @@ export default function SettingsIntegrations() {
 
       {/* StockPulse Integration */}
       <StockPulseCard />
+
+      {/* AlphaForge Integration */}
+      <AlphaForgeCard />
 
       {/* Export News */}
       <ExportNewsCard />
@@ -1076,6 +1080,273 @@ function MarketRow({
         {market.totalSymbols.toLocaleString()}
       </td>
     </tr>
+  )
+}
+
+interface AlphaForgeFormState {
+  alphaforge_url: string
+  alphaforge_api_key: string
+}
+
+function AlphaForgeCard() {
+  const { t } = useTranslation('admin')
+  const { t: tCommon } = useTranslation('common')
+  const queryClient = useQueryClient()
+  const { toast } = useToast()
+
+  const [formData, setFormData] = useState<AlphaForgeFormState>({
+    alphaforge_url: '',
+    alphaforge_api_key: '',
+  })
+  const [hasChanges, setHasChanges] = useState(false)
+  const [showApiKey, setShowApiKey] = useState(false)
+
+  const { data: config, isLoading: configLoading } = useQuery({
+    queryKey: ['admin-alphaforge-config'],
+    queryFn: adminApi.getAlphaForgeConfig,
+  })
+
+  useEffect(() => {
+    if (config) {
+      setFormData({
+        alphaforge_url: config.alphaforge_url,
+        alphaforge_api_key: '',
+      })
+      setHasChanges(false)
+    }
+  }, [config])
+
+  const updateMutation = useMutation({
+    mutationFn: adminApi.updateAlphaForgeConfig,
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['admin-alphaforge-config'] })
+      toast({ title: t('settings.integrations.alphaforge.saved') })
+      // Clear API key field — never display the saved key
+      setFormData((prev) => ({ ...prev, alphaforge_api_key: '' }))
+      setHasChanges(false)
+    },
+    onError: () => {
+      toast({ title: tCommon('status.error'), variant: 'destructive' })
+    },
+  })
+
+  const testMutation = useMutation({
+    mutationFn: adminApi.testAlphaForge,
+    onSuccess: (result) => {
+      if (result.connected) {
+        const latency = result.latency_ms
+        toast({
+          title:
+            typeof latency === 'number'
+              ? t('settings.integrations.alphaforge.connectedWithLatency', { latency })
+              : t('settings.integrations.alphaforge.connected'),
+        })
+      } else {
+        toast({
+          title: t('settings.integrations.alphaforge.connectionFailed'),
+          description: result.error,
+          variant: 'destructive',
+        })
+      }
+    },
+    onError: () => {
+      toast({
+        title: t('settings.integrations.alphaforge.connectionFailed'),
+        variant: 'destructive',
+      })
+    },
+  })
+
+  const handleChange = useCallback(
+    (field: keyof AlphaForgeFormState, value: string) => {
+      setFormData((prev) => ({ ...prev, [field]: value }))
+      setHasChanges(true)
+    },
+    []
+  )
+
+  const handleSave = () => {
+    const payload: AlphaForgeConfigUpdate = {
+      alphaforge_url: formData.alphaforge_url,
+    }
+    // Only send API key if user typed a new value
+    if (formData.alphaforge_api_key) {
+      payload.alphaforge_api_key = formData.alphaforge_api_key
+    }
+    updateMutation.mutate(payload)
+  }
+
+  const configuredEnabled = !!config?.alphaforge_url
+
+  if (configLoading) {
+    return (
+      <Card>
+        <CardContent className="flex items-center justify-center h-32">
+          <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
+        </CardContent>
+      </Card>
+    )
+  }
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle className="flex items-center gap-2">
+          <Activity className="h-5 w-5" />
+          {t('settings.integrations.alphaforge.title')}
+        </CardTitle>
+        <CardDescription>
+          {t('settings.integrations.alphaforge.description')}
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-6">
+        {/* URL */}
+        <div className="space-y-2">
+          <Label htmlFor="alphaforge-url">
+            {t('settings.integrations.alphaforge.url')}
+          </Label>
+          <Input
+            id="alphaforge-url"
+            type="url"
+            placeholder={t('settings.integrations.alphaforge.urlPlaceholder')}
+            value={formData.alphaforge_url}
+            onChange={(e) => handleChange('alphaforge_url', e.target.value)}
+          />
+          <p className="text-xs text-muted-foreground">
+            {t('settings.integrations.alphaforge.urlHelp')}
+          </p>
+        </div>
+
+        <Separator />
+
+        {/* API Key */}
+        <div className="space-y-2">
+          <Label htmlFor="alphaforge-api-key">
+            {t('settings.integrations.alphaforge.apiKey')}
+          </Label>
+          <div className="flex items-center gap-2">
+            <div className="relative flex-1">
+              <Input
+                id="alphaforge-api-key"
+                type={showApiKey ? 'text' : 'password'}
+                placeholder={
+                  config?.alphaforge_api_key_set
+                    ? t('settings.integrations.alphaforge.apiKeyMasked')
+                    : t('settings.integrations.alphaforge.apiKeyPlaceholder')
+                }
+                value={formData.alphaforge_api_key}
+                onChange={(e) => handleChange('alphaforge_api_key', e.target.value)}
+              />
+              <button
+                type="button"
+                aria-label={
+                  showApiKey
+                    ? t('settings.integrations.alphaforge.hideApiKey')
+                    : t('settings.integrations.alphaforge.showApiKey')
+                }
+                className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
+                onClick={() => setShowApiKey((v) => !v)}
+              >
+                {showApiKey ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+              </button>
+            </div>
+          </div>
+          <p className="text-xs text-muted-foreground">
+            {config?.alphaforge_api_key_set ? (
+              <span className="flex items-center gap-1 text-green-600 dark:text-green-400">
+                <CheckCircle2 className="h-3 w-3" />
+                {t('settings.integrations.alphaforge.apiKeySet')}
+              </span>
+            ) : (
+              <span className="flex items-center gap-1 text-amber-600 dark:text-amber-400">
+                <XCircle className="h-3 w-3" />
+                {t('settings.integrations.alphaforge.apiKeyNotSet')}
+              </span>
+            )}
+          </p>
+          <p className="text-xs text-muted-foreground">
+            {t('settings.integrations.alphaforge.apiKeyHelp')}
+          </p>
+        </div>
+
+        <Separator />
+
+        {/* Action Buttons */}
+        <div className="flex flex-wrap items-center gap-3">
+          <Button
+            onClick={handleSave}
+            disabled={!hasChanges || updateMutation.isPending}
+          >
+            {updateMutation.isPending ? (
+              <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+            ) : (
+              <Save className="mr-2 h-4 w-4" />
+            )}
+            {updateMutation.isPending
+              ? t('settings.integrations.alphaforge.saving')
+              : t('settings.integrations.alphaforge.save')}
+          </Button>
+          <Button
+            variant="outline"
+            onClick={() => testMutation.mutate()}
+            disabled={testMutation.isPending || !configuredEnabled}
+          >
+            {testMutation.isPending ? (
+              <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+            ) : (
+              <Plug className="mr-2 h-4 w-4" />
+            )}
+            {testMutation.isPending
+              ? t('settings.integrations.alphaforge.testing')
+              : t('settings.integrations.alphaforge.test')}
+          </Button>
+          {testMutation.isSuccess && (
+            <span className="flex items-center gap-1 text-sm">
+              {testMutation.data.connected ? (
+                <span className="flex items-center gap-1 text-green-600 dark:text-green-400">
+                  <CheckCircle2 className="h-4 w-4" />
+                  {t('settings.integrations.alphaforge.connected')}
+                </span>
+              ) : (
+                <span className="flex items-center gap-1 text-destructive">
+                  <XCircle className="h-4 w-4" />
+                  {t('settings.integrations.alphaforge.connectionFailed')}
+                </span>
+              )}
+            </span>
+          )}
+        </div>
+
+        {/* Not configured notice */}
+        {!configuredEnabled && (
+          <Alert>
+            <HelpCircle className="h-4 w-4" />
+            <AlertTitle>{t('settings.integrations.alphaforge.notConfigured')}</AlertTitle>
+            <AlertDescription>
+              {t('settings.integrations.alphaforge.notConfiguredHelp')}
+            </AlertDescription>
+          </Alert>
+        )}
+
+        {/* External Console Link */}
+        {configuredEnabled && config?.alphaforge_url && (
+          <>
+            <Separator />
+            <div>
+              <a
+                href={config.alphaforge_url}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="inline-flex items-center gap-2 text-sm font-medium text-primary hover:underline"
+              >
+                <ExternalLink className="h-4 w-4" />
+                {t('settings.integrations.alphaforge.openConsole')}
+              </a>
+            </div>
+          </>
+        )}
+      </CardContent>
+    </Card>
   )
 }
 

@@ -147,17 +147,17 @@ class MLTrainSkill(BaseSkill):
             config["direction_lgb_overrides"] = direction_overrides
 
         try:
-            from app.services.prediction_client import (
-                PredictionServiceError,
-                get_prediction_client,
+            from app.services.alphaforge_client import (
+                AlphaForgeServiceError,
+                get_alphaforge_client,
             )
 
-            client = await get_prediction_client()
+            client = await get_alphaforge_client()
             result = await client.ml_submit_training(
                 market, cutoff_date, forward_days, config,
             )
             return SkillResult(success=True, data=result)
-        except PredictionServiceError as e:
+        except AlphaForgeServiceError as e:
             logger.warning("ML training submission failed for %s: %s", market, e)
             return SkillResult(success=False, error=f"Training submission failed: {e}")
         except Exception as e:

@@ -128,13 +128,13 @@ async def _poll_pending_tasks():
 
     logger.info("ML Agent poll: found %d pending tasks", len(pending_keys))
 
-    from app.services.prediction_client import (
-        PredictionServiceError,
-        get_prediction_client,
+    from app.services.alphaforge_client import (
+        AlphaForgeServiceError,
+        get_alphaforge_client,
     )
 
     try:
-        client = await get_prediction_client()
+        client = await get_alphaforge_client()
     except Exception as e:
         logger.warning("ML Agent poll: PredictionClient unavailable: %s", e)
         return
@@ -194,7 +194,7 @@ async def _poll_pending_tasks():
                     task_id,
                 )
 
-        except PredictionServiceError as e:
+        except AlphaForgeServiceError as e:
             # If task not found (404), data-processor likely restarted
             # and lost in-memory state. Mark the backtest as failed.
             if "404" in str(e) or "not found" in str(e).lower():

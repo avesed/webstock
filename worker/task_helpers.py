@@ -29,9 +29,8 @@ _SINGLETON_RESETS = [
     ("app.services.stock_profile_service", "reset_stock_profile_service_sync"),
     ("app.services.data_service_client", "reset_data_service_client"),
     ("app.services.stockpulse_client", "reset_stockpulse_client"),
-    ("app.services.qlib_client", "reset_qlib_client"),
+    ("app.services.alphaforge_client", "reset_alphaforge_client"),
     ("app.services.ai_gateway_client", "reset_ai_gateway_client"),
-    ("app.services.prediction_client", "reset_prediction_client"),
 ]
 
 
@@ -142,14 +141,14 @@ async def _close_async_clients():
     except Exception as e:
         logger.debug("StockPulseClient close: %s", e)
 
-    # QlibClient — close httpx.AsyncClient bound to current loop
+    # AlphaForgeClient — close httpx.AsyncClient bound to current loop
     try:
-        mod = importlib.import_module("app.services.qlib_client")
-        close_fn = getattr(mod, "close_qlib_client", None)
+        mod = importlib.import_module("app.services.alphaforge_client")
+        close_fn = getattr(mod, "close_alphaforge_client", None)
         if close_fn:
             await close_fn()
     except Exception as e:
-        logger.debug("QlibClient close: %s", e)
+        logger.debug("AlphaForgeClient close: %s", e)
 
     # AiGatewayClient — close httpx.AsyncClient bound to current loop
     try:

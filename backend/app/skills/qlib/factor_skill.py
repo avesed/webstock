@@ -3,7 +3,7 @@ import logging
 from typing import Any
 
 from app.skills.base import BaseSkill, SkillDefinition, SkillParameter, SkillResult
-from app.services.qlib_client import get_qlib_client, QlibServiceError
+from app.services.alphaforge_client import get_alphaforge_client, AlphaForgeServiceError
 
 logger = logging.getLogger(__name__)
 
@@ -38,10 +38,10 @@ class QlibFactorSkill(BaseSkill):
         if not symbol:
             return SkillResult(success=False, error="symbol is required")
         try:
-            client = await get_qlib_client()
+            client = await get_alphaforge_client()
             result = await client.get_factor_summary(symbol, market)
             return SkillResult(success=True, data=result)
-        except QlibServiceError as e:
+        except AlphaForgeServiceError as e:
             logger.warning("qlib_compute_factors failed for %s: %s", symbol, e)
             return SkillResult(success=False, error=str(e))
         except Exception as e:

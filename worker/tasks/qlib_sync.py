@@ -30,9 +30,9 @@ def sync_qlib_market(self, market: str):
     logger.info("Qlib同步：开始%s市场", market)
 
     async def _sync():
-        from app.services.qlib_client import get_qlib_client
+        from app.services.alphaforge_client import get_alphaforge_client
 
-        client = await get_qlib_client()
+        client = await get_alphaforge_client()
         logger.debug("Calling qlib-service sync_market: market=%s, update_only=True", market)
         return await client.sync_market(market=market, update_only=True)
 

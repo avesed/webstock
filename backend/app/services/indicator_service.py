@@ -45,7 +45,7 @@ async def compute_indicator_series(
     Returns:
         Dictionary with indicator keys mapped to series data and a "warnings" list.
     """
-    from app.services.qlib_client import QlibServiceError, get_qlib_client
+    from app.services.alphaforge_client import AlphaForgeServiceError, get_alphaforge_client
 
     if ma_periods is None:
         ma_periods = [20, 50, 200]
@@ -53,7 +53,7 @@ async def compute_indicator_series(
     start_time = time.monotonic()
 
     try:
-        client = await get_qlib_client()
+        client = await get_alphaforge_client()
         result = await client.compute_indicators(
             bars=bars,
             indicator_types=indicator_types,
@@ -87,7 +87,7 @@ async def compute_indicator_series(
         )
         return indicators
 
-    except QlibServiceError as e:
+    except AlphaForgeServiceError as e:
         elapsed_ms = (time.monotonic() - start_time) * 1000
         logger.error(
             "qlib-service indicator computation failed after %.0fms: %s",

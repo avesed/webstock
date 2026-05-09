@@ -15,8 +15,8 @@ from app.db.database import AsyncSessionLocal, close_db, init_db
 from app.db.redis import close_redis, init_redis
 from app.services.cache_service import cleanup_cache_service
 from app.services.data_aggregator import cleanup_data_aggregator
+from app.services.alphaforge_client import close_alphaforge_client
 from app.services.data_service_client import close_data_service_client
-from app.services.qlib_client import close_qlib_client
 from app.services.stock_service import cleanup_stock_service
 from app.services.stockpulse_client import close_stockpulse_client
 
@@ -192,10 +192,10 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     await close_stockpulse_client()
     logger.debug("StockPulseClient closed")
 
-    # Close Qlib client
-    logger.debug("Closing Qlib client...")
-    await close_qlib_client()
-    logger.debug("Qlib client closed")
+    # Close AlphaForge client
+    logger.debug("Closing AlphaForgeClient...")
+    await close_alphaforge_client()
+    logger.debug("AlphaForgeClient closed")
 
     # Cancel background tasks (needs Redis for metadata updates)
     from app.services.task_manager import get_task_manager

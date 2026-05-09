@@ -43,7 +43,7 @@ from app.schemas.qlib import (
     ValidationResultResponse,
 )
 from app.services.backtest_service import BacktestManagementService
-from app.services.qlib_client import get_qlib_client, QlibServiceError
+from app.services.alphaforge_client import get_alphaforge_client, AlphaForgeServiceError
 
 logger = logging.getLogger(__name__)
 
@@ -55,7 +55,7 @@ PORTFOLIO_RATE_LIMIT = rate_limit(
 )
 
 
-def _sanitize_qlib_error(e: QlibServiceError) -> str:
+def _sanitize_qlib_error(e: AlphaForgeServiceError) -> str:
     """Sanitize qlib-service errors for frontend consumption.
 
     Strips internal URLs and container names while preserving the useful
@@ -73,7 +73,7 @@ async def qlib_status(
     current_user: User = Depends(get_current_user),
 ) -> Dict[str, Any]:
     """Get qlib-service status."""
-    client = await get_qlib_client()
+    client = await get_alphaforge_client()
     try:
         health = await client.health()
         return {
@@ -101,10 +101,10 @@ async def get_factors(
     current_user: User = Depends(get_current_user),
 ):
     """Get Alpha158/360 factors for a stock symbol."""
-    client = await get_qlib_client()
+    client = await get_alphaforge_client()
     try:
         return await client.get_factors(symbol, market, alpha_type, start_date, end_date)
-    except QlibServiceError as e:
+    except AlphaForgeServiceError as e:
         raise HTTPException(status_code=e.status_code or 502, detail=_sanitize_qlib_error(e))
 
 
@@ -115,10 +115,10 @@ async def get_factor_summary(
     current_user: User = Depends(get_current_user),
 ):
     """Get factor summary (top factors by z-score) for a stock symbol."""
-    client = await get_qlib_client()
+    client = await get_alphaforge_client()
     try:
         return await client.get_factor_summary(symbol, market)
-    except QlibServiceError as e:
+    except AlphaForgeServiceError as e:
         raise HTTPException(status_code=e.status_code or 502, detail=_sanitize_qlib_error(e))
 
 
@@ -128,7 +128,7 @@ async def compute_ic(
     current_user: User = Depends(get_current_user),
 ):
     """Compute IC/ICIR for factors across a universe of stocks."""
-    client = await get_qlib_client()
+    client = await get_alphaforge_client()
     try:
         return await client.compute_ic(
             universe=request.universe,
@@ -138,7 +138,7 @@ async def compute_ic(
             end_date=str(request.end_date) if request.end_date else None,
             forward_days=request.forward_days,
         )
-    except QlibServiceError as e:
+    except AlphaForgeServiceError as e:
         raise HTTPException(status_code=e.status_code or 502, detail=_sanitize_qlib_error(e))
 
 
@@ -150,10 +150,10 @@ async def get_data_status(
     current_user: User = Depends(get_current_user),
 ):
     """Get data sync status for all markets in qlib-service."""
-    client = await get_qlib_client()
+    client = await get_alphaforge_client()
     try:
         return await client.get_data_status()
-    except QlibServiceError as e:
+    except AlphaForgeServiceError as e:
         raise HTTPException(status_code=e.status_code or 502, detail=_sanitize_qlib_error(e))
 
 
@@ -166,7 +166,7 @@ async def evaluate_expression(
     current_user: User = Depends(get_current_user),
 ):
     """Evaluate a Qlib expression for a stock symbol."""
-    client = await get_qlib_client()
+    client = await get_alphaforge_client()
     try:
         return await client.evaluate_expression(
             symbol=request.symbol,
@@ -176,7 +176,7 @@ async def evaluate_expression(
             end_date=str(request.end_date) if request.end_date else None,
             period=request.period,
         )
-    except QlibServiceError as e:
+    except AlphaForgeServiceError as e:
         raise HTTPException(status_code=e.status_code or 502, detail=_sanitize_qlib_error(e))
 
 
@@ -186,7 +186,7 @@ async def evaluate_expression_batch(
     current_user: User = Depends(get_current_user),
 ):
     """Evaluate a Qlib expression across multiple symbols (cross-sectional)."""
-    client = await get_qlib_client()
+    client = await get_alphaforge_client()
     try:
         return await client.evaluate_expression_batch(
             symbols=request.symbols,
@@ -194,7 +194,7 @@ async def evaluate_expression_batch(
             market=request.market.value,
             target_date=str(request.target_date) if request.target_date else None,
         )
-    except QlibServiceError as e:
+    except AlphaForgeServiceError as e:
         raise HTTPException(status_code=e.status_code or 502, detail=_sanitize_qlib_error(e))
 
 
@@ -204,10 +204,10 @@ async def validate_expression(
     current_user: User = Depends(get_current_user),
 ):
     """Validate a Qlib expression syntax without executing."""
-    client = await get_qlib_client()
+    client = await get_alphaforge_client()
     try:
         return await client.validate_expression(request.expression)
-    except QlibServiceError as e:
+    except AlphaForgeServiceError as e:
         raise HTTPException(status_code=e.status_code or 502, detail=_sanitize_qlib_error(e))
 
 

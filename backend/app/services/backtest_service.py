@@ -16,7 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.qlib_backtest import BacktestStatus, QlibBacktest
 from app.schemas.qlib import BacktestCreateRequest
-from app.services.qlib_client import QlibServiceError, get_qlib_client
+from app.services.alphaforge_client import AlphaForgeServiceError, get_alphaforge_client
 
 logger = logging.getLogger(__name__)
 
@@ -109,7 +109,7 @@ class BacktestManagementService:
 
         # 4. Forward to qlib-service
         try:
-            client = await get_qlib_client()
+            client = await get_alphaforge_client()
             config: Dict[str, Any] = {
                 "name": request.name,
                 "market": request.market.value,
@@ -130,7 +130,7 @@ class BacktestManagementService:
                 backtest.id, backtest.qlib_task_id,
             )
 
-        except QlibServiceError as e:
+        except AlphaForgeServiceError as e:
             logger.error("qlib-service create_backtest failed: %s", e)
             backtest.status = BacktestStatus.FAILED.value
             backtest.error_message = str(e)
@@ -234,9 +234,9 @@ class BacktestManagementService:
         # Cancel in qlib-service if we have a task id
         if backtest.qlib_task_id:
             try:
-                client = await get_qlib_client()
+                client = await get_alphaforge_client()
                 await client.cancel_backtest(backtest.qlib_task_id)
-            except QlibServiceError as e:
+            except AlphaForgeServiceError as e:
                 logger.warning(
                     "qlib-service cancel failed for task %s: %s",
                     backtest.qlib_task_id, e,
@@ -277,7 +277,7 @@ class BacktestManagementService:
             and backtest.qlib_task_id
         ):
             try:
-                client = await get_qlib_client()
+                client = await get_alphaforge_client()
                 await client.cancel_backtest(backtest.qlib_task_id)
             except Exception as e:
                 logger.warning(
@@ -304,9 +304,9 @@ class BacktestManagementService:
         known local state instead.
         """
         try:
-            client = await get_qlib_client()
+            client = await get_alphaforge_client()
             remote = await client.get_backtest(backtest.qlib_task_id)
-        except QlibServiceError as e:
+        except AlphaForgeServiceError as e:
             if e.status_code == 404:
                 # Task lost on qlib-service restart — mark as failed
                 logger.warning(

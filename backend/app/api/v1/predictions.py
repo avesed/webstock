@@ -17,9 +17,9 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from app.core.rate_limiter import rate_limit
 from app.core.security import get_current_user
 from app.models.user import User
-from app.services.prediction_client import (
-    PredictionServiceError,
-    get_prediction_client,
+from app.services.alphaforge_client import (
+    AlphaForgeServiceError,
+    get_alphaforge_client,
 )
 
 logger = logging.getLogger(__name__)
@@ -39,7 +39,7 @@ def _validate_market(market: str) -> str:
     return m
 
 
-def _sanitize_error(e: PredictionServiceError) -> str:
+def _sanitize_error(e: AlphaForgeServiceError) -> str:
     msg = str(e)
     msg = re.sub(r"https?://[a-z0-9._-]+:\d+", "<service>", msg)
     return msg
@@ -73,7 +73,7 @@ async def get_latest_predictions(
 ) -> Dict[str, Any]:
     """Top-ranked stock predictions for a market."""
     market = _validate_market(market)
-    client = await get_prediction_client()
+    client = await get_alphaforge_client()
     try:
         data = await client.get_latest_predictions(market=market, top_n=top_n)
         # Strip actualReturn — admin-only field
@@ -81,7 +81,7 @@ async def get_latest_predictions(
             p.pop("actual_return", None)
             p.pop("actualReturn", None)
         return data
-    except PredictionServiceError as e:
+    except AlphaForgeServiceError as e:
         raise HTTPException(status_code=e.status_code or 502, detail=_sanitize_error(e))
 
 
@@ -101,7 +101,7 @@ async def get_summary(
 ) -> Dict[str, Any]:
     """Combined model metadata + accuracy in a single response."""
     market = _validate_market(market)
-    client = await get_prediction_client()
+    client = await get_alphaforge_client()
     try:
         models_data, accuracy_data = await asyncio.gather(
             client.get_models(market=market),
@@ -148,7 +148,7 @@ async def get_summary(
             "accuracy": accuracy_info,
             "prediction_date": prediction_date,
         }
-    except PredictionServiceError as e:
+    except AlphaForgeServiceError as e:
         raise HTTPException(status_code=e.status_code or 502, detail=_sanitize_error(e))
 
 
@@ -169,10 +169,10 @@ async def get_performance(
 ) -> Dict[str, Any]:
     """IC and hit rate trends over time."""
     market = _validate_market(market)
-    client = await get_prediction_client()
+    client = await get_alphaforge_client()
     try:
         return await client.get_performance_metrics(market=market, days=days)
-    except PredictionServiceError as e:
+    except AlphaForgeServiceError as e:
         raise HTTPException(status_code=e.status_code or 502, detail=_sanitize_error(e))
 
 
@@ -192,7 +192,7 @@ async def get_symbol_prediction(
 ) -> Dict[str, Any]:
     """Get latest prediction for a single stock symbol."""
     market = _detect_market_from_symbol(symbol)
-    client = await get_prediction_client()
+    client = await get_alphaforge_client()
     try:
         data = await client.get_latest_predictions(
             market=market, top_n=500, symbol=symbol
@@ -204,5 +204,5 @@ async def get_symbol_prediction(
         pred.pop("actual_return", None)
         pred.pop("actualReturn", None)
         return {"market": market, "prediction": pred}
-    except PredictionServiceError as e:
+    except AlphaForgeServiceError as e:
         raise HTTPException(status_code=e.status_code or 502, detail=_sanitize_error(e))

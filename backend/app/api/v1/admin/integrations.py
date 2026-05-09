@@ -1,4 +1,4 @@
-"""Admin integration management for NewsForge and StockPulse connections."""
+"""Admin integration management for NewsForge, StockPulse, and AlphaForge connections."""
 from __future__ import annotations
 
 import logging
@@ -98,6 +98,8 @@ _SETTING_KEYS = {
     "newsforge_webhook_secret": "integration.newsforge.webhook_secret",
     "stockpulse_url": "integration.stockpulse.url",
     "stockpulse_api_key": "integration.stockpulse.api_key",
+    "alphaforge_url": "integration.alphaforge.url",
+    "alphaforge_api_key": "integration.alphaforge.api_key",
 }
 
 
@@ -122,6 +124,8 @@ async def _get_setting(db: AsyncSession, key: str) -> str | None:
         "integration.newsforge.webhook_secret": settings.NEWSFORGE_WEBHOOK_SECRET,
         "integration.stockpulse.url": settings.STOCKPULSE_URL,
         "integration.stockpulse.api_key": settings.STOCKPULSE_API_KEY,
+        "integration.alphaforge.url": settings.ALPHAFORGE_URL,
+        "integration.alphaforge.api_key": settings.ALPHAFORGE_API_KEY,
     }
     return env_map.get(key) or None
 
@@ -425,3 +429,122 @@ async def get_stockpulse_health(db: AsyncSession = Depends(get_db)):
         providers=providers,
         markets=markets,
     )
+
+
+# ---------------------------------------------------------------------------
+# AlphaForge integration endpoints
+# ---------------------------------------------------------------------------
+
+
+class AlphaForgeConfigResponse(BaseModel):
+    alphaforge_url: str = ""
+    alphaforge_api_key_set: bool = False
+
+
+class AlphaForgeConfigUpdate(BaseModel):
+    alphaforge_url: str | None = None
+    alphaforge_api_key: str | None = None
+
+
+async def _resolved_alphaforge_creds(db: AsyncSession) -> tuple[str, str]:
+    """Read effective AlphaForge URL + API key (DB override -> env fallback)."""
+    url = (await _get_setting(db, _SETTING_KEYS["alphaforge_url"])) or ""
+    api_key = (await _get_setting(db, _SETTING_KEYS["alphaforge_api_key"])) or ""
+    return url.rstrip("/"), api_key
+
+
+@router.get("/integrations/alphaforge", response_model=AlphaForgeConfigResponse)
+async def get_alphaforge_config(db: AsyncSession = Depends(get_db)):
+    """Get AlphaForge integration configuration."""
+    url = (await _get_setting(db, _SETTING_KEYS["alphaforge_url"])) or ""
+    api_key = await _get_setting(db, _SETTING_KEYS["alphaforge_api_key"])
+
+    return AlphaForgeConfigResponse(
+        alphaforge_url=url,
+        alphaforge_api_key_set=bool(api_key),
+    )
+
+
+@router.patch("/integrations/alphaforge", response_model=AlphaForgeConfigResponse)
+async def update_alphaforge_config(
+    body: AlphaForgeConfigUpdate,
+    db: AsyncSession = Depends(get_db),
+):
+    """Update AlphaForge integration configuration.
+
+    Accepts a partial update; only the fields that are explicitly provided
+    are written. After committing, the singleton ``AlphaForgeClient`` is
+    reset so the next request picks up the new URL / API key.
+    """
+    if body.alphaforge_url is not None:
+        await _set_setting(
+            db, _SETTING_KEYS["alphaforge_url"], body.alphaforge_url,
+        )
+    if body.alphaforge_api_key is not None:
+        await _set_setting(
+            db, _SETTING_KEYS["alphaforge_api_key"], body.alphaforge_api_key,
+        )
+
+    await db.commit()
+
+    # Force the singleton client to be re-created so the new URL/key take
+    # effect on the next request without a process restart.
+    from app.services.alphaforge_client import (
+        close_alphaforge_client,
+        reset_alphaforge_client,
+    )
+    try:
+        await close_alphaforge_client()
+    except Exception:
+        logger.warning("Failed to close AlphaForge client during reset", exc_info=True)
+    reset_alphaforge_client()
+
+    logger.info("AlphaForge integration config updated")
+
+    return await get_alphaforge_config(db)
+
+
+@router.post("/integrations/alphaforge/test")
+async def test_alphaforge_connection(db: AsyncSession = Depends(get_db)):
+    """Test connection to AlphaForge using an authenticated probe.
+
+    Calls ``GET {url}/health`` with the configured ``X-API-Key`` header.
+    A 401/403 response is reported as ``{"connected": False, "error":
+    "Invalid API key"}`` so the admin UI can flag bad credentials.
+    Connection-level failures return the raw exception message.  On
+    success the response includes a ``latency_ms`` field measured from
+    the start of the HTTP request.
+    """
+    url, api_key = await _resolved_alphaforge_creds(db)
+
+    if not url or not api_key:
+        return {"connected": False, "error": "URL or API key not configured"}
+
+    import httpx
+
+    headers = {"X-API-Key": api_key, "Accept": "application/json"}
+    started = time.monotonic()
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            resp = await client.get(f"{url}/health", headers=headers)
+        latency_ms = int((time.monotonic() - started) * 1000)
+        if resp.status_code in (401, 403):
+            logger.warning(
+                "AlphaForge auth check failed (HTTP %d) -- invalid API key",
+                resp.status_code,
+            )
+            return {"connected": False, "error": "Invalid API key"}
+        resp.raise_for_status()
+        return {"connected": True, "latency_ms": latency_ms}
+    except httpx.HTTPStatusError as e:
+        logger.warning(
+            "AlphaForge connection test HTTP error: %d %s",
+            e.response.status_code, e.response.reason_phrase,
+        )
+        return {
+            "connected": False,
+            "error": f"HTTP {e.response.status_code}: {e.response.reason_phrase}",
+        }
+    except Exception as e:
+        logger.warning("AlphaForge connection test failed: %s", e)
+        return {"connected": False, "error": str(e)[:200]}

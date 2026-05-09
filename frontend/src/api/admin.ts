@@ -95,6 +95,23 @@ export interface StockPulseHealth {
   error?: string
 }
 
+// AlphaForge integration types
+export interface AlphaForgeConfig {
+  alphaforge_url: string
+  alphaforge_api_key_set: boolean
+}
+
+export interface AlphaForgeConfigUpdate {
+  alphaforge_url?: string
+  alphaforge_api_key?: string
+}
+
+export interface AlphaForgeTestResult {
+  connected: boolean
+  error?: string
+  latency_ms?: number
+}
+
 // Backend API format (has separate langgraph section + modelAssignments)
 interface BackendSystemConfig {
   llm: {
@@ -490,6 +507,20 @@ export const adminApi = {
 
   getStockPulseHealth: async (): Promise<StockPulseHealth> => {
     const response = await apiClient.get<StockPulseHealth>('/admin/integrations/stockpulse/health')
+    return response.data
+  },
+
+  // AlphaForge integration
+  getAlphaForgeConfig: async (): Promise<AlphaForgeConfig> => {
+    const response = await apiClient.get<AlphaForgeConfig>('/admin/integrations/alphaforge')
+    return response.data
+  },
+  updateAlphaForgeConfig: async (data: AlphaForgeConfigUpdate): Promise<AlphaForgeConfig> => {
+    const response = await apiClient.patch<AlphaForgeConfig>('/admin/integrations/alphaforge', data)
+    return response.data
+  },
+  testAlphaForge: async (): Promise<AlphaForgeTestResult> => {
+    const response = await apiClient.post<AlphaForgeTestResult>('/admin/integrations/alphaforge/test')
     return response.data
   },
 

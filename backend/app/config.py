@@ -145,6 +145,10 @@ class Settings(BaseSettings):
     STOCKPULSE_URL: str = ""
     STOCKPULSE_API_KEY: str = ""
 
+    # AlphaForge Integration (ML prediction engine via X-API-Key)
+    ALPHAFORGE_URL: str = ""
+    ALPHAFORGE_API_KEY: str = ""
+
     # RSSHub
     RSSHUB_URL: str = "http://rsshub:1200"
     RSSHUB_ACCESS_KEY: str = ""

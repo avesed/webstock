@@ -24,9 +24,9 @@ from app.core.security import require_admin
 from app.db.database import get_db
 from app.models.prediction import MLBacktest, PredictionUniverse
 from app.models.user import User
-from app.services.prediction_client import (
-    PredictionServiceError,
-    get_prediction_client,
+from app.services.alphaforge_client import (
+    AlphaForgeServiceError,
+    get_alphaforge_client,
 )
 
 logger = logging.getLogger(__name__)
@@ -41,7 +41,7 @@ VALID_MARKETS = {"cn", "us", "hk"}
 # ---------------------------------------------------------------------------
 
 
-def _sanitize_service_error(e: PredictionServiceError) -> str:
+def _sanitize_service_error(e: AlphaForgeServiceError) -> str:
     """Sanitize data-processor errors for frontend consumption.
 
     Strips internal URLs and container names while preserving the useful
@@ -132,7 +132,7 @@ async def get_prediction_status(
     current_user: User = Depends(require_admin),
 ) -> Dict[str, Any]:
     """Aggregate status from data-processor for all markets."""
-    client = await get_prediction_client()
+    client = await get_alphaforge_client()
     result: Dict[str, Any] = {}
 
     for market in sorted(VALID_MARKETS):
@@ -143,7 +143,7 @@ async def get_prediction_status(
                 "models": models_resp,
                 "latestPredictions": latest_resp,
             }
-        except PredictionServiceError as e:
+        except AlphaForgeServiceError as e:
             logger.warning("Failed to get prediction status for %s: %s", market, e)
             result[market] = {"error": _sanitize_service_error(e)}
 
@@ -166,7 +166,7 @@ async def trigger_prediction(
     current_user: User = Depends(require_admin),
 ) -> Dict[str, Any]:
     market = _validate_market(market)
-    client = await get_prediction_client()
+    client = await get_alphaforge_client()
     try:
         resp = await client.trigger_prediction(
             market=market,
@@ -178,7 +178,7 @@ async def trigger_prediction(
             current_user.email, market, request.force_retrain, request.forward_days,
         )
         return resp
-    except PredictionServiceError as e:
+    except AlphaForgeServiceError as e:
         raise HTTPException(
             status_code=e.status_code or 502,
             detail=_sanitize_service_error(e),
@@ -202,14 +202,14 @@ async def get_latest_predictions(
     current_user: User = Depends(require_admin),
 ) -> Dict[str, Any]:
     market = _validate_market(market)
-    client = await get_prediction_client()
+    client = await get_alphaforge_client()
     try:
         return await client.get_latest_predictions(
             market=market,
             top_n=top_n,
             symbol=symbol,
         )
-    except PredictionServiceError as e:
+    except AlphaForgeServiceError as e:
         raise HTTPException(
             status_code=e.status_code or 502,
             detail=_sanitize_service_error(e),
@@ -232,10 +232,10 @@ async def get_prediction_models(
 ) -> Dict[str, Any]:
     if market:
         market = _validate_market(market)
-    client = await get_prediction_client()
+    client = await get_alphaforge_client()
     try:
         return await client.get_models(market=market)
-    except PredictionServiceError as e:
+    except AlphaForgeServiceError as e:
         raise HTTPException(
             status_code=e.status_code or 502,
             detail=_sanitize_service_error(e),
@@ -258,9 +258,9 @@ async def get_feature_importance(
 ) -> Dict[str, Any]:
     """Get feature importance for a specific trained model."""
     try:
-        client = await get_prediction_client()
+        client = await get_alphaforge_client()
         return await client.get_feature_importance(model_id)
-    except PredictionServiceError as e:
+    except AlphaForgeServiceError as e:
         status = e.status_code or 502
         raise HTTPException(status_code=status, detail=_sanitize_service_error(e))
 
@@ -282,9 +282,9 @@ async def update_model_quality(
 ) -> Dict[str, Any]:
     """Admin override: approve or reject a model."""
     try:
-        client = await get_prediction_client()
+        client = await get_alphaforge_client()
         return await client.update_model_quality(model_id, request.quality_passed)
-    except PredictionServiceError as e:
+    except AlphaForgeServiceError as e:
         status = e.status_code or 502
         raise HTTPException(status_code=status, detail=_sanitize_service_error(e))
 
@@ -305,10 +305,10 @@ async def get_prediction_accuracy(
     current_user: User = Depends(require_admin),
 ) -> Dict[str, Any]:
     market = _validate_market(market)
-    client = await get_prediction_client()
+    client = await get_alphaforge_client()
     try:
         return await client.get_accuracy(market=market, days=days)
-    except PredictionServiceError as e:
+    except AlphaForgeServiceError as e:
         raise HTTPException(
             status_code=e.status_code or 502,
             detail=_sanitize_service_error(e),
@@ -331,10 +331,10 @@ async def get_direction_accuracy(
     current_user: User = Depends(require_admin),
 ) -> Dict[str, Any]:
     market = _validate_market(market)
-    client = await get_prediction_client()
+    client = await get_alphaforge_client()
     try:
         return await client.get_direction_accuracy(market=market, days=days)
-    except PredictionServiceError as e:
+    except AlphaForgeServiceError as e:
         raise HTTPException(
             status_code=e.status_code or 502,
             detail=_sanitize_service_error(e),
@@ -359,9 +359,9 @@ async def get_performance_metrics(
     """Get model performance metrics over time for a market."""
     market = _validate_market(market)
     try:
-        client = await get_prediction_client()
+        client = await get_alphaforge_client()
         return await client.get_performance_metrics(market, days)
-    except PredictionServiceError as e:
+    except AlphaForgeServiceError as e:
         status = e.status_code or 502
         raise HTTPException(status_code=status, detail=_sanitize_service_error(e))
 
@@ -383,9 +383,9 @@ async def get_ic_decay(
 ) -> Dict[str, Any]:
     market = _validate_market(market)
     try:
-        client = await get_prediction_client()
+        client = await get_alphaforge_client()
         return await client.get_ic_decay(market, days)
-    except PredictionServiceError as e:
+    except AlphaForgeServiceError as e:
         raise HTTPException(status_code=e.status_code or 502, detail=_sanitize_service_error(e))
 
 
@@ -402,9 +402,9 @@ async def get_turnover(
 ) -> Dict[str, Any]:
     market = _validate_market(market)
     try:
-        client = await get_prediction_client()
+        client = await get_alphaforge_client()
         return await client.get_turnover(market, days, top_n)
-    except PredictionServiceError as e:
+    except AlphaForgeServiceError as e:
         raise HTTPException(status_code=e.status_code or 502, detail=_sanitize_service_error(e))
 
 
@@ -419,9 +419,9 @@ async def get_sectors(
 ) -> Dict[str, Any]:
     market = _validate_market(market)
     try:
-        client = await get_prediction_client()
+        client = await get_alphaforge_client()
         return await client.get_sectors(market)
-    except PredictionServiceError as e:
+    except AlphaForgeServiceError as e:
         raise HTTPException(status_code=e.status_code or 502, detail=_sanitize_service_error(e))
 
 
@@ -436,9 +436,9 @@ async def collect_sectors(
 ) -> Dict[str, Any]:
     market = _validate_market(market)
     try:
-        client = await get_prediction_client()
+        client = await get_alphaforge_client()
         return await client.collect_sectors(market)
-    except PredictionServiceError as e:
+    except AlphaForgeServiceError as e:
         raise HTTPException(status_code=e.status_code or 502, detail=_sanitize_service_error(e))
 
 
@@ -455,9 +455,9 @@ async def get_attribution(
 ) -> Dict[str, Any]:
     market = _validate_market(market)
     try:
-        client = await get_prediction_client()
+        client = await get_alphaforge_client()
         return await client.get_attribution(market, days, top_n)
-    except PredictionServiceError as e:
+    except AlphaForgeServiceError as e:
         raise HTTPException(status_code=e.status_code or 502, detail=_sanitize_service_error(e))
 
 
@@ -474,9 +474,9 @@ async def get_prediction_dates(
 ) -> Dict[str, Any]:
     market = _validate_market(market)
     try:
-        client = await get_prediction_client()
+        client = await get_alphaforge_client()
         return await client.get_prediction_dates(market, n_dates, forward_days)
-    except PredictionServiceError as e:
+    except AlphaForgeServiceError as e:
         raise HTTPException(status_code=e.status_code or 502, detail=_sanitize_service_error(e))
 
 
@@ -494,10 +494,10 @@ async def get_prediction_task(
     task_id: str,
     current_user: User = Depends(require_admin),
 ) -> Dict[str, Any]:
-    client = await get_prediction_client()
+    client = await get_alphaforge_client()
     try:
         return await client.get_prediction_task(task_id)
-    except PredictionServiceError as e:
+    except AlphaForgeServiceError as e:
         raise HTTPException(
             status_code=e.status_code or 502,
             detail=_sanitize_service_error(e),
@@ -520,7 +520,7 @@ async def start_rdagent(
     current_user: User = Depends(require_admin),
 ) -> Dict[str, Any]:
     market = _validate_market(market)
-    client = await get_prediction_client()
+    client = await get_alphaforge_client()
     try:
         resp = await client.start_rdagent(
             market=market,
@@ -532,7 +532,7 @@ async def start_rdagent(
             current_user.email, market, request.max_rounds,
         )
         return resp
-    except PredictionServiceError as e:
+    except AlphaForgeServiceError as e:
         raise HTTPException(
             status_code=e.status_code or 502,
             detail=_sanitize_service_error(e),
@@ -549,10 +549,10 @@ async def get_rdagent_status(
     current_user: User = Depends(require_admin),
 ) -> Dict[str, Any]:
     market = _validate_market(market)
-    client = await get_prediction_client()
+    client = await get_alphaforge_client()
     try:
         return await client.get_rdagent_status(market=market)
-    except PredictionServiceError as e:
+    except AlphaForgeServiceError as e:
         raise HTTPException(
             status_code=e.status_code or 502,
             detail=_sanitize_service_error(e),
@@ -569,12 +569,12 @@ async def stop_rdagent(
     current_user: User = Depends(require_admin),
 ) -> Dict[str, Any]:
     market = _validate_market(market)
-    client = await get_prediction_client()
+    client = await get_alphaforge_client()
     try:
         resp = await client.stop_rdagent(market=market)
         logger.info("Admin %s stopped RD-Agent for market=%s", current_user.email, market)
         return resp
-    except PredictionServiceError as e:
+    except AlphaForgeServiceError as e:
         raise HTTPException(
             status_code=e.status_code or 502,
             detail=_sanitize_service_error(e),
@@ -597,10 +597,10 @@ async def get_factors(
 ) -> Dict[str, Any]:
     if market:
         market = _validate_market(market)
-    client = await get_prediction_client()
+    client = await get_alphaforge_client()
     try:
-        return await client.get_factors(market=market)
-    except PredictionServiceError as e:
+        return await client.get_rdagent_factors(market=market)
+    except AlphaForgeServiceError as e:
         raise HTTPException(
             status_code=e.status_code or 502,
             detail=_sanitize_service_error(e),
@@ -617,7 +617,7 @@ async def toggle_factor(
     request: ToggleFactorRequest,
     current_user: User = Depends(require_admin),
 ) -> Dict[str, Any]:
-    client = await get_prediction_client()
+    client = await get_alphaforge_client()
     try:
         resp = await client.toggle_factor(factor_id, request.is_active)
         logger.info(
@@ -625,7 +625,7 @@ async def toggle_factor(
             current_user.email, factor_id, request.is_active,
         )
         return resp
-    except PredictionServiceError as e:
+    except AlphaForgeServiceError as e:
         raise HTTPException(
             status_code=e.status_code or 502,
             detail=_sanitize_service_error(e),
@@ -866,10 +866,10 @@ async def delete_universe(
 async def get_fundamentals_status(
     current_user: User = Depends(require_admin),
 ) -> Dict[str, Any]:
-    client = await get_prediction_client()
+    client = await get_alphaforge_client()
     try:
         return await client.get_fundamentals_status()
-    except PredictionServiceError as e:
+    except AlphaForgeServiceError as e:
         raise HTTPException(
             status_code=e.status_code or 502,
             detail=_sanitize_service_error(e),
@@ -891,7 +891,7 @@ async def collect_fundamentals(
     current_user: User = Depends(require_admin),
 ) -> Dict[str, Any]:
     market = _validate_market(market)
-    client = await get_prediction_client()
+    client = await get_alphaforge_client()
     try:
         resp = await client.collect_fundamentals(market)
         logger.info(
@@ -899,7 +899,7 @@ async def collect_fundamentals(
             current_user.email, market,
         )
         return resp
-    except PredictionServiceError as e:
+    except AlphaForgeServiceError as e:
         raise HTTPException(
             status_code=e.status_code or 502,
             detail=_sanitize_service_error(e),
@@ -930,7 +930,7 @@ async def backfill_fundamentals(
             status_code=400,
             detail=f"Quarterly backfill only supported for US/HK markets, got: {market}",
         )
-    client = await get_prediction_client()
+    client = await get_alphaforge_client()
     try:
         resp = await client.backfill_fundamentals(market)
         logger.info(
@@ -938,7 +938,7 @@ async def backfill_fundamentals(
             current_user.email, market,
         )
         return resp
-    except PredictionServiceError as e:
+    except AlphaForgeServiceError as e:
         raise HTTPException(
             status_code=e.status_code or 502,
             detail=_sanitize_service_error(e),
@@ -956,7 +956,7 @@ async def trigger_earnings_collection(
     and upserts into stock_earnings_events.  Non-blocking.
     """
     m = _validate_market(market)
-    client = await get_prediction_client()
+    client = await get_alphaforge_client()
     try:
         resp = await client.collect_earnings(m)
         logger.info(
@@ -964,7 +964,7 @@ async def trigger_earnings_collection(
             current_user.email, m,
         )
         return resp
-    except PredictionServiceError as e:
+    except AlphaForgeServiceError as e:
         raise HTTPException(status_code=e.status_code or 502, detail=_sanitize_service_error(e))
 
 
@@ -979,7 +979,7 @@ async def trigger_analyst_collection(
     and insider transactions.  Non-blocking.
     """
     m = _validate_market(market)
-    client = await get_prediction_client()
+    client = await get_alphaforge_client()
     try:
         resp = await client.collect_analyst(m)
         logger.info(
@@ -987,7 +987,7 @@ async def trigger_analyst_collection(
             current_user.email, m,
         )
         return resp
-    except PredictionServiceError as e:
+    except AlphaForgeServiceError as e:
         raise HTTPException(status_code=e.status_code or 502, detail=_sanitize_service_error(e))
 
 
@@ -1002,7 +1002,7 @@ async def trigger_options_collection(
     and upserts into stock_options_flow.  Non-blocking.
     """
     m = _validate_market(market)
-    client = await get_prediction_client()
+    client = await get_alphaforge_client()
     try:
         resp = await client.collect_options(m)
         logger.info(
@@ -1010,7 +1010,7 @@ async def trigger_options_collection(
             current_user.email, m,
         )
         return resp
-    except PredictionServiceError as e:
+    except AlphaForgeServiceError as e:
         raise HTTPException(status_code=e.status_code or 502, detail=_sanitize_service_error(e))
 
 
@@ -1026,12 +1026,12 @@ async def start_backtest(
     current_user: User = Depends(require_admin),
 ) -> Dict[str, Any]:
     m = _validate_market(market)
-    client = await get_prediction_client()
+    client = await get_alphaforge_client()
     try:
-        resp = await client.start_backtest(m, body)
+        resp = await client.start_prediction_backtest(m, body)
         logger.info("Admin %s started backtest for market=%s", current_user.email, m)
         return resp
-    except PredictionServiceError as e:
+    except AlphaForgeServiceError as e:
         raise HTTPException(status_code=e.status_code or 502, detail=_sanitize_service_error(e))
 
 
@@ -1040,10 +1040,10 @@ async def get_backtest_task(
     task_id: str,
     current_user: User = Depends(require_admin),
 ) -> Dict[str, Any]:
-    client = await get_prediction_client()
+    client = await get_alphaforge_client()
     try:
-        return await client.get_backtest_task(task_id)
-    except PredictionServiceError as e:
+        return await client.get_prediction_backtest_task(task_id)
+    except AlphaForgeServiceError as e:
         raise HTTPException(status_code=e.status_code or 502, detail=_sanitize_service_error(e))
 
 
@@ -1054,10 +1054,10 @@ async def list_backtests(
     current_user: User = Depends(require_admin),
 ) -> Dict[str, Any]:
     m = _validate_market(market)
-    client = await get_prediction_client()
+    client = await get_alphaforge_client()
     try:
-        return await client.list_backtests(m, limit=limit)
-    except PredictionServiceError as e:
+        return await client.list_prediction_backtests(m, limit=limit)
+    except AlphaForgeServiceError as e:
         raise HTTPException(status_code=e.status_code or 502, detail=_sanitize_service_error(e))
 
 
@@ -1066,10 +1066,10 @@ async def get_backtest_detail(
     backtest_id: str,
     current_user: User = Depends(require_admin),
 ) -> Dict[str, Any]:
-    client = await get_prediction_client()
+    client = await get_alphaforge_client()
     try:
-        return await client.get_backtest(backtest_id)
-    except PredictionServiceError as e:
+        return await client.get_prediction_backtest(backtest_id)
+    except AlphaForgeServiceError as e:
         raise HTTPException(status_code=e.status_code or 502, detail=_sanitize_service_error(e))
 
 
@@ -1078,12 +1078,12 @@ async def delete_backtest(
     backtest_id: str,
     current_user: User = Depends(require_admin),
 ) -> Dict[str, Any]:
-    client = await get_prediction_client()
+    client = await get_alphaforge_client()
     try:
-        resp = await client.delete_backtest(backtest_id)
+        resp = await client.delete_prediction_backtest(backtest_id)
         logger.info("Admin %s deleted backtest %s", current_user.email, backtest_id)
         return resp
-    except PredictionServiceError as e:
+    except AlphaForgeServiceError as e:
         raise HTTPException(status_code=e.status_code or 502, detail=_sanitize_service_error(e))
 
 
@@ -1096,10 +1096,10 @@ async def get_ml_tools_task(
     task_id: str,
     current_user: User = Depends(require_admin),
 ) -> Dict[str, Any]:
-    client = await get_prediction_client()
+    client = await get_alphaforge_client()
     try:
         return await client.ml_get_training_task(task_id)
-    except PredictionServiceError as e:
+    except AlphaForgeServiceError as e:
         raise HTTPException(status_code=e.status_code or 502, detail=_sanitize_service_error(e))
 
 

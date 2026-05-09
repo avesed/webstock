@@ -765,13 +765,13 @@ async def sync_qlib(
     logger.info("Admin %s triggered Qlib sync for market=%s (%s)", current_user.email, market, mode)
 
     try:
-        from app.services.qlib_client import get_qlib_client
-        client = await get_qlib_client()
+        from app.services.alphaforge_client import get_alphaforge_client
+        client = await get_alphaforge_client()
         result = await client.trigger_sync(market=market, update_only=not full)
         return result
     except Exception as e:
-        from app.services.qlib_client import QlibServiceError
-        if isinstance(e, QlibServiceError) and e.status_code == 409:
+        from app.services.alphaforge_client import AlphaForgeServiceError
+        if isinstance(e, AlphaForgeServiceError) and e.status_code == 409:
             raise HTTPException(
                 status_code=409,
                 detail=f"Qlib sync already running for market={market}",
@@ -796,8 +796,8 @@ async def get_qlib_sync_progress(
     """Get Qlib sync progress for all markets."""
 
     try:
-        from app.services.qlib_client import get_qlib_client
-        client = await get_qlib_client()
+        from app.services.alphaforge_client import get_alphaforge_client
+        client = await get_alphaforge_client()
         return await client.get_sync_progress()
     except Exception as e:
         logger.error("Failed to get Qlib sync progress: %s", e, exc_info=True)
@@ -958,12 +958,12 @@ async def collect_fundamentals(
             f"Invalid market: {market}. Must be one of: {', '.join(_FUND_MARKETS)}",
         )
 
-    from app.services.prediction_client import (
-        PredictionServiceError,
-        get_prediction_client,
+    from app.services.alphaforge_client import (
+        AlphaForgeServiceError,
+        get_alphaforge_client,
     )
 
-    client = await get_prediction_client()
+    client = await get_alphaforge_client()
     try:
         resp = await client.collect_fundamentals(market)
         logger.info(
@@ -971,7 +971,7 @@ async def collect_fundamentals(
             current_user.email, market,
         )
         return {"message": f"Fundamental collection started for {market}", **resp}
-    except PredictionServiceError as e:
+    except AlphaForgeServiceError as e:
         raise HTTPException(status_code=e.status_code or 502, detail=str(e))
 
 
@@ -989,12 +989,12 @@ async def collect_all_fundamentals(
 ) -> Dict[str, Any]:
     """Trigger fundamental data collection for all markets sequentially."""
 
-    from app.services.prediction_client import (
-        PredictionServiceError,
-        get_prediction_client,
+    from app.services.alphaforge_client import (
+        AlphaForgeServiceError,
+        get_alphaforge_client,
     )
 
-    client = await get_prediction_client()
+    client = await get_alphaforge_client()
 
     results: Dict[str, Any] = {}
     errors: list[str] = []
@@ -1002,7 +1002,7 @@ async def collect_all_fundamentals(
         try:
             resp = await client.collect_fundamentals(market)
             results[market] = resp
-        except PredictionServiceError as e:
+        except AlphaForgeServiceError as e:
             errors.append(f"{market}: {e}")
 
     logger.info(

@@ -162,17 +162,17 @@ class StockPredictionSkill(BaseSkill):
 
         # Lazy import to avoid circular dependencies and to allow Celery
         # singleton reset to work correctly.
-        from app.services.prediction_client import (
-            PredictionServiceError,
-            get_prediction_client,
+        from app.services.alphaforge_client import (
+            AlphaForgeServiceError,
+            get_alphaforge_client,
         )
 
         try:
-            client = await get_prediction_client()
+            client = await get_alphaforge_client()
             data = await client.get_latest_predictions(
                 market=market, symbol=symbol, top_n=1,
             )
-        except PredictionServiceError as exc:
+        except AlphaForgeServiceError as exc:
             logger.warning(
                 "get_stock_prediction failed for %s (market=%s): %s",
                 symbol, market, exc,
