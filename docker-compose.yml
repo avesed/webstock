@@ -1,6 +1,7 @@
 
 # =============================================================================
-# WebStock Docker Compose - 8 Services: PostgreSQL + Redis + RSSHub + Data Service + AI Gateway + App + Data Processor + Playwright
+# WebStock Docker Compose - 5 Services: PostgreSQL + Redis + RSSHub + AI Gateway + App
+# External services: StockPulse (data), AlphaForge (ML), NewsForge (news)
 # =============================================================================
 
 services:
@@ -150,56 +151,6 @@ services:
         max-file: "3"
 
   # ===========================================================================
-  # Data Service (external data provider microservice)
-  # ===========================================================================
-  data-service:
-    build:
-      context: ./data-service
-      dockerfile: Dockerfile
-    container_name: webstock-data
-    depends_on:
-      redis:
-        condition: service_healthy
-      postgres:
-        condition: service_healthy
-    networks:
-      - webstock-network
-    environment:
-      - REDIS_URL=redis://redis:6379/5
-      - DATABASE_URL=postgresql://webstock:${POSTGRES_PASSWORD:-webstock}@postgres:5432/webstock
-      - INTERNAL_API_TOKEN=${INTERNAL_API_TOKEN:-}
-      - FINNHUB_API_KEY=${FINNHUB_API_KEY:-}
-      - TUSHARE_TOKEN=${TUSHARE_TOKEN:-}
-      - TIINGO_API_KEY=${TIINGO_API_KEY:-}
-      - TAVILY_API_KEY=${TAVILY_API_KEY:-}
-      - POLYGON_API_KEY=${POLYGON_API_KEY:-}
-      - PLAYWRIGHT_SERVICE_URL=${PLAYWRIGHT_SERVICE_URL:-http://playwright-service:8002}
-      - QLIB_SERVICE_URL=http://data-processor:8005
-      - LOG_LEVEL=${DATA_SERVICE_LOG_LEVEL:-info}
-    volumes:
-      - data_service_data:/app/data
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://127.0.0.1:8003/health"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-      start_period: 30s
-    restart: unless-stopped
-    deploy:
-      resources:
-        limits:
-          cpus: "2"
-          memory: 4G
-        reservations:
-          cpus: "0.5"
-          memory: 1G
-    logging:
-      driver: "json-file"
-      options:
-        max-size: "50m"
-        max-file: "5"
-
-  # ===========================================================================
   # AI Gateway (LLM proxy microservice)
   # ===========================================================================
   ai-gateway:
@@ -252,7 +203,6 @@ services:
       - REDIS_URL=redis://redis:6379/0
       - CELERY_BROKER_URL=redis://redis:6379/1
       - CELERY_RESULT_BACKEND=redis://redis:6379/2
-      - QLIB_SERVICE_URL=http://data-processor:8005
       - JWT_SECRET_KEY=${JWT_SECRET_KEY:-change-me-in-production}
       - JWT_SECRET_KEY_PREVIOUS=${JWT_SECRET_KEY_PREVIOUS:-}
       - DEBUG=${DEBUG:-false}
@@ -272,11 +222,15 @@ services:
       - TAVILY_API_KEY=${TAVILY_API_KEY:-}
       - PLAYWRIGHT_SERVICE_URL=${PLAYWRIGHT_SERVICE_URL:-}
       - INTERNAL_API_TOKEN=${INTERNAL_API_TOKEN:-}
-      - DATA_SERVICE_URL=http://data-service:8003
       - AI_GATEWAY_URL=http://ai-gateway:8004
       - USE_AI_GATEWAY=${USE_AI_GATEWAY:-false}
       - STOCKPULSE_URL=${STOCKPULSE_URL:-}
       - STOCKPULSE_API_KEY=${STOCKPULSE_API_KEY:-}
+      - ALPHAFORGE_URL=${ALPHAFORGE_URL:-}
+      - ALPHAFORGE_API_KEY=${ALPHAFORGE_API_KEY:-}
+      - NEWSFORGE_URL=${NEWSFORGE_URL:-}
+      - NEWSFORGE_API_KEY=${NEWSFORGE_API_KEY:-}
+      - NEWSFORGE_WEBHOOK_SECRET=${NEWSFORGE_WEBHOOK_SECRET:-}
     extra_hosts:
       - "host.docker.internal:host-gateway"
     volumes:
@@ -286,8 +240,6 @@ services:
       postgres:
         condition: service_healthy
       redis:
-        condition: service_healthy
-      data-service:
         condition: service_healthy
       ai-gateway:
         condition: service_healthy
@@ -308,61 +260,6 @@ services:
         reservations:
           cpus: "1"
           memory: 1G
-    logging:
-      driver: "json-file"
-      options:
-        max-size: "50m"
-        max-file: "5"
-
-  # ===========================================================================
-  # Data Processor (quantitative analysis + ML prediction + RD-Agent)
-  # Replaces qlib-service with additional prediction capabilities
-  # ===========================================================================
-  data-processor:
-    build:
-      context: ./data-processor
-      dockerfile: Dockerfile
-    container_name: webstock-data-processor
-    depends_on:
-      redis:
-        condition: service_healthy
-      postgres:
-        condition: service_healthy
-      data-service:
-        condition: service_healthy
-      ai-gateway:
-        condition: service_healthy
-    volumes:
-      - qlib_data:/app/data/qlib
-      - prediction_data:/app/data/predictions
-    networks:
-      - webstock-network
-    environment:
-      - QLIB_DATA_DIR=/app/data/qlib
-      - PREDICTION_DATA_DIR=/app/data/predictions
-      - REDIS_URL=redis://redis:6379/3
-      - DEFAULT_MARKET=us
-      - LOG_LEVEL=info
-      - DATA_SERVICE_URL=http://data-service:8003
-      - WEBSTOCK_BACKEND_URL=http://app:80
-      - INTERNAL_API_TOKEN=${INTERNAL_API_TOKEN:-}
-      - AI_GATEWAY_URL=http://ai-gateway:8004
-      - DATABASE_URL=postgresql://webstock:${POSTGRES_PASSWORD:-webstock}@postgres:5432/webstock
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://127.0.0.1:8005/health"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-      start_period: 60s
-    restart: unless-stopped
-    deploy:
-      resources:
-        limits:
-          cpus: "4"
-          memory: 12G
-        reservations:
-          cpus: "1"
-          memory: 2G
     logging:
       driver: "json-file"
       options:
@@ -425,10 +322,4 @@ volumes:
   redis_data:
     driver: local
   app_data:
-    driver: local
-  data_service_data:
-    driver: local
-  qlib_data:
-    driver: local
-  prediction_data:
     driver: local
