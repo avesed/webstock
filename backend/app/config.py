@@ -126,8 +126,8 @@ class Settings(BaseSettings):
     # Empty string disables the internal API (503 for all requests)
     INTERNAL_API_TOKEN: str = ""
 
-    # AI Gateway (LLM proxy microservice)
-    AI_GATEWAY_URL: str = "http://ai-gateway:8004"
+    # AI Gateway (LLM proxy, runs inside app container)
+    AI_GATEWAY_URL: str = "http://127.0.0.1:8004"
     USE_AI_GATEWAY: bool = False  # Feature flag: route LLM calls through ai-gateway
 
     # NewsForge integration

@@ -1,10 +1,8 @@
-"""HTTP client for the AI Gateway microservice.
+"""HTTP client for the AI Gateway process.
 
-The AI Gateway (ai-gateway) runs as an independent container exposing
-OpenAI-compatible endpoints. It handles provider routing (OpenAI/Anthropic)
-based on X-Provider-Id header.
-
-Connection: backend -> httpx -> http://ai-gateway:8004
+The AI Gateway runs as a supervisord process inside the app container,
+exposing OpenAI-compatible endpoints on 127.0.0.1:8004. It handles
+provider routing (OpenAI/Anthropic) based on X-Provider-Id header.
 """
 
 from __future__ import annotations

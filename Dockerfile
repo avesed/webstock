@@ -73,6 +73,9 @@ COPY --chown=appuser:appgroup backend/ /app/backend/
 # Copy worker code
 COPY --chown=appuser:appgroup worker/ /app/worker/
 
+# Copy ai-gateway code (runs as separate process on port 8004)
+COPY --chown=appuser:appgroup ai-gateway/ /app/ai-gateway/
+
 # Copy frontend static build into nginx webroot
 COPY --from=frontend-builder /build/dist /var/www/html
 RUN chown -R www-data:www-data /var/www/html

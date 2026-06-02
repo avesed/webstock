@@ -23,7 +23,6 @@ _recorder_registered = False
 _SINGLETON_RESETS = [
     ("app.core.llm", "reset_llm_gateway"),
     ("app.db.redis", "reset_redis"),
-    ("app.services.content_cleaning_service", "reset_content_cleaning_service"),
     ("app.services.rag", "reset_index_service"),
     ("app.services.stock_list_service", "reset_stock_list_service_sync"),
     ("app.services.stock_profile_service", "reset_stock_profile_service_sync"),

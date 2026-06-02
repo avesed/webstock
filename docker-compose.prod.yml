@@ -1,9 +1,19 @@
 
 # =============================================================================
-# WebStock Docker Compose (Dev) - 4 Services: PostgreSQL + Redis + RSSHub + App
-# AI Gateway runs inside App container (supervisord)
-# External services: StockPulse (data), AlphaForge (ML), NewsForge (news)
-# For production image-based deployment, use docker-compose.prod.yml
+# WebStock Production Compose — Image-Based Deployment
+#
+# No source code required. Only needs:
+#   - This file (docker-compose.prod.yml)
+#   - .env file with secrets
+#   - (Optional) nginx/ssl/ directory for TLS certs
+#
+# Usage:
+#   docker compose -f docker-compose.prod.yml pull
+#   docker compose -f docker-compose.prod.yml up -d
+#
+# Update:
+#   docker compose -f docker-compose.prod.yml pull app
+#   docker compose -f docker-compose.prod.yml up -d app
 # =============================================================================
 
 services:
@@ -58,7 +68,6 @@ services:
       - "log_min_duration_statement=1000"
     volumes:
       - postgres_data:/var/lib/postgresql/data
-      - ./init-db.sql:/docker-entrypoint-initdb.d/init.sql:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U webstock -d webstock"]
       interval: 10s
@@ -156,21 +165,19 @@ services:
   # App (Backend + Frontend + Worker + Beat + AI Gateway + Nginx)
   # ===========================================================================
   app:
-    build:
-      context: .
-      dockerfile: Dockerfile
+    image: ghcr.io/avesed/webstock:latest
     container_name: webstock-app
     ports:
-      - "39000:80"
+      - "${APP_PORT:-80}:80"
     environment:
       - DATABASE_URL=postgresql+asyncpg://webstock:${POSTGRES_PASSWORD:-webstock}@postgres:5432/webstock?ssl=disable
       - REDIS_URL=redis://redis:6379/0
       - CELERY_BROKER_URL=redis://redis:6379/1
       - CELERY_RESULT_BACKEND=redis://redis:6379/2
-      - JWT_SECRET_KEY=${JWT_SECRET_KEY:-change-me-in-production}
+      - JWT_SECRET_KEY=${JWT_SECRET_KEY}
       - JWT_SECRET_KEY_PREVIOUS=${JWT_SECRET_KEY_PREVIOUS:-}
-      - DEBUG=${DEBUG:-false}
-      - ENVIRONMENT=${ENVIRONMENT:-production}
+      - DEBUG=false
+      - ENVIRONMENT=production
       - FINNHUB_API_KEY=${FINNHUB_API_KEY:-}
       - TUSHARE_TOKEN=${TUSHARE_TOKEN:-}
       - VAPID_PUBLIC_KEY=${VAPID_PUBLIC_KEY:-}
@@ -195,11 +202,17 @@ services:
       - NEWSFORGE_URL=${NEWSFORGE_URL:-}
       - NEWSFORGE_API_KEY=${NEWSFORGE_API_KEY:-}
       - NEWSFORGE_WEBHOOK_SECRET=${NEWSFORGE_WEBHOOK_SECRET:-}
+      - FIRST_ADMIN_EMAIL=${FIRST_ADMIN_EMAIL:-}
+      # CORS_ORIGINS is a pydantic list[str] (json.loads): MUST be a JSON array.
+      # Default ["*"] so an unset value still boots — an empty string would crash
+      # config load (and take down migrations + Celery). Restrict in .env.
+      - CORS_ORIGINS=${CORS_ORIGINS:-["*"]}
     extra_hosts:
       - "host.docker.internal:host-gateway"
     volumes:
       - app_data:/app/data
-      - ./nginx/ssl:/etc/nginx/ssl:ro
+      # Uncomment to enable TLS:
+      # - ./nginx/ssl:/etc/nginx/ssl:ro
     depends_on:
       postgres:
         condition: service_healthy
@@ -227,46 +240,6 @@ services:
       options:
         max-size: "50m"
         max-file: "5"
-
-  # ===========================================================================
-  # Playwright Service (optional content extraction + MCP server)
-  # ===========================================================================
-  playwright-service:
-    build:
-      context: ./playwright-service
-      dockerfile: Dockerfile
-    container_name: webstock-playwright
-    networks:
-      - webstock-network
-    environment:
-      - HEADLESS=${PLAYWRIGHT_HEADLESS:-true}
-      - NAVIGATION_TIMEOUT=15000
-      - BROWSER_TIMEOUT=30000
-      - LOG_LEVEL=info
-    ports:
-      - "127.0.0.1:${PLAYWRIGHT_MCP_PORT:-8931}:8931"
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://127.0.0.1:8002/health"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-      start_period: 60s
-    restart: unless-stopped
-    deploy:
-      resources:
-        limits:
-          cpus: "2"
-          memory: 2G
-        reservations:
-          cpus: "0.5"
-          memory: 512M
-    logging:
-      driver: "json-file"
-      options:
-        max-size: "50m"
-        max-file: "5"
-    profiles:
-      - playwright
 
 # =============================================================================
 # Networks

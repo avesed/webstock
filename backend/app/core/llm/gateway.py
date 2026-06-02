@@ -4,9 +4,9 @@ All services call this instead of directly creating OpenAI/Anthropic clients.
 Manages provider instances, config resolution, and lifecycle.
 
 When USE_AI_GATEWAY is enabled, LLM calls are routed through the ai-gateway
-microservice (http://ai-gateway:8004) using the X-Provider-Id header for
-provider selection.  Per-user API key overrides bypass the gateway and
-use local providers directly.
+process (127.0.0.1:8004) using the X-Provider-Id header for provider
+selection.  Per-user API key overrides bypass the gateway and use local
+providers directly.
 
 Provider caching policy (local path):
 - Environment-sourced providers: cached (reuse HTTP connections)

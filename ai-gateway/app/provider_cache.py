@@ -80,10 +80,11 @@ class ProviderCache:
     def _build_db_url() -> str:
         """Build asyncpg-compatible DB URL from settings."""
         db_url = settings.DATABASE_URL
-        # Convert SQLAlchemy-style URL if needed
         if db_url.startswith("postgresql+asyncpg://"):
             db_url = db_url.replace("postgresql+asyncpg://", "postgresql://", 1)
-        # Preserve query params (e.g. ?sslmode=require) — asyncpg supports them
+        # SQLAlchemy uses ?ssl=disable, asyncpg uses ?sslmode=disable
+        db_url = db_url.replace("?ssl=disable", "?sslmode=disable")
+        db_url = db_url.replace("&ssl=disable", "&sslmode=disable")
         return db_url
 
     async def close(self):

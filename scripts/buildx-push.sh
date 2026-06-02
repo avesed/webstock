@@ -3,16 +3,14 @@
 # WebStock Multi-Arch Build & Push to GHCR
 #
 # Builds linux/amd64 + linux/arm64 images and pushes to ghcr.io/avesed/webstock
-#   - App (main)       → ghcr.io/avesed/webstock:dev
-#   - Playwright        → ghcr.io/avesed/webstock:playwright  (amd64 only)
-#   - Qlib              → ghcr.io/avesed/webstock:qlib
+#   - App (main)       → ghcr.io/avesed/webstock:latest  (+ optional version tag)
+#   - Playwright       → ghcr.io/avesed/webstock:playwright  (amd64 only)
 #
 # Usage:
-#   ./scripts/buildx-push.sh              # Build all three
-#   ./scripts/buildx-push.sh app          # Build app only
-#   ./scripts/buildx-push.sh playwright   # Build playwright only
-#   ./scripts/buildx-push.sh qlib         # Build qlib only
-#   ./scripts/buildx-push.sh app qlib     # Build app and qlib
+#   ./scripts/buildx-push.sh                      # Build app only (latest)
+#   ./scripts/buildx-push.sh --tag v0.2.0         # Build app with version tag
+#   ./scripts/buildx-push.sh playwright           # Build playwright only
+#   ./scripts/buildx-push.sh app playwright       # Build both
 # =============================================================================
 
 set -euo pipefail
@@ -44,28 +42,16 @@ err()   { echo -e "${RED}[ERROR]${NC} $*"; }
 # Pre-flight checks
 # -----------------------------------------------------------------------------
 preflight() {
-    # Check docker
     if ! command -v docker &>/dev/null; then
         err "Docker is not installed."
         exit 1
     fi
 
-    # Check buildx
     if ! docker buildx version &>/dev/null; then
         err "Docker Buildx is not available. Install it first."
         exit 1
     fi
 
-    # Check GHCR login
-    if ! docker pull "${REGISTRY}:nonexistent-tag-check" &>/dev/null 2>&1; then
-        # This is expected to fail (tag doesn't exist), but auth errors look different.
-        # Try a more reliable check:
-        if ! echo "" | docker login ghcr.io --username _test --password-stdin &>/dev/null 2>&1; then
-            true  # ignore, real auth check below
-        fi
-    fi
-
-    # Simple auth check: try to inspect the registry (will fail gracefully if not logged in)
     info "Ensure you are logged in to ghcr.io:"
     info "  echo \$GITHUB_TOKEN | docker login ghcr.io -u USERNAME --password-stdin"
     echo ""
@@ -92,33 +78,35 @@ ensure_builder() {
 # Build functions
 # -----------------------------------------------------------------------------
 build_app() {
-    local tag="${REGISTRY}:dev"
-    info "Building App → ${tag}"
+    local tags=("--tag" "${REGISTRY}:latest")
+
+    if [ -n "${VERSION_TAG:-}" ]; then
+        tags+=("--tag" "${REGISTRY}:${VERSION_TAG}")
+    fi
+
+    info "Building App → ${REGISTRY}:latest${VERSION_TAG:+ + ${REGISTRY}:${VERSION_TAG}}"
     info "  Platforms: ${MULTI_PLATFORM}"
     info "  Dockerfile: ./Dockerfile"
-    info "  Context: ."
     echo ""
 
     docker buildx build \
         --platform "$MULTI_PLATFORM" \
         --file Dockerfile \
-        --tag "$tag" \
+        "${tags[@]}" \
         --push \
         .
 
-    ok "App pushed → ${tag}"
+    ok "App pushed → ${REGISTRY}:latest${VERSION_TAG:+ + ${REGISTRY}:${VERSION_TAG}}"
     echo ""
 }
 
 build_playwright() {
     local tag="${REGISTRY}:playwright"
 
-    # Playwright base image (mcr.microsoft.com/playwright) is amd64 only
     warn "Playwright base image does NOT support arm64 — building amd64 only"
     info "Building Playwright → ${tag}"
     info "  Platform: linux/amd64"
     info "  Dockerfile: playwright-service/Dockerfile"
-    info "  Context: playwright-service/"
     echo ""
 
     docker buildx build \
@@ -129,25 +117,6 @@ build_playwright() {
         playwright-service/
 
     ok "Playwright pushed → ${tag}"
-    echo ""
-}
-
-build_qlib() {
-    local tag="${REGISTRY}:qlib"
-    info "Building Qlib → ${tag}"
-    info "  Platforms: ${MULTI_PLATFORM}"
-    info "  Dockerfile: qlib-service/Dockerfile"
-    info "  Context: qlib-service/"
-    echo ""
-
-    docker buildx build \
-        --platform "$MULTI_PLATFORM" \
-        --file qlib-service/Dockerfile \
-        --tag "$tag" \
-        --push \
-        qlib-service/
-
-    ok "Qlib pushed → ${tag}"
     echo ""
 }
 
@@ -163,11 +132,31 @@ main() {
     preflight
     ensure_builder
 
-    local targets=("$@")
+    local targets=()
+    VERSION_TAG=""
 
-    # Default: build all
+    # Parse arguments
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --tag)
+                VERSION_TAG="$2"
+                shift 2
+                ;;
+            app|playwright)
+                targets+=("$1")
+                shift
+                ;;
+            *)
+                err "Unknown argument: $1"
+                err "Usage: $0 [app|playwright] [--tag VERSION]"
+                exit 1
+                ;;
+        esac
+    done
+
+    # Default: build app only
     if [ ${#targets[@]} -eq 0 ]; then
-        targets=("app" "playwright" "qlib")
+        targets=("app")
     fi
 
     local start_time=$SECONDS
@@ -179,14 +168,6 @@ main() {
                 ;;
             playwright)
                 build_playwright
-                ;;
-            qlib)
-                build_qlib
-                ;;
-            *)
-                err "Unknown target: $target"
-                err "Valid targets: app, playwright, qlib"
-                exit 1
                 ;;
         esac
     done
@@ -201,9 +182,8 @@ main() {
     echo "  Images pushed to:"
     for target in "${targets[@]}"; do
         case "$target" in
-            app)        echo "    ${REGISTRY}:dev" ;;
+            app)        echo "    ${REGISTRY}:latest${VERSION_TAG:+ / ${REGISTRY}:${VERSION_TAG}}" ;;
             playwright) echo "    ${REGISTRY}:playwright (amd64 only)" ;;
-            qlib)       echo "    ${REGISTRY}:qlib" ;;
         esac
     done
     echo "=========================================="

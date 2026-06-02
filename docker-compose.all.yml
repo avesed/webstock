@@ -1,0 +1,632 @@
+# =============================================================================
+# WebStock UMBRELLA Compose — FOUR stacks in one project, fully image-based
+#
+#   WebStock + StockPulse + AlphaForge + NewsForge
+#
+# Every service runs from a published GHCR image (NO build:). All four stacks
+# share one bridge network (`webstock-umbrella`) but keep their OWN postgres +
+# redis (8 infra containers; each stack's Redis eviction policy is preserved
+# exactly because StockPulse/AlphaForge need `noeviction`).
+#
+# Usage:
+#   cp .env.all.example .env
+#   # edit .env: set per-stack POSTGRES_PASSWORD, JWT keys, OPENAI key, etc.
+#   docker login ghcr.io                 # images may be private
+#   docker compose -f docker-compose.all.yml up -d
+#
+# After the 4 apps are healthy, mint cross-stack API keys MANUALLY
+# (see DEPLOY-umbrella.md §4), write them into .env, then:
+#   docker compose -f docker-compose.all.yml up -d --force-recreate \
+#       alphaforge-app webstock-app
+#
+# Cross-container traffic ALWAYS targets the nginx port (container :80) via
+# in-network service DNS — NOT the internal uvicorn ports. The uvicorn ports
+# (8000/8010/8015) are NOT published cross-container and WebStock's uvicorn in
+# particular binds 127.0.0.1 only. nginx :80 is the canonical API surface for
+# every app.
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# Shared network — every service attaches here.
+# -----------------------------------------------------------------------------
+networks:
+  webstock-umbrella:
+    driver: bridge
+
+# -----------------------------------------------------------------------------
+# Volumes — namespaced per stack so no two stacks ever share state.
+# -----------------------------------------------------------------------------
+volumes:
+  # WebStock
+  webstock_pgdata:
+    driver: local
+  webstock_redisdata:
+    driver: local
+  webstock_app_data:
+    driver: local
+  # StockPulse
+  stockpulse_pgdata:
+    driver: local
+  stockpulse_redisdata:
+    driver: local
+  # AlphaForge
+  alphaforge_pgdata:
+    driver: local
+  alphaforge_redisdata:
+    driver: local
+  alphaforge_qlib_data:
+    driver: local
+  alphaforge_predictions:
+    driver: local
+  # NewsForge
+  newsforge_pgdata:
+    driver: local
+  newsforge_redisdata:
+    driver: local
+  newsforge_articledata:
+    driver: local
+
+services:
+  # ===========================================================================
+  # ===========================  STOCKPULSE  ==================================
+  # (market data: quotes / history / fundamentals)
+  # source: ~/stockpulse/docker-compose.prod.yml
+  # ===========================================================================
+  stockpulse-postgres:
+    image: pgvector/pgvector:pg16
+    environment:
+      POSTGRES_USER: stockpulse
+      # StockPulse prod compose HARD-FAILS if unset (`${POSTGRES_PASSWORD:?}`).
+      POSTGRES_PASSWORD: ${SP_POSTGRES_PASSWORD:?Set SP_POSTGRES_PASSWORD in .env}
+      POSTGRES_DB: stockpulse
+    volumes:
+      - stockpulse_pgdata:/var/lib/postgresql/data
+    command:
+      - postgres
+      - -c
+      - shared_buffers=512MB
+      - -c
+      - effective_cache_size=1GB
+      - -c
+      - work_mem=16MB
+      - -c
+      - maintenance_work_mem=128MB
+      - -c
+      - max_connections=100
+      - -c
+      - random_page_cost=1.1
+      - -c
+      - checkpoint_completion_target=0.9
+      - -c
+      - wal_buffers=16MB
+      - -c
+      - log_min_duration_statement=1000
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U stockpulse"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    shm_size: 256m
+    mem_limit: 2g
+    cpus: 2.0
+    restart: unless-stopped
+    networks:
+      - webstock-umbrella
+    logging:
+      driver: json-file
+      options:
+        max-size: "50m"
+        max-file: "5"
+
+  stockpulse-redis:
+    image: redis:7-alpine
+    # noeviction REQUIRED (JWT denylist + distributed locks). Preserved exactly.
+    command: >
+      redis-server
+      --maxmemory 256mb
+      --maxmemory-policy noeviction
+      --appendonly yes
+      --requirepass ${SP_REDIS_PASSWORD:-stockpulse}
+      --rename-command KEYS ""
+      --rename-command FLUSHALL ""
+      --rename-command FLUSHDB ""
+    volumes:
+      - stockpulse_redisdata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "${SP_REDIS_PASSWORD:-stockpulse}", "--no-auth-warning", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    mem_limit: 512m
+    cpus: 0.5
+    restart: unless-stopped
+    networks:
+      - webstock-umbrella
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "3"
+
+  stockpulse-app:
+    image: ghcr.io/avesed/stockpulse:latest
+    ports:
+      - "${SP_APP_PORT:-8010}:80"
+    environment:
+      DATABASE_URL: postgresql+asyncpg://stockpulse:${SP_POSTGRES_PASSWORD:?Set SP_POSTGRES_PASSWORD in .env}@stockpulse-postgres:5432/stockpulse
+      REDIS_URL: redis://:${SP_REDIS_PASSWORD:-stockpulse}@stockpulse-redis:6379/0
+      JWT_SECRET_KEY: ${SP_JWT_SECRET_KEY:-}
+      FIRST_ADMIN_EMAIL: ${SP_FIRST_ADMIN_EMAIL:-}
+      CORS_ORIGINS: ${SP_CORS_ORIGINS:-*}
+      LOG_LEVEL: ${SP_LOG_LEVEL:-info}
+      # First-boot seed: on an EMPTY DB StockPulse downloads a market-data
+      # snapshot from a GitHub release (symbols + profiles + daily bars). This
+      # can take several minutes and GBs of disk, and blocks /health until done
+      # (so first boot far exceeds start_period — that's expected; the cross-stack
+      # deps use service_started, not service_healthy, precisely for this).
+      # Leave empty for StockPulse's default (seed); set SP_SEED_RELEASE=skip to
+      # start with an empty DB and collect data live instead.
+      SP_SEED_RELEASE: ${SP_SEED_RELEASE:-}
+      # Optional upstream provider keys (also settable via StockPulse admin UI)
+      FINNHUB_API_KEY: ${SP_FINNHUB_API_KEY:-}
+      TUSHARE_TOKEN: ${SP_TUSHARE_TOKEN:-}
+      TIINGO_API_KEY: ${SP_TIINGO_API_KEY:-}
+      TAVILY_API_KEY: ${SP_TAVILY_API_KEY:-}
+      POLYGON_API_KEY: ${SP_POLYGON_API_KEY:-}
+    # NOTE: source prod compose used `env_file: .env`; intentionally DROPPED —
+    # in the merged project all config is provided explicitly above so we never
+    # accidentally leak another stack's vars or require a per-stack .env file.
+    depends_on:
+      stockpulse-postgres:
+        condition: service_healthy
+      stockpulse-redis:
+        condition: service_healthy
+    healthcheck:
+      # nginx (:80) proxies /health -> uvicorn 127.0.0.1:8010. curl targets :80.
+      test: ["CMD", "curl", "-sf", "http://localhost/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      # 60s: avoid false 'unhealthy' during the umbrella cold-start stampede.
+      start_period: 60s
+    mem_limit: 4g
+    cpus: 4.0
+    pids_limit: 512
+    restart: unless-stopped
+    networks:
+      - webstock-umbrella
+    logging:
+      driver: json-file
+      options:
+        max-size: "100m"
+        max-file: "5"
+
+  # ===========================================================================
+  # ===========================  ALPHAFORGE  ==================================
+  # (ML prediction engine: LightGBM + Qlib + RD-Agent)
+  # source: ~/alphaforge/docker-compose.yml (DEV). build: REPLACED with image.
+  #
+  # IMPORTANT: AlphaForge image is amd64-ONLY (Qlib has no arm64 build).
+  # `platform: linux/amd64` forces the right arch; on Apple Silicon / arm hosts
+  # it runs under emulation (slow) — prefer an amd64 host.
+  # ===========================================================================
+  alphaforge-postgres:
+    image: postgres:16
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: alphaforge
+      POSTGRES_PASSWORD: ${AF_POSTGRES_PASSWORD:-alphaforge}
+      POSTGRES_DB: alphaforge
+    volumes:
+      - alphaforge_pgdata:/var/lib/postgresql/data
+    # Dev-only host port 5434:5432 DROPPED (no host exposure of pg).
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U alphaforge"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    networks:
+      - webstock-umbrella
+
+  alphaforge-redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    # noeviction REQUIRED (distributed RD-Agent / training locks). Preserved.
+    # Dev-only host port 6381:6379 DROPPED.
+    command: redis-server --maxmemory 256mb --maxmemory-policy noeviction
+    volumes:
+      - alphaforge_redisdata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    networks:
+      - webstock-umbrella
+
+  alphaforge-app:
+    image: ghcr.io/avesed/alphaforge:v0.1.1   # pinned tag (per recon)
+    platform: linux/amd64                      # amd64-only — Qlib has no arm build
+    restart: unless-stopped
+    ports:
+      - "${AF_APP_PORT:-8015}:80"
+    environment:
+      DATABASE_URL: postgresql+asyncpg://alphaforge:${AF_POSTGRES_PASSWORD:-alphaforge}@alphaforge-postgres:5432/alphaforge
+      REDIS_URL: redis://alphaforge-redis:6379/0
+      JWT_SECRET_KEY: ${AF_JWT_SECRET_KEY:-}
+      FIRST_ADMIN_EMAIL: ${AF_FIRST_ADMIN_EMAIL:-}
+      LOG_LEVEL: ${AF_LOG_LEVEL:-info}
+      # Cross-stack: reach StockPulse via in-network DNS on nginx :80.
+      # AlphaForge's StockPulse client appends /api/v1/data — root URL only here.
+      # (DEV-compose host.docker.internal:8010 / :8004 are NOT carried over.)
+      STOCKPULSE_URL: http://stockpulse-app
+      STOCKPULSE_API_KEY: ${AF_STOCKPULSE_API_KEY:-}
+      # NewsForge sentiment (optional for AlphaForge). nginx :80; client appends path.
+      NEWSFORGE_URL: http://newsforge-app
+      NEWSFORGE_API_KEY: ${AF_NEWSFORGE_API_KEY:-}
+      # AI_GATEWAY_URL intentionally UNSET: WebStock's AI Gateway binds
+      # 127.0.0.1:8004 INSIDE its own app container and is unreachable from
+      # other containers. RD-Agent LLM features stay un-wired until a
+      # cross-container-reachable gateway/LLM endpoint is provided.
+      # AI_GATEWAY_URL: http://<reachable-llm-endpoint>
+      CORS_ORIGINS: ${AF_CORS_ORIGINS:-http://localhost:3000,http://localhost:5173,http://localhost:8015}
+    volumes:
+      - alphaforge_qlib_data:/app/data/qlib
+      - alphaforge_predictions:/app/data/predictions
+    depends_on:
+      alphaforge-postgres:
+        condition: service_healthy
+      alphaforge-redis:
+        condition: service_healthy
+      # AlphaForge reads StockPulse market data lazily (at training time, not at
+      # boot), so service_started is enough — avoids a serial healthy-gate chain
+      # (stockpulse healthy -> alphaforge healthy -> webstock start).
+      stockpulse-app:
+        condition: service_started
+    deploy:
+      resources:
+        limits:
+          cpus: "4"
+          memory: 12G
+    healthcheck:
+      # nginx (:80) proxies /health -> uvicorn 127.0.0.1:8015.
+      test: ["CMD", "curl", "-f", "http://localhost/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+    networks:
+      - webstock-umbrella
+
+  # ===========================================================================
+  # ============================  NEWSFORGE  ==================================
+  # (news ingestion + sentiment)
+  # source: ~/newsforge/docker-compose.prod.yml
+  # NOTE: NewsForge's own optional `rsshub` service is OMITTED — the WebStock
+  # stack below already runs an rsshub container and NewsForge's rsshub was a
+  # `profiles: [rsshub]` opt-in. If NewsForge needs RSSHub, point its
+  # NF_RSSHUB_URL at webstock-rsshub:1200 instead.
+  # ===========================================================================
+  newsforge-postgres:
+    image: pgvector/pgvector:pg16
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${NF_POSTGRES_USER:-newsforge}
+      POSTGRES_PASSWORD: ${NF_POSTGRES_PASSWORD:-newsforge}
+      POSTGRES_DB: ${NF_POSTGRES_DB:-newsforge}
+    volumes:
+      - newsforge_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${NF_POSTGRES_USER:-newsforge}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+    networks:
+      - webstock-umbrella
+
+  newsforge-redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    # allkeys-lru (NewsForge uses LRU cache semantics). Preserved exactly.
+    command: >
+      redis-server
+      --maxmemory 256mb
+      --maxmemory-policy allkeys-lru
+      --appendonly yes
+    volumes:
+      - newsforge_redisdata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    networks:
+      - webstock-umbrella
+
+  newsforge-app:
+    image: ghcr.io/avesed/newsforge:latest
+    restart: unless-stopped
+    ports:
+      - "${NF_APP_PORT:-8080}:80"
+    environment:
+      DATABASE_URL: postgresql+asyncpg://${NF_POSTGRES_USER:-newsforge}:${NF_POSTGRES_PASSWORD:-newsforge}@newsforge-postgres:5432/${NF_POSTGRES_DB:-newsforge}
+      REDIS_URL: redis://newsforge-redis:6379/0
+      JWT_SECRET_KEY: ${NF_JWT_SECRET_KEY:-}
+      # First /register with this email becomes admin (whitelist). No auto-seed.
+      FIRST_ADMIN_EMAIL: ${NF_FIRST_ADMIN_EMAIL:-admin@newsforge.local}
+      # NewsForge LLM pipeline key (does NOT block boot if empty).
+      OPENAI_API_KEY: ${NF_OPENAI_API_KEY:-}
+      OPENAI_API_BASE: ${NF_OPENAI_API_BASE:-https://api.openai.com/v1}
+      OPENAI_MODEL: ${NF_OPENAI_MODEL:-gpt-4o-mini}
+      # NewsForge's own rsshub is omitted; reuse WebStock's rsshub if desired.
+      RSSHUB_URL: ${NF_RSSHUB_URL:-http://webstock-rsshub:1200}
+      # Shared rsshub is access-key-gated; propagate the same key NewsForge-side.
+      RSSHUB_ACCESS_KEY: ${WS_RSSHUB_ACCESS_KEY:-}
+      CORS_ORIGINS: ${NF_CORS_ORIGINS:-*}
+      DEBUG: "false"
+      LOG_LEVEL: ${NF_LOG_LEVEL:-INFO}
+      # Optional: let NewsForge pull per-symbol news from StockPulse.
+      # STOCKPULSE_URL: http://stockpulse-app
+      # STOCKPULSE_API_KEY: ${NF_STOCKPULSE_API_KEY:-}
+    depends_on:
+      newsforge-postgres:
+        condition: service_healthy
+      newsforge-redis:
+        condition: service_healthy
+    healthcheck:
+      # nginx (:80) proxies /api/v1/health -> uvicorn 127.0.0.1:8000.
+      test: ["CMD", "curl", "-f", "http://localhost/api/v1/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      # 60s: pgvector migration + cold-start stampede headroom.
+      start_period: 60s
+    volumes:
+      - newsforge_articledata:/app/data/articles
+    deploy:
+      resources:
+        limits:
+          memory: 4G
+    networks:
+      - webstock-umbrella
+
+  # ===========================================================================
+  # ============================  WEBSTOCK  ===================================
+  # (orchestrator: analysis / chat / discussion / portfolio / alerts + nginx)
+  # source: ~/webstock/docker-compose.prod.yml
+  # ===========================================================================
+  webstock-postgres:
+    image: pgvector/pgvector:pg16
+    environment:
+      - POSTGRES_USER=webstock
+      - POSTGRES_PASSWORD=${WS_POSTGRES_PASSWORD:-webstock}
+      - POSTGRES_DB=webstock
+      - PGDATA=/var/lib/postgresql/data/pgdata
+    command:
+      - "postgres"
+      - "-c"
+      - "shared_buffers=512MB"
+      - "-c"
+      - "effective_cache_size=1536MB"
+      - "-c"
+      - "maintenance_work_mem=256MB"
+      - "-c"
+      - "checkpoint_completion_target=0.9"
+      - "-c"
+      - "wal_buffers=16MB"
+      - "-c"
+      - "default_statistics_target=100"
+      - "-c"
+      - "random_page_cost=1.1"
+      - "-c"
+      - "effective_io_concurrency=200"
+      - "-c"
+      - "work_mem=8MB"
+      - "-c"
+      - "min_wal_size=1GB"
+      - "-c"
+      - "max_wal_size=4GB"
+      - "-c"
+      - "max_worker_processes=4"
+      - "-c"
+      - "max_parallel_workers_per_gather=2"
+      - "-c"
+      - "max_parallel_workers=4"
+      - "-c"
+      - "max_connections=200"
+      - "-c"
+      - "jit=off"
+      - "-c"
+      - "log_statement=none"
+      - "-c"
+      - "log_min_duration_statement=1000"
+    volumes:
+      - webstock_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U webstock -d webstock"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    restart: unless-stopped
+    networks:
+      - webstock-umbrella
+    deploy:
+      resources:
+        limits:
+          cpus: "2"
+          memory: 2G
+        reservations:
+          cpus: "0.5"
+          memory: 1G
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "50m"
+        max-file: "5"
+
+  webstock-redis:
+    image: redis:7-alpine
+    # allkeys-lru (app cache + Celery broker). Preserved exactly.
+    command: >
+      redis-server
+      --maxmemory 512mb --maxmemory-policy allkeys-lru
+      --appendonly yes --save 900 1 --save 300 10
+    volumes:
+      - webstock_redisdata:/data
+    networks:
+      - webstock-umbrella
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "50m"
+        max-file: "5"
+
+  webstock-rsshub:
+    image: diygod/rsshub:latest
+    environment:
+      - NODE_ENV=production
+      - CACHE_TYPE=redis
+      - REDIS_URL=redis://webstock-redis:6379/4
+      - CACHE_EXPIRE=300
+      - REQUEST_TIMEOUT=30000
+      - LISTEN_INADDR_ANY=1
+      - ACCESS_KEY=${WS_RSSHUB_ACCESS_KEY:-}
+    depends_on:
+      webstock-redis:
+        condition: service_healthy
+    networks:
+      - webstock-umbrella
+    healthcheck:
+      test: ["CMD", "node", "-e", "require('http').get('http://127.0.0.1:1200/',r=>{process.exit(r.statusCode===200?0:1)}).on('error',()=>process.exit(1))"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          cpus: "1"
+          memory: 512M
+        reservations:
+          cpus: "0.25"
+          memory: 128M
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "30m"
+        max-file: "3"
+
+  webstock-app:
+    image: ghcr.io/avesed/webstock:latest
+    ports:
+      - "${APP_PORT:-80}:80"
+    environment:
+      - DATABASE_URL=postgresql+asyncpg://webstock:${WS_POSTGRES_PASSWORD:-webstock}@webstock-postgres:5432/webstock?ssl=disable
+      - REDIS_URL=redis://webstock-redis:6379/0
+      - CELERY_BROKER_URL=redis://webstock-redis:6379/1
+      - CELERY_RESULT_BACKEND=redis://webstock-redis:6379/2
+      # Hard-fail (like SP_POSTGRES_PASSWORD) if unset/empty: WebStock has NO
+      # DB auto-gen fallback, so a blank value would silently sign JWTs with "".
+      - JWT_SECRET_KEY=${WS_JWT_SECRET_KEY:?Set WS_JWT_SECRET_KEY in .env — openssl rand -hex 32}
+      - JWT_SECRET_KEY_PREVIOUS=${WS_JWT_SECRET_KEY_PREVIOUS:-}
+      - DEBUG=false
+      - ENVIRONMENT=production
+      - FINNHUB_API_KEY=${FINNHUB_API_KEY:-}
+      - TUSHARE_TOKEN=${TUSHARE_TOKEN:-}
+      - VAPID_PUBLIC_KEY=${VAPID_PUBLIC_KEY:-}
+      - VAPID_PRIVATE_KEY=${VAPID_PRIVATE_KEY:-}
+      - VAPID_CLAIMS_EMAIL=${VAPID_CLAIMS_EMAIL:-admin@webstock.local}
+      - SMTP_HOST=${SMTP_HOST:-}
+      - SMTP_PORT=${SMTP_PORT:-587}
+      - SMTP_USER=${SMTP_USER:-}
+      - SMTP_PASSWORD=${SMTP_PASSWORD:-}
+      - SMTP_FROM_EMAIL=${SMTP_FROM_EMAIL:-}
+      # WebStock has its own in-stack rsshub (webstock-rsshub).
+      - RSSHUB_URL=${WS_RSSHUB_URL:-http://webstock-rsshub:1200}
+      - RSSHUB_ACCESS_KEY=${WS_RSSHUB_ACCESS_KEY:-}
+      - TAVILY_API_KEY=${TAVILY_API_KEY:-}
+      - PLAYWRIGHT_SERVICE_URL=${PLAYWRIGHT_SERVICE_URL:-}
+      - INTERNAL_API_TOKEN=${INTERNAL_API_TOKEN:-}
+      # AI Gateway is embedded in this same container on 127.0.0.1:8004.
+      - AI_GATEWAY_URL=http://127.0.0.1:8004
+      - USE_AI_GATEWAY=${USE_AI_GATEWAY:-false}
+      # --- Cross-stack wiring: in-network DNS on nginx :80 (NOT uvicorn ports).
+      # Clients append their own base paths:
+      #   StockPulse  -> /api/v1/data    AlphaForge -> /api/v1    NewsForge -> /api/internal
+      - STOCKPULSE_URL=${WS_STOCKPULSE_URL:-http://stockpulse-app}
+      - STOCKPULSE_API_KEY=${STOCKPULSE_API_KEY:-}
+      - ALPHAFORGE_URL=${WS_ALPHAFORGE_URL:-http://alphaforge-app}
+      - ALPHAFORGE_API_KEY=${ALPHAFORGE_API_KEY:-}
+      - NEWSFORGE_URL=${WS_NEWSFORGE_URL:-http://newsforge-app}
+      - NEWSFORGE_API_KEY=${NEWSFORGE_API_KEY:-}
+      # NEWSFORGE_WEBHOOK_SECRET deliberately OMITTED — see .env.all.example.
+      # The NewsForge->WebStock push webhook is intentionally disabled (WebStock
+      # verifies no such secret); WebStock pulls sentiment on-demand instead.
+      - FIRST_ADMIN_EMAIL=${WS_FIRST_ADMIN_EMAIL:-}
+      # CAUTION: unlike SP/AF/NF (whose CORS_ORIGINS is a comma-separated STRING),
+      # WebStock's CORS_ORIGINS is a pydantic list[str] parsed via json.loads — it
+      # MUST be a JSON array. An empty OR comma-separated value crashes config load
+      # (and takes down migrations + celery). Default to ["*"] so an unset value
+      # still boots; restrict it in .env for public exposure.
+      - CORS_ORIGINS=${WS_CORS_ORIGINS:-["*"]}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - webstock_app_data:/app/data
+      # Uncomment to enable TLS:
+      # - ./nginx/ssl:/etc/nginx/ssl:ro
+    depends_on:
+      webstock-postgres:
+        condition: service_healthy
+      webstock-redis:
+        condition: service_healthy
+      # Cross-stack deps use service_STARTED (not service_healthy): we only need
+      # the containers on the webstock-umbrella network for DNS to resolve.
+      # WebStock's clients degrade gracefully when a downstream isn't ready yet
+      # (StockPulse/NewsForge return None, AlphaForge raises a caught error) and
+      # retry on later calls. Gating on service_healthy would let an unhealthy
+      # AlphaForge (heavy / amd64-emulated) block WebStock from EVER starting.
+      stockpulse-app:
+        condition: service_started
+      alphaforge-app:
+        condition: service_started
+      newsforge-app:
+        condition: service_started
+    restart: unless-stopped
+    networks:
+      - webstock-umbrella
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://127.0.0.1/api/v1/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    deploy:
+      resources:
+        limits:
+          cpus: "4"
+          memory: 4G
+        reservations:
+          cpus: "1"
+          memory: 1G
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "50m"
+        max-file: "5"
